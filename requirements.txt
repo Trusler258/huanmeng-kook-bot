@@ -1,0 +1,29 @@
+# 幻梦 KOOK Bot v1.0.0 — Python 依赖
+# pip install -r requirements.txt
+
+# === KOOK SDK ===
+khl.py>=0.16.0
+
+# === LLM API 调用（OpenAI 兼容接口） ===
+openai>=1.0.0
+
+# === 异步 HTTP 客户端 ===
+httpx>=0.25.0
+
+# === 配置文件解析 ===
+toml>=0.10.0
+
+# === 环境变量加载 ===
+python-dotenv>=1.0.0
+
+# === 搜索引擎 ===
+ddgs>=5.0.0
+
+# === Markdown → HTML 转换（卡片渲染） ===
+markdown>=3.5.0
+
+# === 无头浏览器截图（HTML 卡片 → PNG） ===
+playwright>=1.40.0
+
+# === 可选：系统资源监控（.info 指令） ===
+# psutil>=5.9.0

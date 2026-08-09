@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+
+# 密钥
+.env
+config/.env
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 运行时数据
+data/msglog/
+data/user_profiles.json
+data/memories/
+*.db
+*.sqlite
+
+# 临时文件
+tmp/
+temp/

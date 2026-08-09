@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=440, initial-scale=1.0">
+<title>Leaderboard · 幻梦</title>
+<style>
+:root {
+  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;
+  --bg-card:rgba(20,18,32,0.55);
+  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);
+  --success:#34d399;--warning:#fbbf24;
+  --gold:#fbbf24;--silver:#cbd5e1;--bronze:#d97706;
+  --radius:15px;--radius-s:9px;
+  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+  --border:rgba(255,255,255,0.10);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+@page{margin:0}
+html{width:440px;margin:0 auto;min-height:100vh}
+body::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at 25% 30%,rgba(255,255,255,0.025) 0%,transparent 2px),radial-gradient(circle at 75% 70%,rgba(255,255,255,0.02) 0%,transparent 2px),radial-gradient(circle at 50% 50%,rgba(255,255,255,0.015) 0%,transparent 1.5px);background-size:3px 3px,5px 5px,7px 7px;opacity:0.6}
+body{width:440px;margin:0 auto;position:relative;z-index:1;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),radial-gradient(ellipse 65% 60% at 50% 50%,rgba(86,134,254,0.12) 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 5% 80%,rgba(34,211,238,0.14) 0%,transparent 55%),conic-gradient(from 200deg at 30% 20%,transparent 0deg,rgba(236,72,153,0.08) 60deg,transparent 120deg,rgba(139,92,246,0.06) 200deg,transparent 280deg),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{padding:20px 16px 24px}
+.card{position:relative;background:var(--bg-card);border-radius:var(--radius);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),0 0 100px rgba(236,72,153,0.10),0 0 40px rgba(139,92,246,0.08),inset 0 1px 0 rgba(255,255,255,0.12),inset 0 -1px 0 rgba(0,0,0,0.3);overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1px;background:linear-gradient(135deg,rgba(236,72,153,0.55) 0%,rgba(139,92,246,0.40) 35%,rgba(86,134,254,0.30) 65%,rgba(34,211,238,0.35) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2}
+.card::after{content:'';position:absolute;top:0;left:15%;right:15%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent);filter:blur(0.5px);z-index:3}
+.head{padding:18px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;position:relative}
+.head::after{content:'';position:absolute;bottom:-1px;left:22px;right:22px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.5) 30%,rgba(139,92,246,0.4) 70%,transparent)}
+.logo{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;font-weight:800;color:var(--primary-light);background:linear-gradient(135deg,rgba(236,72,153,0.35),rgba(139,92,246,0.20)),radial-gradient(circle at 30% 30%,rgba(255,255,255,0.15),transparent 60%);border:1px solid rgba(236,72,153,0.45);box-shadow:0 4px 18px rgba(236,72,153,0.30),inset 0 1px 0 rgba(255,255,255,0.2);letter-spacing:-0.3px;flex-shrink:0}
+.head-text{flex:1;min-width:0}
+.head-title{font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:0.5px;display:flex;align-items:baseline;gap:6px}
+.head-title .nm{background:linear-gradient(135deg,#f472b6,#ec4899 50%,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 0 8px rgba(236,72,153,0.4))}
+.head-title .sl{color:var(--text-3);font-weight:400;-webkit-text-fill-color:var(--text-3)}
+.head-title .tp{color:var(--text-2);font-weight:500;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;-webkit-text-fill-color:var(--text-2)}
+.head-tag{font-family:var(--mono);font-size:10px;color:#fff;background:linear-gradient(135deg,rgba(236,72,153,0.25),rgba(139,92,246,0.20));border:1px solid rgba(236,72,153,0.45);padding:4px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 2px 10px rgba(236,72,153,0.20),inset 0 1px 0 rgba(255,255,255,0.15)}
+.title-row{padding:14px 22px 6px;font-size:15px;font-weight:700;color:var(--text);letter-spacing:0.3px}
+.list{padding:6px 22px 10px}
+.entry{display:flex;align-items:center;gap:10px;padding:9px 12px;margin-bottom:3px;border-radius:var(--radius-s);background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.04)}
+.entry .rank{width:30px;font-family:var(--mono);font-size:14px;font-weight:800;text-align:center;color:var(--text-3);flex-shrink:0;letter-spacing:-0.5px}
+.entry:nth-child(1) .rank{color:var(--gold);text-shadow:0 0 10px rgba(251,191,36,0.7)}
+.entry:nth-child(2) .rank{color:var(--silver);text-shadow:0 0 8px rgba(203,213,225,0.5)}
+.entry:nth-child(3) .rank{color:var(--bronze);text-shadow:0 0 8px rgba(217,119,6,0.5)}
+.entry .head{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,rgba(236,72,153,0.18),rgba(139,92,246,0.12));border:1px solid rgba(236,72,153,0.25);display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;position:relative;padding:0;border-bottom:none;box-shadow:none}
+.entry .head img{display:none}
+.entry .head::before{content:'';width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--accent));box-shadow:0 0 10px rgba(236,72,153,0.5)}
+.entry .name{flex:1;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.entry .value{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--primary-light);flex-shrink:0;letter-spacing:0.3px;text-shadow:0 0 6px rgba(244,114,182,0.3)}
+.foot{padding:12px 22px 14px;border-top:1px solid var(--border);background:linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.30));display:flex;align-items:center;justify-content:space-between;position:relative}
+.foot::before{content:'';position:absolute;top:0;left:22px;right:22px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.4) 30%,rgba(139,92,246,0.3) 70%,transparent)}
+.foot-l{font-family:var(--mono);font-size:9.5px;color:var(--text-3);display:flex;align-items:center;gap:6px}
+.foot-l .dot{width:6px;height:6px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px rgba(52,211,153,0.7),0 0 4px rgba(52,211,153,0.9)}
+.foot-l .pk{color:var(--primary-light)}
+.foot-r{font-family:var(--mono);font-size:9px;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<div class="head">
+<div class="logo">LB</div>
+<div class="head-text"><div class="head-title"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">LEADERBOARD</span></div></div>
+<div class="head-tag">{{PERIOD}}</div>
+</div>
+<div class="title-row">{{TITLE}}</div>
+<div class="list">{{ENTRIES}}</div>
+<div class="foot">
+<div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span>·</span><span>{{BRAND}}</span></div>
+<div class="foot-r">HUANMENG</div>
+</div>
+</div></div>
+</body></html>

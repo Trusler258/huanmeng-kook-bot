@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>System Status · 幻梦</title>
+<style>
+:root {
+  /* 霓虹色板 — 高饱和高亮度 */
+  --neon-pink:#ff2d95;--neon-pink-light:#ff6bb5;
+  --neon-purple:#b14dff;--neon-purple-light:#c97cff;
+  --neon-cyan:#00f0ff;--neon-cyan-light:#5cf5ff;
+  --neon-green:#39ff7a;--neon-green-light:#7cff9e;
+  --neon-yellow:#ffe600;--neon-orange:#ff8c00;
+  --neon-red:#ff2d4d;
+  --bg-card:rgba(15,12,28,0.72);
+  --text:#ffffff;--text-2:rgba(255,255,255,0.82);--text-3:rgba(255,255,255,0.50);
+  --radius:14px;--radius-s:8px;
+  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+@page{margin:0}
+html{width:800px;margin:0 auto;min-height:100vh}
+body{
+  width:800px;margin:0 auto;position:relative;z-index:1;
+  font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;min-height:100vh;padding:20px 18px 24px;
+  background:
+    /* 霓虹光斑 — 高饱和 */
+    radial-gradient(ellipse 60% 50% at 12% -8%,rgba(255,45,149,0.50) 0%,transparent 50%),
+    radial-gradient(ellipse 55% 45% at 90% 108%,rgba(177,77,255,0.45) 0%,transparent 50%),
+    radial-gradient(ellipse 50% 50% at 95% 15%,rgba(0,240,255,0.30) 0%,transparent 45%),
+    radial-gradient(ellipse 45% 40% at 5% 85%,rgba(57,255,122,0.22) 0%,transparent 50%),
+    /* 极光漩涡 */
+    conic-gradient(from 180deg at 40% 30%,transparent 0deg,rgba(255,45,149,0.12) 60deg,transparent 120deg,rgba(0,240,255,0.10) 200deg,transparent 280deg),
+    /* 深色底 */
+    linear-gradient(165deg,#0a0612 0%,#0f0a1f 45%,#080614 100%);
+}
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    radial-gradient(circle at 25% 30%,rgba(255,255,255,0.035) 0%,transparent 2px),
+    radial-gradient(circle at 75% 70%,rgba(255,255,255,0.025) 0%,transparent 2px),
+    radial-gradient(circle at 50% 50%,rgba(255,255,255,0.02) 0%,transparent 1.5px);
+  background-size:3px 3px,5px 5px,7px 7px;opacity:0.7;
+}
+
+/* ── 网格布局 ── */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;position:relative;z-index:1}
+.card{
+  position:relative;background:var(--bg-card);border-radius:var(--radius);
+  backdrop-filter:blur(22px) saturate(1.6);-webkit-backdrop-filter:blur(22px) saturate(1.6);
+  overflow:hidden;
+  box-shadow:0 8px 32px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.10),inset 0 -1px 0 rgba(0,0,0,0.3);
+}
+/* 霓虹边框 */
+.card::before{
+  content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1.5px;
+  background:linear-gradient(135deg,var(--c1,var(--neon-pink)) 0%,var(--c2,var(--neon-purple)) 50%,var(--c3,var(--neon-cyan)) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2;
+}
+/* 顶部高光 */
+.card::after{
+  content:'';position:absolute;top:0;left:20%;right:20%;height:1.5px;
+  background:linear-gradient(90deg,transparent,var(--c1,var(--neon-pink)) 50%,transparent);
+  filter:blur(0.5px);z-index:3;
+}
+
+/* ── 卡片配色 ── */
+.card.c-cpu{--c1:var(--neon-pink);--c2:var(--neon-purple);--c3:var(--neon-cyan)}
+.card.c-mem{--c1:var(--neon-cyan);--c2:var(--neon-green);--c3:var(--neon-cyan)}
+.card.c-gpu{--c1:var(--neon-green);--c2:var(--neon-cyan);--c3:var(--neon-purple)}
+.card.c-disk{--c1:var(--neon-purple);--c2:var(--neon-pink);--c3:var(--neon-purple)}
+.card.c-net{--c1:var(--neon-cyan);--c2:var(--neon-purple);--c3:var(--neon-cyan)}
+.card.c-volt{--c1:var(--neon-yellow);--c2:var(--neon-orange);--c3:var(--neon-yellow)}
+.card.c-window{--c1:var(--neon-pink);--c2:var(--neon-purple);--c3:var(--neon-pink)}
+.card.c-music{--c1:var(--neon-purple);--c2:var(--neon-pink);--c3:var(--neon-cyan)}
+
+/* ── 头部 ── */
+.head{
+  padding:16px 20px 12px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.head-icon{
+  width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:10px;font-weight:800;
+  background:linear-gradient(135deg,var(--c1,var(--neon-pink)),var(--c2,var(--neon-purple)));
+  box-shadow:0 0 16px var(--c1,var(--neon-pink)),inset 0 1px 0 rgba(255,255,255,0.3);
+  color:#fff;letter-spacing:-0.3px;flex-shrink:0;
+}
+.head-title{
+  font-size:14px;font-weight:700;letter-spacing:0.3px;
+  color:var(--text);
+  text-shadow:0 0 12px var(--c1,var(--neon-pink));
+}
+.head-sub{
+  font-family:var(--mono);font-size:10px;color:var(--text-3);
+  margin-left:auto;letter-spacing:0.5px;
+}
+
+/* ── 大标题卡（横跨） ── */
+.hero{
+  grid-column:1 / -1;
+  background:linear-gradient(135deg,rgba(255,45,149,0.15),rgba(177,77,255,0.10) 50%,rgba(0,240,255,0.08));
+}
+.hero .head{border-bottom:none;padding:18px 24px}
+.hero-title{font-size:22px;font-weight:800;letter-spacing:0.5px;
+  background:linear-gradient(90deg,var(--neon-pink) 0%,var(--neon-purple) 50%,var(--neon-cyan) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  filter:drop-shadow(0 0 14px rgba(255,45,149,0.5));
+}
+.hero-sub{font-family:var(--mono);font-size:11px;color:var(--text-2);margin-top:4px;letter-spacing:0.3px}
+.hero-tag{
+  margin-left:auto;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;
+  background:linear-gradient(135deg,var(--neon-pink),var(--neon-purple));
+  padding:5px 12px;border-radius:20px;
+  box-shadow:0 0 18px rgba(255,45,149,0.5),inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+/* ── 进度条 ── */
+.body{padding:12px 18px 14px}
+.m-row{display:flex;align-items:center;gap:10px;padding:5px 0}
+.m-label{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:0.5px;text-transform:uppercase;width:52px;flex-shrink:0}
+.m-bar-w{flex:1;height:12px;background:rgba(255,255,255,0.04);border-radius:6px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,0.05)}
+.m-bar{height:100%;border-radius:6px;position:relative}
+.m-bar::after{content:'';position:absolute;inset:0;border-radius:6px;background:inherit;filter:blur(4px);opacity:0.6}
+.m-bar.b-pink{background:linear-gradient(90deg,var(--neon-pink),var(--neon-pink-light));box-shadow:0 0 10px var(--neon-pink)}
+.m-bar.b-purple{background:linear-gradient(90deg,var(--neon-purple),var(--neon-purple-light));box-shadow:0 0 10px var(--neon-purple)}
+.m-bar.b-cyan{background:linear-gradient(90deg,var(--neon-cyan),var(--neon-cyan-light));box-shadow:0 0 10px var(--neon-cyan)}
+.m-bar.b-green{background:linear-gradient(90deg,var(--neon-green),var(--neon-green-light));box-shadow:0 0 10px var(--neon-green)}
+.m-bar.b-yellow{background:linear-gradient(90deg,var(--neon-yellow),#fff566);box-shadow:0 0 10px var(--neon-yellow)}
+.m-bar.b-orange{background:linear-gradient(90deg,var(--neon-orange),#ffb347);box-shadow:0 0 10px var(--neon-orange)}
+.m-bar.b-red{background:linear-gradient(90deg,var(--neon-red),#ff6680);box-shadow:0 0 10px var(--neon-red)}
+.m-val{font-family:var(--mono);font-size:13px;font-weight:800;color:var(--text);min-width:70px;text-align:right;flex-shrink:0}
+.m-val .unit{font-size:10px;color:var(--text-3);font-weight:400}
+
+/* ── 信息行 ── */
+.i-row{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-radius:6px;background:rgba(255,255,255,0.02);margin-bottom:3px}
+.i-row:last-child{margin-bottom:0}
+.i-label{font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-3);letter-spacing:0.5px;text-transform:uppercase}
+.i-val{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--text-2)}
+.i-val.hi{color:var(--neon-cyan);text-shadow:0 0 8px var(--neon-cyan)}
+
+/* ── 磁盘行 ── */
+.disk-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.disk-drive{font-family:var(--mono);font-size:11px;font-weight:800;color:var(--neon-purple);width:24px;flex-shrink:0;text-shadow:0 0 8px var(--neon-purple)}
+.disk-bar-w{flex:1;height:7px;background:rgba(255,255,255,0.04);border-radius:4px;overflow:hidden;border:1px solid rgba(255,255,255,0.04)}
+.disk-bar{height:100%;border-radius:4px}
+.disk-val{font-family:var(--mono);font-size:10px;color:var(--text-3);width:120px;text-align:right;flex-shrink:0}
+
+/* ── 电压网格 ── */
+.volt-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.v-cell{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:6px;background:rgba(255,230,0,0.06);border:1px solid rgba(255,230,0,0.15)}
+.v-name{font-family:var(--mono);font-size:10px;color:var(--text-3);letter-spacing:0.3px}
+.v-val{font-family:var(--mono);font-size:12px;font-weight:800;color:var(--neon-yellow);text-shadow:0 0 8px var(--neon-yellow)}
+
+/* ── 窗口卡 ── */
+.window-box{padding:14px 18px}
+.window-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.4;
+  text-shadow:0 0 10px rgba(255,45,149,0.3)}
+.window-app{font-family:var(--mono);font-size:11px;color:var(--neon-pink);margin-top:4px;text-shadow:0 0 8px var(--neon-pink)}
+
+/* ── 音乐卡 ── */
+.music-body{padding:14px 18px}
+.music-cover-wrap{display:flex;gap:14px;align-items:flex-start}
+.music-cover{width:90px;height:90px;border-radius:10px;object-fit:cover;flex-shrink:0;
+  border:1.5px solid var(--neon-purple);
+  box-shadow:0 0 20px rgba(177,77,255,0.5),0 4px 12px rgba(0,0,0,0.4)}
+.music-info{flex:1;min-width:0}
+.music-song{font-size:14px;font-weight:700;color:var(--text);line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  text-shadow:0 0 10px rgba(177,77,255,0.4)}
+.music-player{font-family:var(--mono);font-size:10px;color:var(--text-3);margin-top:3px;letter-spacing:0.3px}
+.music-status{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;font-weight:800;padding:2px 8px;border-radius:5px;letter-spacing:0.5px;margin-top:5px}
+.music-status.playing{color:var(--neon-green);background:rgba(57,255,122,0.12);border:1px solid var(--neon-green);text-shadow:0 0 8px var(--neon-green)}
+.music-status.paused{color:var(--text-3);background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1)}
+.music-progress-w{margin-top:7px;height:5px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;border:1px solid rgba(255,255,255,0.05)}
+.music-progress{height:100%;background:linear-gradient(90deg,var(--neon-pink),var(--neon-purple));border-radius:3px;box-shadow:0 0 8px var(--neon-pink)}
+.music-time{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9.5px;color:var(--text-3);margin-top:3px}
+.music-lyric{margin-top:8px;padding:7px 10px;border-radius:6px;background:rgba(0,240,255,0.06);border-left:2px solid var(--neon-cyan);font-size:12px;color:var(--text-2);line-height:1.5;font-style:italic}
+.music-empty{padding:18px;text-align:center;color:var(--text-3);font-size:13px}
+
+/* ── Footer ── */
+.foot{
+  grid-column:1 / -1;padding:14px 24px;
+  display:flex;align-items:center;justify-content:space-between;
+  background:rgba(0,0,0,0.35);border-radius:var(--radius);
+  border:1px solid rgba(255,255,255,0.06);
+}
+.foot-l{font-family:var(--mono);font-size:10px;color:var(--text-3);display:flex;align-items:center;gap:8px}
+.foot-l .dot{width:6px;height:6px;background:var(--neon-green);border-radius:50%;display:inline-block;box-shadow:0 0 10px var(--neon-green),0 0 4px var(--neon-green)}
+.foot-l .pk{color:var(--neon-pink);text-shadow:0 0 8px var(--neon-pink)}
+.foot-r{font-family:var(--mono);font-size:9.5px;font-weight:800;
+  background:linear-gradient(90deg,var(--neon-pink),var(--neon-cyan));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  letter-spacing:1.8px;text-transform:uppercase}
+</style>
+</head>
+<body>
+
+<div class="grid">
+
+  <!-- Hero 标题卡 -->
+  <div class="card hero">
+    <div class="head">
+      <div class="head-icon" style="width:42px;height:42px;font-size:13px">SYS</div>
+      <div style="flex:1">
+        <div class="hero-title">{{HOSTNAME}}</div>
+        <div class="hero-sub">{{BOOT_TIME}} · uptime {{UPTIME}} · {{PROC_COUNT}} processes</div>
+      </div>
+      <div class="hero-tag">{{OWNER}}</div>
+    </div>
+  </div>
+
+  <!-- CPU 卡 -->
+  <div class="card c-cpu">
+    <div class="head">
+      <div class="head-icon">CPU</div>
+      <div class="head-title">处理器</div>
+      <div class="head-sub">{{CPU_FREQ}} GHz · {{CPU_COUNT}}T</div>
+    </div>
+    <div class="body">
+      <div class="m-row">
+        <span class="m-label">LOAD</span>
+        <div class="m-bar-w"><div class="m-bar {{CPU_BAR_CLASS}}" style="width:{{CPU_PERCENT}}%"></div></div>
+        <span class="m-val">{{CPU_PERCENT}}<span class="unit">%</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 内存卡 -->
+  <div class="card c-mem">
+    <div class="head">
+      <div class="head-icon">RAM</div>
+      <div class="head-title">内存</div>
+      <div class="head-sub">{{SWAP_PERCENT}}% swap</div>
+    </div>
+    <div class="body">
+      <div class="m-row">
+        <span class="m-label">USE</span>
+        <div class="m-bar-w"><div class="m-bar {{MEM_BAR_CLASS}}" style="width:{{MEM_PERCENT}}%"></div></div>
+        <span class="m-val">{{MEM_PERCENT}}<span class="unit">%</span></span>
+      </div>
+      <div class="i-row"><span class="i-label">Used</span><span class="i-val">{{MEM_USED}} / {{MEM_TOTAL}}</span></div>
+    </div>
+  </div>
+
+  {{GPU_CARD}}
+
+  <!-- 磁盘卡 -->
+  <div class="card c-disk">
+    <div class="head">
+      <div class="head-icon">DSK</div>
+      <div class="head-title">磁盘</div>
+      <div class="head-sub">{{DISK_COUNT}} drives</div>
+    </div>
+    <div class="body">{{DISKS_HTML}}</div>
+  </div>
+
+  <!-- 网络/电源卡 -->
+  <div class="card c-net">
+    <div class="head">
+      <div class="head-icon">NET</div>
+      <div class="head-title">网络 / 电源</div>
+    </div>
+    <div class="body">
+      <div class="i-row"><span class="i-label">Upload</span><span class="i-val hi">{{NET_UP}}</span></div>
+      <div class="i-row"><span class="i-label">Down</span><span class="i-val hi">{{NET_DOWN}}</span></div>
+      {{BATTERY_HTML}}
+    </div>
+  </div>
+
+  {{VOLTAGES_CARD}}
+
+  <!-- 前台窗口卡 -->
+  <div class="card c-window">
+    <div class="head">
+      <div class="head-icon">WIN</div>
+      <div class="head-title">前台窗口</div>
+    </div>
+    <div class="window-box">
+      <div class="window-title">{{WINDOW_TITLE}}</div>
+      <div class="window-app">{{WINDOW_APP}}</div>
+    </div>
+  </div>
+
+  <!-- 音乐卡 -->
+  <div class="card c-music">
+    <div class="head">
+      <div class="head-icon">MUS</div>
+      <div class="head-title">音乐播放</div>
+    </div>
+    <div class="music-body">{{MUSIC_HTML}}</div>
+  </div>
+
+  <!-- Footer -->
+  <div class="foot">
+    <div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span>·</span><span>{{UPDATE_TIME}}</span><span>·</span><span>{{BRAND}}</span></div>
+    <div class="foot-r">HUANMENG</div>
+  </div>
+
+</div>
+
+</body></html>

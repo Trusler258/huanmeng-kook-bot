@@ -1,0 +1,141 @@
+# 更新日志 — TOML 格式（供卡片渲染引擎读取）
+# 每个版本一个 [[update]] 条目
+
+[[update]]
+version = "beta 0.8.1"
+date = "2026.5.8"
+tag = "稳定性与体验优化"
+changes = [
+  # ── 新功能 ──
+  { type = "feature", text = "好感度按聊天隔离：每个群/私聊的好感度独立计算，不再全局共享" },
+  { type = "feature", text = "反刷屏禁言：检测重复@机器人刷屏，超阈值自动禁言+警告（可配置阈值和时长）" },
+
+  # ── 优化 ──
+  { type = "improve", text = "卡片生成异步化：天气/快递/更新日志三大指令不再阻塞聊天线程" },
+  { type = "improve", text = "好感度列表按当前聊天过滤，显示昵称而非原始 QQ 号" },
+
+  # ── 变更 ──
+  { type = "change", text = "好感度存储 key 格式变更：username → g{群号}:{QQ} / p:{QQ}（旧数据自动清理）" },
+  { type = "change", text = "新增配置项 spam_threshold（刷屏阈值）和 mute_duration（禁言时长）" },
+]
+
+[[update]]
+version = "beta 0.8.0"
+date = "2026.5.7"
+tag = "全面重构"
+changes = [
+  # ── 新功能 ──
+  { type = "feature", text = "精美卡片系统：更新日志/天气/快递三大指令全面升级为 HTML 截图卡片" },
+  { type = "feature", text = "四层模块化架构：core → modules → services → utils" },
+  { type = "feature", text = "引用消息支持：回复消息时自动将引用原文注入上下文" },
+
+  # ── 性能优化 ──
+  { type = "improve", text = "WebSocket 全局长连接复用，消息延迟降低 50~80%" },
+  { type = "improve", text = "LLM 并行调用：asyncio.gather 同时请求判断+兴趣度模型" },
+  { type = "improve", text = "搜索缓存内存化 + 脏标记定时刷盘" },
+  { type = "improve", text = "BotConfig dataclass 单例：20+ 全局变量统一管理" },
+  { type = "improve", text = "图片缓存限容：1000 条上限 + TTL 30 天过期" },
+  { type = "improve", text = "日志升级：每模块独立 Logger + 彩色终端 + 文件按天轮转" },
+
+  # ── 问题修复 ──
+  { type = "fix", text = "修复 import signal 遗漏导致启动崩溃" },
+  { type = "fix", text = "修复 pipeline.py 缺少 import re" },
+  { type = "fix", text = "修复新版 websockets .closed 属性移除的兼容问题" },
+  { type = "fix", text = "修复 init_logger() 重复初始化导致日志双倍输出" },
+  { type = "fix", text = "移除不存在的 strike Markdown 扩展引用" },
+  { type = "fix", text = "清理旧版死代码、合并重复图片处理逻辑" },
+
+  # ── 破坏性变更 ──
+  { type = "change", text = "全局变量访问方式改为 get_config() 单例" },
+  { type = "change", text = "format_lang() 集中至 utils/format_lang.py" },
+  { type = "change", text = "NapCat 连接地址改为配置驱动 (adapter_config.toml)" },
+]
+
+[[update]]
+version = "beta 0.7.4"
+date = "2026.5"
+tag = "PrePRO"
+changes = [
+  { type = "feature", text = "快递查询 .box，自动清洗广告，展示完整物流轨迹" },
+  { type = "feature", text = "随机二次元图片 .img 与轻度 R18 图片 .img18" },
+  { type = "feature", text = "戳一戳互动：被双击头像时猫娘会回应并增加好感度" },
+  { type = "feature", text = "查看更新日志 .updateinfo" },
+  { type = "feature", text = "系统信息 .info 新增显示操作系统、内存、CPU、已加载模型列表" },
+  { type = "improve", text = "天气播报改为表格 + 口语化描述，支持 7 日预报" },
+  { type = "improve", text = "记忆系统增强：自动记忆附带参与者名称" },
+  { type = "improve", text = "搜索结果直接交由主回复模型消化，跳过廉价模型摘要" },
+  { type = "improve", text = "消息发送增加 3 次重试，全部失败时发送兜底回复" },
+  { type = "improve", text = ".reload 改为跨平台重启" },
+  { type = "fix", text = "修复私聊部分场景下不回复" },
+  { type = "fix", text = "修复 @ 消息中包含指令被错误当作普通对话" },
+  { type = "fix", text = "修复模型偶尔输出全角方括号导致好感度标记泄露" },
+  { type = "fix", text = "强化多句回复分隔符规则，防止异常符号出现在聊天中" },
+]
+
+[[update]]
+version = "beta 0.7.0"
+date = "2026.5.6"
+tag = "互动增强"
+changes = [
+  { type = "feature", text = "新增戳一戳（摸头）互动，被摸时猫娘会回应并增加好感度" },
+  { type = "feature", text = "新增 .img 随机二次元图片，.img18 轻度 R18 图片 (PG16)" },
+  { type = "feature", text = "新增 .updateinfo 查看更新日志" },
+  { type = "improve", text = "增强 .info：显示操作系统、内存、CPU 以及所有已加载的模型" },
+  { type = "improve", text = "天气播报全面优化：表格 + 口语化播报，自动区分管理员与普通用户" },
+  { type = "improve", text = ".reload 改为跨平台重启（Linux 退出进程由 systemd 拉起，Windows 重新执行）" },
+  { type = "improve", text = "搜索结果直接交由主模型消化，不再经过廉价模型摘要" },
+  { type = "improve", text = "消息发送增加重试机制（3 次），失败后自动发送兜底回复" },
+  { type = "fix", text = "修正私聊部分场景下不回复的 bug" },
+]
+
+[[update]]
+version = "beta 0.6.2"
+date = "2026.5.5"
+tag = "智能记忆总结"
+changes = [
+  { type = "improve", text = "长期记忆机制重构：每隔 10 分钟将对话缓冲区交由廉价模型异步总结成一句话记忆" },
+  { type = "fix", text = "修复私聊消息因 @ 检测遗漏导致不回复的问题" },
+  { type = "change", text = "好感度计算完全由模型通过 [fav: ±N] 标记决定，移除硬编码关键词" },
+]
+
+[[update]]
+version = "beta 0.6.0"
+date = "2026.5.5"
+tag = "多句生成"
+changes = [
+  { type = "feature", text = "回复生成改为一次性输出 1~5 句，用 ||| 分隔，程序分批发送（间隔 2~4 秒）" },
+  { type = "feature", text = "新增好感度自动变化：模型在回复末尾的 [fav: ±N] 标记，程序自动更新好感度数值" },
+  { type = "feature", text = "新增定时记忆：每隔 10 分钟自动将最近用户消息截取 40 字存入记忆文件" },
+  { type = "feature", text = "新增 .reload 热重载配置（管理员专用）" },
+  { type = "feature", text = "支持多 API 平台共存（如 DeepSeek 与 SiliconFlow 同时使用）" },
+  { type = "feature", text = "新增天气查询 .天气 或 .weather（数据源：60s API）" },
+  { type = "fix", text = "私聊修复：私聊消息直接回复，不再跳过" },
+]
+
+[[update]]
+version = "beta 0.5.0"
+date = "2026.5.4"
+tag = "插件化与智能判断"
+changes = [
+  { type = "feature", text = "三级回复判断：硬规则过滤 → 免费廉价模型判断 → 精细兴趣度模型 (0~10 分)" },
+  { type = "feature", text = "新增长期记忆：自动保存群聊/私聊中的关键对话到 memory_{对话id}.md" },
+  { type = "feature", text = "新增好感度系统：保存到 fav.json，可通过 .favlist 查看" },
+  { type = "feature", text = "新增指令系统：.help、.ping、.s 等，/# 前缀管理员专用" },
+  { type = "feature", text = "新增角色配置分离：roles.toml 管理管理员、好友关系及昵称映射" },
+  { type = "feature", text = "支持私聊（可开关），群聊白名单独立配置" },
+  { type = "feature", text = "新增 DuckDuckGo 搜索（内置缓存）" },
+  { type = "feature", text = "图片识别接入（可选）" },
+  { type = "improve", text = "优化提示词，区分不同关系（主人 / 朋友 / 群友）" },
+]
+
+[[update]]
+version = "beta 0.4.3"
+date = "2025.8.25"
+tag = "初始版本"
+changes = [
+  { type = "feature", text = "基于 Maibot 精简的 QQ 机器人框架，对接 NapCat + OneBot v11" },
+  { type = "feature", text = "群聊白名单、消息解析（文字/图片/文件）" },
+  { type = "feature", text = "简单的兴趣度判断（@ 必回，其他按关键词 + LLM 判断）" },
+  { type = "feature", text = "单一回复模型（硅基流动），支持调整回复阈值" },
+  { type = "feature", text = "日志模块、基础配置分离、@ 替换用户名" },
+]

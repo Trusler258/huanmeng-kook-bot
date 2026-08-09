@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=900, initial-scale=1.0">
+<title>谱面信息 · 幻梦</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════
+   幻梦 Design System — 谱面详情卡片（双栏）
+   ══════════════════════════════════════ */
+:root {
+  --primary:       #ec4899;
+  --primary-light: #f472b6;
+  --primary-pale:  rgba(236,72,153,0.10);
+  --primary-glow:  rgba(236,72,153,0.22);
+
+  --bg-page:  #0d0d1a;
+  --bg-card:  rgba(255,255,255,0.04);
+  --bg-row:   rgba(255,255,255,0.025);
+
+  --text-primary:   #ffffff;
+  --text-secondary: rgba(255,255,255,0.58);
+  --text-muted:     rgba(255,255,255,0.33);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error:   #ef4444;
+  --info:    #3b82f6;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+
+  --shadow-card: 0 8px 40px rgba(0,0,0,0.55), 0 0 100px rgba(236,72,153,0.06);
+
+  --font-sans: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --border: rgba(255,255,255,0.07);
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+html, body {
+  width: 900px;
+  margin: 0 auto;
+  background: transparent;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height:1.6;
+  overflow-x: hidden;
+  background:
+    radial-gradient(ellipse 65% 45% at 5% -5%,  rgba(236,72,153,0.16) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 45% at 95% 105%, rgba(244,114,182,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 50% at 50% 50%,  rgba(59,130,246,0.04) 0%, transparent 60%),
+    linear-gradient(165deg, #0d0d1a 0%, #110e1c 50%, #0d1020 100%);
+  min-height: 100vh;
+}
+
+/* ── 卡片外壳 ── */
+.card-wrapper { padding: 28px 24px 36px; }
+
+.card {
+  background: var(--bg-card);
+  border:1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  overflow: hidden;
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  position: absolute; top:0; left:0; right:0; height:2px;
+  background: linear-gradient(90deg, transparent, var(--primary) 25%, var(--primary-light) 60%, rgba(59,130,246,0.6) 100%);
+}
+
+/* ── 双栏布局 ── */
+.card-body {
+  display: flex;
+  gap: 0;
+  min-height: 400px;
+}
+
+.card-left {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+
+.card-right {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 头部：难度图标 + 歌曲信息 ── */
+.header { padding: 26px 30px 20px; }
+
+.level-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+/* 难度图标块 */
+.diff-icon-wrap {
+  width: 80px; height: 80px;
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px;
+  font-weight: 900;
+  font-family: var(--font-mono);
+  color: #ffffff;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+
+.diff-icon-wrap.has-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.diff-icon-text {
+  position: relative;
+  z-index: 2;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+
+/* 歌曲信息区 */
+.song-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.song-name {
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1.3;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.artist-name {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.creator-name {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.artist-aliases {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-top: 3px;
+}
+
+/* ── 分割线 ── */
+.divider {
+  height:1px;
+  margin: 0 28px;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--border) 15%,
+    rgba(236,72,153,0.28) 50%,
+    var(--border) 85%,
+    transparent
+  );
+}
+
+/* ── 统计信息栏 ── */
+.stats-section { padding: 16px 30px; }
+
+.stats-row {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.stat-icon {
+  font-size: 15px;
+  opacity: 0.7;
+}
+
+.stat-value {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ── 评级信息 ── */
+.rating-section { padding: 12px 30px; }
+
+.rating-bar {
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, rgba(236,72,153,0.07), rgba(59,130,246,0.04));
+  border: 1px solid rgba(236,72,153,0.14);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.rating-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 4px;
+  opacity: 0.7;
+}
+
+/* ── 标签（如 Featured, Verified）── */
+.tags-row {
+  padding: 8px 30px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tag-featured {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: rgba(245,158,11,0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251,191,36,0.25);
+}
+
+.tag-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: rgba(16,185,129,0.10);
+  color: #34d399;
+  border: 1px solid rgba(16,185,129,0.20);
+}
+
+/* ── 下载按钮 ── */
+.download-section { padding: 16px 30px 20px; }
+
+.download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(236,72,153,0.15), rgba(244,114,182,0.10));
+  border: 1px solid rgba(236,72,153,0.25);
+  color: var(--primary-light);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.download-btn:hover {
+  background: linear-gradient(135deg, rgba(236,72,153,0.25), rgba(244,114,182,0.18%));
+  border-color: rgba(236,72,153,0.4);
+  box-shadow: 0 0 20px rgba(236,72,153,0.15);
+}
+
+.download-icon { font-size: 16px; }
+
+/* ── 贡献者 ── */
+.contributors-section {
+  padding: 12px 30px;
+  border-top: 1px solid var(--border);
+}
+
+.contributors-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+  opacity: 0.7;
+}
+
+.contrib-item {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: 12px;
+  margin-bottom: 4px;
+}
+
+/* ── 右侧：通关记录 ── */
+.passes-section {
+  padding: 20px 20px 12px;
+  flex: 1;
+}
+
+.passes-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-light);
+  margin-bottom: 10px;
+  opacity: 0.85;
+}
+
+.pass-item {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.passes-more {
+  font-size: 11px;
+  color: var(--primary);
+  opacity: 0.6;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+/* ── 右侧：歌曲别名 ── */
+.aliases-section {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.aliases-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+  opacity: 0.7;
+}
+
+.alias-tag {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-right: 6px;
+  margin-bottom: 4px;
+}
+
+/* ── 底部 ── */
+.footer {
+  padding: 12px 30px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top:1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+  clear: both;
+}
+
+.footer-tags { display: flex; gap: 8px; }
+
+.footer-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 20px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.footer-brand {
+  font-size: 10px;
+  color: var(--primary);
+  opacity: 0.45;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* ── 响应式 ── */
+.song-name-long { font-size: 18px; }
+
+@media (max-width: 900px) {
+  .card-body { flex-direction: column; }
+  .card-right { width: 100%; border-left: none; border-top: 1px solid var(--border); }
+}
+</style>
+</head>
+<body>
+
+<div class="card-wrapper">
+  <div class="card">
+
+    <!-- 头部：难度图标 + 歌曲信息 -->
+    <div class="header">
+      <div class="level-row">
+        <div class="diff-icon-wrap {{DIFF_ICON_CLASS}}" style="{{DIFF_ICON_STYLE}}">
+          <span class="diff-icon-text">{{DIFF_NAME}}</span>
+        </div>
+
+        <div class="song-info">
+          <div class="song-name {{SONG_NAME_CLASS}}">
+            {{SONG_NAME}}
+            {{FEATURED_TAG}}
+          </div>
+          <div class="artist-name">🎵 {{ARTIST_NAME}}</div>
+          <div class="creator-name">🔧 {{CREATOR_NAME}}</div>
+          <div class="artist-aliases">艺术家别名: {{ARTIST_ALIASES}}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- 双栏主体 -->
+    <div class="card-body">
+
+      <!-- 左栏 -->
+      <div class="card-left">
+        <!-- 统计信息 -->
+        <div class="stats-section">
+          <div class="stats-row">
+            <div class="stat-item">
+              <span class="stat-icon">⏱️</span>
+              <span class="stat-value">{{DURATION}}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-icon">🎶</span>
+              <span class="stat-value">{{BPM}}</span>
+              <span class="stat-label">BPM</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-icon">🧱</span>
+              <span class="stat-value">{{TILE_COUNT}}</span>
+              <span class="stat-label">块</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-icon">✅</span>
+              <span class="stat-value">{{CLEARS}}</span>
+              <span class="stat-label">通关</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-icon">⬇️</span>
+              <span class="stat-value">{{DOWNLOADS}}</span>
+              <span class="stat-label">下载</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-icon">👍</span>
+              <span class="stat-value">{{LIKES}}</span>
+              <span class="stat-label">点赞</span>
+            </div>
+          </div>
+        </div>
+
+        {{RATING_SECTION}}
+
+        <div class="divider"></div>
+
+        <!-- 基本信息 -->
+        <div class="stats-section">
+          <div class="stats-row">
+            <div class="stat-item">
+              <span class="stat-label">基础分:</span>
+              <span class="stat-value">{{BASE_SCORE}}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">关卡 ID:</span>
+              <span class="stat-value">{{LEVEL_ID}}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">旧版标号:</span>
+              <span class="stat-value">{{OLD_ID}}</span>
+            </div>
+          </div>
+        </div>
+
+        {{CONTRIBUTORS_SECTION}}
+
+        <div class="divider"></div>
+
+        <!-- 下载按钮 -->
+        <div class="download-section">
+          <a class="download-btn" href="{{DL_LINK}}" target="_blank">
+            <span class="download-icon">⬇️</span>
+            <span>下载谱面</span>
+          </a>
+        </div>
+
+        {{ALIASES_SECTION}}
+
+        <!-- 标签 -->
+        <div class="tags-row">
+          {{FEATURED_TAG}}
+        </div>
+      </div>
+
+      <!-- 右栏 -->
+      <div class="card-right">
+        {{PASSES_SECTION}}
+
+        {{ALIASES_SECTION}}
+      </div>
+
+    </div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <div class="footer-tags">
+        <span class="footer-tag">🎮 TUF 谱面</span>
+        <span class="footer-tag">{{QUERY_TIME}}</span>
+      </div>
+      <div class="footer-brand">{{BRAND}}</div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

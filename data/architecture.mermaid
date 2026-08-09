@@ -1,0 +1,209 @@
+---
+title: 幻梦 QQ Bot v0.9.6 Pro 完整架构
+config:
+  layout: dagre
+  theme: dark
+---
+graph TB
+
+    %% ════════════════════════════════════════════════════════
+    %%  外部系统
+    %% ════════════════════════════════════════════════════════
+    subgraph 外部["外部系统"]
+        NapCat["NapCat OneBot v11<br/>WS Server :8099<br/>消息接收 事件推送<br/>API调用"]
+        DS_API["DeepSeek API<br/>deepseek-chat<br/>主回复模型"]
+        SF_API["SiliconFlow API<br/>Qwen2.5-7B 判断<br/>Qwen3.5-4B 视觉"]
+        DDG["DuckDuckGo<br/>联网搜索"]
+        天气API["60s API<br/>viki.moe<br/>7天天气预报"]
+        TUF外["TUF Database<br/>谱面搜索 详情<br/>下载直链"]
+        QQ["QQ 客户端<br/>群聊 私聊<br/>文本 CQ码 图片"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  入口
+    %% ════════════════════════════════════════════════════════
+    subgraph 入口["入口层"]
+        主程序["main.py<br/>--debug 参数<br/>SIGTERM SIGINT SIGUSR1"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  Bot核心
+    %% ════════════════════════════════════════════════════════
+    subgraph Bot核心["Bot 核心 bot.py"]
+        Bot类["HuanmengBot<br/>版本号 0.9.6 Pro"]
+        初始化["initialize()<br/>加载配置 日志 发送器<br/>上下文管理器 判断关键词"]
+        主循环["run()<br/>WS连接 事件分发<br/>断线自动重连"]
+        关闭["shutdown()<br/>关闭发送器 输出统计<br/>刷新搜索缓存 撤回缓冲"]
+        热重载["handle_reload()<br/>重新加载所有.toml<br/>更新WS地址 不清空上下文"]
+        信号处理["Signal Handlers<br/>SIGTERM=关闭<br/>SIGUSR1=热重载"]
+        后台任务["Background Tasks<br/>提醒轮询 每30秒<br/>0点统计日报<br/>控制文件监听 每1秒"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  核心层
+    %% ════════════════════════════════════════════════════════
+    subgraph 核心层["Core 核心基础设施"]
+        配置["core/config.py<br/>BotConfig @dataclass<br/>host port bot_name bot_qq<br/>reply_interest context_length<br/>personality white_list<br/>group_settings keywords<br/>anti_spam替换词<br/>build_system_prompt()<br/>get_user_tag() admin/friend/群友<br/>load_bot_config() 首次加载<br/>reload_config() 热重载<br/>set_debug_mode() 动态切换"]
+        日志["core/logger.py<br/>_ColorFormatter 5色终端<br/>_FileFormatter 文件日志<br/>init_logger(debug, file)<br/>get_logger(name) 子模块<br/>set_debug_mode() 动态切换<br/>按天轮转 保留7天"]
+        分发器["core/dispatcher.py<br/>EventDispatcher<br/>msg_count 消息统计<br/>dispatch() 事件解析路由<br/>_handle_notice() 戳一戳/撤回<br/>_handle_message() 14步预处理<br/>_handle_recall() 撤回处理<br/>_process_image() 图片异步识别<br/>_fetch_quoted_msg() 引用消息<br/>_fetch_quoted_file() 引用文件"]
+        管道["core/pipeline.py<br/>process_message() 14步核心流程<br/>handle_poke_event() 戳一戳<br/>_handle_command_route() 指令路由<br/>Step_1 提示词注入拦截<br/>Step_2 引用消息注入<br/>Step_3 上下文写入<br/>Step_4 指令拦截<br/>Step_5 回复决策(三级判断)<br/>Step_6 刷屏检测<br/>Step_7 自动搜索<br/>Step_8 记忆检索+好感+时间<br/>Step_9 LLM生成多句回复<br/>Step_10 上下文回写<br/>Step_11 任务调度<br/>Step_12 好感度更新<br/>Step_13 自动记忆保存"]
+        上下文["core/context_manager.py<br/>ContextManager<br/>append_to_context()<br/>FIFO裁剪 config.length<br/>append_to_buffer()<br/>get_context() get_buffer()<br/>set_active_send_task()<br/>cancel_old_task()<br/>get_stats() 统计信息"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  服务层
+    %% ════════════════════════════════════════════════════════
+    subgraph 服务层["Services 外部服务"]
+        LLM服务["services/llm.py<br/>call_llm() 底层异步调用<br/>generate_multi_reply() |||分隔<br/>_extract_fav_change() [fav:±N]<br/>_clean_sentences() 清洗<br/>_build_history_messages() 多轮<br/>judge_interest() 精细判断 0~10<br/>judge_should_reply_cheap() 廉价判断<br/>judge_need_search() 搜索判断<br/>call_judgment_pipeline() 并行判断<br/>call_summary_model() 对话摘要<br/>MULTI_REPLY_SYSTEM_STATIC 人设规则<br/>_MULTI_REPLY_ANCHOR 前缀缓存锚点"]
+        发送器["services/sender.py<br/>WSConnectionManager 单例<br/>_ensure_connected() 保活重连<br/>send() 自动重试<br/>call_api() 请求响应模式<br/>send_group_msg() 群聊CQ<br/>send_private_msg() 私聊CQ<br/>send_sentences() 多句分批<br/>随机间隔2~4秒 模拟真人"]
+        图片API["services/image_api.py<br/>recognize_image() 异步识别<br/>下载 httpx 查MD5缓存<br/>视觉LLM run_in_executor<br/>ImageCache 1000条 30天TTL"]
+        TUF服务["services/tuf_api.py<br/>search_levels() 搜索谱面<br/>get_level_by_slug() ID查详情<br/>get_level_by_id() 数字ID查询<br/>get_level_passes() 通关记录<br/>download_image() 封面下载<br/>format_duration() BPM() 格式化"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  判断记忆层
+    %% ════════════════════════════════════════════════════════
+    subgraph 判断记忆["判断与记忆模块"]
+        判断["modules/judge.py<br/>should_quick_reject() 快速规则<br/>should_respond() 三级入口<br/>needs_search() 搜索判断<br/>is_realtime_query() 实时关键词<br/>keyword_need_search() 搜索触发词<br/>get_cached_search() 读缓存<br/>set_search_cache() 写缓存<br/>flush_search_cache() 刷盘<br/>get_cache_stats() 缓存统计<br/>init_keywords() 关键词初始化"]
+        记忆["modules/memory.py<br/>load_memories() 加载记忆文件<br/>append_memory() 追加去重<br/>get_top_memories() 关键词检索<br/>summarize_conversation() LLM摘要<br/>maybe_save_memory() 10分钟冷却<br/>FIFO 50条上限 per群独立MD"]
+        撤回["modules/recall.py<br/>record_incoming_message() 录制<br/>lookup_message() 缓冲区查找<br/>store_recall() 存储撤回记录<br/>get_recent_recalls() 查询<br/>flush_buffer() 退出保存<br/>200条/群 1小时TTL<br/>主动录制 100%命中率"]
+        好感["modules/fav.py<br/>get_fav() 读取<br/>update_fav() 更新<br/>get_all_fav() 排行榜<br/>reset_all_fav() 清空<br/>-100~+100 per chat<br/>key格式 g{群}:{QQ}"]
+        防刷屏["modules/spam_guard.py<br/>check_and_record()<br/>execute_mute()<br/>3分钟窗口 8次阈值<br/>60%重复度 自动禁言"]
+        提示注入["modules/preset.py<br/>set_preset() get_preset()<br/>clear_preset()<br/>{{提示词}}语法<br/>按群隔离存储"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  功能模块层
+    %% ════════════════════════════════════════════════════════
+    subgraph 功能模块["Feature Modules"]
+        指令系统["modules/commands.py<br/>COMMAND_MAP 30+注册<br/>handle_command() 前缀路由<br/>cmd_help 分类总览+详细<br/>cmd_ping 在线卖萌<br/>cmd_info 系统运行状态<br/>cmd_up 更新日志卡片<br/>cmd_wzq 五子棋对战<br/>cmd_translate 翻译 6语言<br/>cmd_countdown 倒计时<br/>cmd_recall 撤回记录<br/>cmd_remind 定时提醒<br/>cmd_stats 群聊统计<br/>cmd_luck 运势抽签<br/>cmd_chou 随机选择<br/>cmd_weather 天气查询<br/>cmd_box 快递物流<br/>cmd_reload 热重载<br/>cmd_owner 配置管理<br/>cmd_preset 提示词管理<br/>cmd_favlist 好感度排行<br/>cmd_img cmd_img18 随机图<br/>cmd_tuflevel 谱面详情<br/>cmd_tuf_search 谱面搜索<br/>cmd_tufd 下载直链<br/>cmd_tufpage 结果翻页"]
+        五子棋["modules/wzq.py<br/>WzqGame @dataclass<br/>15x15棋盘 按chat隔离<br/>create_duel() 发起挑战<br/>accept_duel() 接受<br/>decline_duel() 拒绝<br/>make_move() 落子判赢<br/>surrender() 认输<br/>request_undo() 悔棋申请<br/>confirm_undo() 确认悔棋<br/>_check_win() 五连检测<br/>parse_coord() H8/8,8格式<br/>render_board() HTML卡片渲染<br/>render_test_board() 测试渲染<br/>_save_result() 永久存档<br/>get_history() 历史查询<br/>_download_and_save_image()"]
+        卡片渲染["modules/changelog.py<br/>_ensure_browser() 浏览器单例<br/>_screenshot_html() JPEG截图<br/>render_card_to_image() 通用截图<br/>send_card_image() CQ发送<br/>render_any_template() HTML模板<br/>markdown_to_enhanced_html()<br/>send_changelog_card()<br/>send_weather_card()<br/>send_box_card()<br/>页面池3个 极致加速<br/>domcontentloaded 200ms等待"]
+        统计["modules/stats.py<br/>record_message() 实时记录<br/>get_today_stats() 今日<br/>get_yesterday_stats() 昨日<br/>format_stats_report() 猫娘口吻<br/>midnight_report_loop() 0点推送<br/>发言榜 Top5<br/>水群王 潜水王<br/>最热闹时段"]
+        提醒["modules/remind.py<br/>_parse_time() 自然语言解析<br/>X分钟后 明天 HH:MM<br/>add_reminder() 添加提醒<br/>get_pending_reminders() 到期<br/>remind_checker_loop() 30秒轮询<br/>7天自动清理"]
+        天气["modules/weather.py<br/>query_weather() API调用<br/>build_weather_report()<br/>7天预报 口语化播报"]
+        错误报告["modules/error_report.py<br/>process_error_report()<br/>build_error_report_prompt()<br/>download_file() ZIP下载<br/>extract_latest_log() 解压<br/>15000字符 9条分析要求<br/>1200 token输出<br/>猫娘人格+专业诊断"]
+        管理员["modules/admin.py<br/>add_group_whitelist()<br/>remove_group_whitelist()<br/>add_private_whitelist()<br/>set_group_at_only()<br/>set_group_reply_threshold()<br/>reset_group_settings()<br/>热读写 adapter_config.toml<br/>自动重载配置"]
+        搜索["modules/search.py<br/>perform_search()<br/>auto_search_if_needed()<br/>ddgs库 DuckDuckGo<br/>内置缓存 脏标记刷盘"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  工具层
+    %% ════════════════════════════════════════════════════════
+    subgraph 工具层["Utils 工具模块"]
+        消息解析["utils/message_parser.py<br/>parse_msg() OneBot JSON<br/>类型 文本 图片 文件<br/>chat_id 昵称 引用ID<br/>CQ码 array段 统一元组"]
+        语言["utils/format_lang.py<br/>load_lang() lang.toml<br/>format_lang() ${var}<br/>点分路径取值"]
+        用户名["utils/username.py<br/>get_or_resolve_username()<br/>replace_at_in_message()<br/>roles.toml预设<br/>本地缓存 在线WS<br/>三级查找用户名"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  数据与配置层
+    %% ════════════════════════════════════════════════════════
+    subgraph 数据层["Data & Config"]
+        direction LR
+        配置存储["config/<br/>adapter_config.toml<br/>bot_config.toml<br/>lang.toml<br/>roles.toml<br/>update.toml"]
+        运行时JSON["data/ JSON存储<br/>fav.json 好感度<br/>recall.json 撤回记录<br/>recall_buffer.json 撤回缓冲<br/>luck.json 每日运气<br/>search_cache.json 搜索缓存<br/>countdown.json 倒计时<br/>stats_*.json 群统计<br/>wzq_results.json 五子棋战绩"]
+        运行时文件["data/ 文件存储<br/>memory_*.md 长期记忆<br/>control.txt 控制命令<br/>Group_members_name.txt<br/>Image_description_cache.txt<br/>update_log.md 更新日志"]
+        图片存储["data/ 图片存储<br/>img_temp/ 卡片输出<br/>recall_images/ 撤回图片"]
+        模板["data/templates/<br/>changelog_card.html<br/>weather_card.html<br/>box_card.html<br/>tuf_level_card.html<br/>tuf_search_results.html<br/>wzq_board.html"]
+    end
+
+    %% ════════════════════════════════════════════════════════
+    %%  连接线 - 数据流
+    %% ════════════════════════════════════════════════════════
+
+    NapCat -->|"WS JSON事件"| Bot类
+    主程序 -->|创建实例| Bot类
+
+    Bot类 --> 初始化
+    Bot类 --> 主循环
+    Bot类 --> 关闭
+    Bot类 --> 热重载
+    Bot类 --> 信号处理
+    Bot类 --> 后台任务
+
+    主循环 -->|"dispatch(event)"| 分发器
+    初始化 --> 配置
+    初始化 --> 日志
+    初始化 --> 上下文
+
+    分发器 -->|"process_message()"| 管道
+    分发器 -->|"_handle_recall()"| 撤回
+    分发器 -->|"_process_image()"| 图片API
+    分发器 --> 消息解析
+    分发器 --> 用户名
+    分发器 --> 统计
+
+    管道 -->|"should_respond()"| 判断
+    管道 -->|"get_top_memories()"| 记忆
+    管道 -->|"get_fav()"| 好感
+    管道 -->|"check spam"| 防刷屏
+    管道 -->|"get_preset()"| 提示注入
+    管道 -->|"auto_search()"| 搜索
+    管道 -->|"handle_command()"| 指令系统
+
+    判断 -->|"judge_interest()"| LLM服务
+    判断 -->|"judge_should_reply()"| LLM服务
+
+    管道 -->|"generate_multi_reply()"| LLM服务
+
+    LLM服务 --> DS_API
+    LLM服务 --> SF_API
+    图片API --> SF_API
+
+    搜索 --> DDG
+
+    记忆 -->|"summarize()"| LLM服务
+
+    管道 -->|"send_sentences()"| 发送器
+
+    指令系统 --> 五子棋
+    指令系统 --> 统计
+    指令系统 --> 提醒
+    指令系统 --> 天气
+    指令系统 --> 错误报告
+    指令系统 --> 管理员
+
+    五子棋 -->|"render_board()"| 卡片渲染
+    指令系统 --> 卡片渲染
+
+    卡片渲染 -->|"send_card_image()"| 发送器
+
+    发送器 -->|"CQ码 WS"| NapCat
+    NapCat --> QQ
+
+    配置 -.-> 核心层
+    配置 -.-> 服务层
+    配置 -.-> 功能模块
+    配置 -.-> 判断记忆
+    配置 -.-> 工具层
+
+    好感 -.-> 运行时JSON
+    撤回 -.-> 运行时JSON
+    统计 -.-> 运行时JSON
+    五子棋 -.-> 运行时JSON
+    记忆 -.-> 运行时文件
+    后台任务 -.-> 运行时文件
+    卡片渲染 -.-> 模板
+    五子棋 -.-> 模板
+    图片API -.-> 图片存储
+
+    天气 --> 天气API
+    指令系统 --> TUF服务
+    TUF服务 --> TUF外
+
+    后台任务 --> 提醒
+    后台任务 --> 统计
+
+    %% ════════════════════════════════════════════════════════
+    %%  颜色标注
+    %% ════════════════════════════════════════════════════════
+    style 外部 fill:#1a1a2e,stroke:#2a2a4e
+    style 入口 fill:#1a2e1a,stroke:#2a4e2a
+    style Bot核心 fill:#2e1a1a,stroke:#4e2a2a
+    style 核心层 fill:#1a2e2e,stroke:#2a4e4e
+    style 服务层 fill:#2e2e1a,stroke:#4e4e2a
+    style 判断记忆 fill:#2e1a2e,stroke:#4e2a4e
+    style 功能模块 fill:#1e1a2e,stroke:#3e2a4e
+    style 工具层 fill:#2e1e1a,stroke:#4e3e2a
+    style 数据层 fill:#1a1a1a,stroke:#3a3a3a

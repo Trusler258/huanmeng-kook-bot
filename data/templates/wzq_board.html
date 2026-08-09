@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=680, initial-scale=1.0">
+<title>Gomoku · 幻梦</title>
+<style>
+:root {
+  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;
+  --bg-card:rgba(20,18,32,0.55);
+  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);
+  --success:#34d399;--warning:#fbbf24;
+  --board-bg:#2a1f15;--board-line:#4a3520;--board-edge:#1a1208;
+  --radius:15px;--radius-s:9px;
+  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+  --border:rgba(255,255,255,0.10);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+@page{margin:0}
+html{width:680px;margin:0 auto;min-height:100vh}
+body::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at 25% 30%,rgba(255,255,255,0.025) 0%,transparent 2px),radial-gradient(circle at 75% 70%,rgba(255,255,255,0.02) 0%,transparent 2px),radial-gradient(circle at 50% 50%,rgba(255,255,255,0.015) 0%,transparent 1.5px);background-size:3px 3px,5px 5px,7px 7px;opacity:0.6}
+body{width:680px;margin:0 auto;position:relative;z-index:1;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),radial-gradient(ellipse 65% 60% at 50% 50%,rgba(86,134,254,0.12) 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 5% 80%,rgba(34,211,238,0.14) 0%,transparent 55%),conic-gradient(from 200deg at 30% 20%,transparent 0deg,rgba(236,72,153,0.08) 60deg,transparent 120deg,rgba(139,92,246,0.06) 200deg,transparent 280deg),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{padding:22px 18px 28px}
+.card{position:relative;background:var(--bg-card);border-radius:var(--radius);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),0 0 100px rgba(236,72,153,0.10),0 0 40px rgba(139,92,246,0.08),inset 0 1px 0 rgba(255,255,255,0.12),inset 0 -1px 0 rgba(0,0,0,0.3);overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1px;background:linear-gradient(135deg,rgba(236,72,153,0.55) 0%,rgba(139,92,246,0.40) 35%,rgba(86,134,254,0.30) 65%,rgba(34,211,238,0.35) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2}
+.card::after{content:'';position:absolute;top:0;left:15%;right:15%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent);filter:blur(0.5px);z-index:3}
+.head{padding:18px 24px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;position:relative}
+.head::after{content:'';position:absolute;bottom:-1px;left:24px;right:24px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.5) 30%,rgba(139,92,246,0.4) 70%,transparent)}
+.logo{width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;font-weight:800;color:var(--primary-light);background:linear-gradient(135deg,rgba(236,72,153,0.35),rgba(139,92,246,0.20)),radial-gradient(circle at 30% 30%,rgba(255,255,255,0.15),transparent 60%);border:1px solid rgba(236,72,153,0.45);box-shadow:0 4px 18px rgba(236,72,153,0.30),inset 0 1px 0 rgba(255,255,255,0.2);flex-shrink:0}
+.head-text{flex:1;min-width:0}
+.head-title{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:0.5px;display:flex;align-items:baseline;gap:8px}
+.head-title .nm{background:linear-gradient(135deg,#f472b6,#ec4899 50%,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 0 8px rgba(236,72,153,0.4))}
+.head-title .sl{color:var(--text-3);font-weight:400;-webkit-text-fill-color:var(--text-3)}
+.head-title .tp{color:var(--text-2);font-weight:500;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;-webkit-text-fill-color:var(--text-2)}
+.head-sub{font-family:var(--mono);font-size:10.5px;color:var(--text-3);margin-top:4px;letter-spacing:0.3px}
+.players{display:flex;justify-content:space-around;align-items:center;padding:18px 24px 14px;border-bottom:1px solid var(--border)}
+.player{text-align:center}
+.player .name{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text-2);margin-bottom:8px;letter-spacing:0.3px}
+.player.active-turn .name{color:var(--primary-light);text-shadow:0 0 12px rgba(244,114,182,0.6)}
+.player .stone{width:30px;height:30px;border-radius:50%;margin:0 auto 4px}
+.player .stone.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 8px rgba(0,0,0,0.7)}
+.player .stone.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
+.player .role{font-family:var(--mono);font-size:10px;color:var(--text-3);letter-spacing:1px;text-transform:uppercase}
+.vs{font-family:var(--mono);font-size:16px;font-weight:800;color:var(--text-3);letter-spacing:1px}
+.board-section{padding:20px 24px;display:flex;justify-content:center}
+.board-grid{display:grid;grid-template-columns:24px repeat(15,32px);grid-template-rows:24px repeat(15,32px);background:var(--board-bg);border:1px solid var(--board-edge);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.5),inset 0 0 30px rgba(0,0,0,0.3)}
+.corner-cell{background:var(--board-bg);border-radius:6px 0 0 0}
+.col-label,.row-label{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-3);letter-spacing:0.3px}
+.cell{width:32px;height:32px;display:flex;align-items:center;justify-content:center;position:relative}
+.cell::before{content:'';position:absolute;width:100%;height:1px;background:var(--board-line);top:50%;left:0}
+.cell::after{content:'';position:absolute;width:1px;height:100%;background:var(--board-line);left:50%;top:0}
+.stone-piece{width:26px;height:26px;border-radius:50%;z-index:2;position:relative}
+.stone-piece.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 6px rgba(0,0,0,0.8)}
+.stone-piece.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888;box-shadow:0 2px 6px rgba(0,0,0,0.4)}
+.stone-piece.last-move{box-shadow:0 0 0 2px var(--primary),0 0 14px rgba(236,72,153,0.7),0 2px 6px rgba(0,0,0,0.5)}
+.star-point{width:7px;height:7px;background:var(--board-line);border-radius:50%;z-index:1}
+.status-bar{margin:0 24px 16px;padding:12px 16px;text-align:center;font-size:14px;font-weight:600;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--radius-s);color:var(--text-2)}
+.status-bar.win{color:var(--warning);border-color:rgba(251,191,36,0.40);background:rgba(251,191,36,0.10);text-shadow:0 0 12px rgba(251,191,36,0.4);box-shadow:0 0 16px rgba(251,191,36,0.06)}
+.status-bar.draw{color:var(--text-3)}
+.status-bar.playing{color:var(--primary-light);border-color:rgba(236,72,153,0.40);background:rgba(236,72,153,0.10);text-shadow:0 0 12px rgba(244,114,182,0.4);box-shadow:0 0 16px rgba(236,72,153,0.06)}
+.status-bar.waiting{color:var(--warning);border-color:rgba(251,191,36,0.40);background:rgba(251,191,36,0.10)}
+.foot{padding:12px 24px 16px;border-top:1px solid var(--border);background:linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.30));display:flex;align-items:center;justify-content:space-between;position:relative}
+.foot::before{content:'';position:absolute;top:0;left:24px;right:24px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.4) 30%,rgba(139,92,246,0.3) 70%,transparent)}
+.foot-l{font-family:var(--mono);font-size:10px;color:var(--text-3);display:flex;align-items:center;gap:8px}
+.foot-l .dot{width:6px;height:6px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px rgba(52,211,153,0.7),0 0 4px rgba(52,211,153,0.9)}
+.foot-l .pk{color:var(--primary-light)}
+.foot-r{font-family:var(--mono);font-size:9.5px;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:1.8px;text-transform:uppercase;opacity:0.7}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<div class="head">
+<div class="logo">HM</div>
+<div class="head-text">
+<div class="head-title"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
+<div class="head-sub">${SUB_TEXT} · ${DATE}</div>
+</div>
+</div>
+<div class="players">
+<div class="player ${BLACK_ACTIVE}"><div class="name">${BLACK_NAME}</div><div class="stone black"></div><div class="role">BLACK</div></div>
+<div class="vs">VS</div>
+<div class="player ${WHITE_ACTIVE}"><div class="name">${WHITE_NAME}</div><div class="stone white"></div><div class="role">WHITE</div></div>
+</div>
+<div class="board-section"><div class="board-grid"><div class="corner-cell"></div>${COL_LABELS}${CELLS}</div></div>
+<div class="status-bar ${STATUS_CLASS}">${STATUS_TEXT}</div>
+<div class="foot">
+<div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span> · </span><span>手数 ${MOVE_COUNT}</span><span> · </span><span>H8 或 8,8</span></div>
+<div class="foot-r">HUANMENG</div>
+</div>
+</div></div>
+</body></html>

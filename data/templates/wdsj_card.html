@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Sarasa Gothic SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1923;
+    color: #e0e0e0;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: linear-gradient(135deg, #1a2a3a 0%, #0d1f2d 100%);
+    border-radius: 14px;
+    padding: 28px 32px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    max-width: 680px;
+    width: 100%;
+  }
+  .header {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 20px; padding-bottom: 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .header-icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: linear-gradient(135deg, #6c5ce7, #a855f7);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: white;
+  }
+  .header-info h2 { font-size: 18px; font-weight: 500; }
+  .header-info .sub { font-size: 12px; color: #8892b0; margin-top: 2px; }
+  .player-row {
+    display: flex; gap: 16px; margin-bottom: 20px;
+  }
+  .player-card, .template-card {
+    flex: 1; background: rgba(255,255,255,0.04);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .player-card .label, .template-card .label {
+    font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 4px;
+  }
+  .player-card .value { font-size: 18px; font-weight: 500; color: #64ffda; }
+  .template-card .value { font-size: 18px; font-weight: 500; color: #ffd700; }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .stat-item {
+    background: rgba(255,255,255,0.04);
+    border-radius: 8px; padding: 12px 14px;
+    text-align: center;
+  }
+  .stat-item .stat-label {
+    font-size: 11px; color: #666; margin-bottom: 4px;
+  }
+  .stat-item .stat-value {
+    font-size: 20px; font-weight: 500; color: #e0e0e0;
+  }
+  .stat-item .stat-value.highlight { color: #64ffda; }
+  .stat-item .stat-value.danger { color: #ff6b6b; }
+  .info-cards {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-bottom: 16px;
+  }
+  .info-chip {
+    background: rgba(255,255,255,0.05);
+    border-radius: 6px; padding: 6px 12px;
+    font-size: 11px;
+  }
+  .info-chip .chip-label { color: #666; }
+  .info-chip .chip-value { color: #ccc; }
+  .footer {
+    text-align: center; font-size: 10px; color: #444;
+    padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .error-msg {
+    text-align: center; padding: 40px; color: #ff6b6b; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  ${CARD_CONTENT}
+</div>
+</body>
+</html>

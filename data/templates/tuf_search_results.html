@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>TUF 搜索结果 · 幻梦</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════
+   幻梦 Design System — 搜索结果卡片
+   ══════════════════════════════════════ */
+:root {
+  --primary:       #ec4899;
+  --primary-light: #f472b6;
+  --primary-pale:  rgba(236,72,153,0.10);
+  --primary-glow:  rgba(236,72,153,0.22);
+
+  --bg-page:  #0d0d1a;
+  --bg-card:  rgba(255,255,255,0.04);
+  --bg-row:   rgba(255,255,255,0.025);
+  --bg-row-hover: rgba(236,72,153,0.06);
+
+  --text-primary:   #ffffff;
+  --text-secondary: rgba(255,255,255,0.58);
+  --text-muted:     rgba(255,255,255,0.33);
+
+  --border: rgba(255,255,255,0.07);
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+
+  --shadow-card: 0 8px 40px rgba(0,0,0,0.55), 0 0 100px rgba(236,72,153,0.06);
+
+  --font-sans: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+html, body {
+  width: 800px;
+  margin: 0 auto;
+  background: transparent;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height:1.6;
+  overflow-x: hidden;
+  background:
+    radial-gradient(ellipse 65% 45% at 5% -5%,  rgba(236,72,153,0.16) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 45% at 95% 105%, rgba(244,114,182,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 50% at 50% 50%,  rgba(59,130,246,0.04) 0%, transparent 60%),
+    linear-gradient(165deg, #0d0d1a 0%, #110e1c 50%, #0d1020 100%);
+  min-height: 100vh;
+}
+
+/* ── 卡片外壳 ── */
+.card-wrapper { padding: 24px 20px 28px; }
+
+.card {
+  background: var(--bg-card);
+  border:1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  overflow: hidden;
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  position: absolute; top:0; left:0; right:0; height:2px;
+  background: linear-gradient(90deg, transparent, var(--primary) 25%, var(--primary-light) 60%, rgba(59,130,246,0.6) 100%);
+}
+
+/* ── 头部 ── */
+.header {
+  padding: 20px 28px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.header-query {
+  color: var(--primary-light);
+  font-weight: 500;
+}
+
+/* ── 搜索结果列表 ── */
+.results-list {
+  padding: 8px 16px 8px;
+}
+
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  margin-bottom: 4px;
+  background: var(--bg-row);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+
+.result-item:hover {
+  background: var(--bg-row-hover);
+  border-color: rgba(236,72,153,0.15);
+}
+
+/* 编号 */
+.result-index {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(236,72,153,0.15), rgba(59,130,246,0.10));
+  border: 1px solid rgba(236,72,153,0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--primary-light);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+/* 难度图标 */
+.result-diff-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 900;
+  font-family: var(--font-mono);
+  color: #fff;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+}
+
+.result-diff-icon.has-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.result-diff-text {
+  position: relative;
+  z-index: 2;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.5);
+}
+
+/* 信息区 */
+.result-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-song {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.result-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.result-featured {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(245,158,11,0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251,191,36,0.20);
+  margin-left: 8px;
+}
+
+/* ── 翻页提示 ── */
+.pagination {
+  padding: 12px 28px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+}
+
+.page-info {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.page-hint {
+  font-size: 12px;
+  color: var(--primary);
+  opacity: 0.7;
+}
+
+/* ── 底部 ── */
+.footer {
+  padding: 10px 28px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+}
+
+.footer-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 20px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.footer-brand {
+  font-size: 10px;
+  color: var(--primary);
+  opacity: 0.45;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* ── 空结果 ── */
+.empty-state {
+  padding: 40px 28px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+
+<div class="card-wrapper">
+  <div class="card">
+
+    <!-- 头部 -->
+    <div class="header">
+      <div class="header-title">🎵 TUF 谱面搜索结果</div>
+      <div class="header-subtitle">
+        查询：<span class="header-query">{{QUERY}}</span>
+        &nbsp;·&nbsp; 第 {{PAGE}} 页 &nbsp;·&nbsp; 共 {{TOTAL}} 个结果
+      </div>
+    </div>
+
+    <!-- 结果列表 -->
+    <div class="results-list">
+      {{RESULTS_HTML}}
+    </div>
+
+    <!-- 翻页提示 -->
+    <div class="pagination">
+      <div class="page-info">
+        {{PAGE_INFO}}
+      </div>
+      <div class="page-hint">
+        {{PAGE_HINT}}
+      </div>
+    </div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <div class="footer-tag">🎮 输入 .tufd [编号] 下载谱面</div>
+      <div class="footer-brand">{{BRAND}}</div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

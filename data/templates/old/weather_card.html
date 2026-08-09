@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>天气卡片</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --bg-primary: #0c1929;
+  --bg-secondary: #162544;
+  --bg-accent: #1a3a6c;
+  --accent-blue: #38bdf8;
+  --accent-cyan: #22d3ee;
+  --accent-sky: #7dd3fc;
+  --accent-orange: #fb923c;
+  --accent-red: #f87171;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+html, body { width:760px; margin:0 auto; background:transparent; }
+body {
+  font-family: 'Noto Sans SC', -apple-system, sans-serif; color:var(--text-primary); line-height:1.6;
+  font-size:15px; overflow-x:hidden;
+  background:
+    radial-gradient(ellipse at 30% -10%, rgba(56,189,248,0.20) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 110%, rgba(34,211,238,0.12) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 60%, rgba(251,146,60,0.06) 0%, transparent 60%),
+    linear-gradient(170deg, var(--bg-primary) 0%, var(--bg-secondary) 45%, var(--bg-accent) 100%);
+  min-height:100vh;
+}
+
+.card-wrapper { padding:28px 24px 36px; }
+
+.card {
+  background: var(--card-bg); border:1px solid var(--card-border);
+  border-radius:var(--radius-lg);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 80px rgba(56,189,248,0.08);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter:blur(20px); overflow:hidden; position:relative;
+}
+.card::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:3px;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-sky));
+}
+
+/* ── 头部 ── */
+.header { padding:26px 30px 20px; display:flex; align-items:center; gap:16px; position:relative; }
+.header-icon { font-size:44px; flex-shrink:0; filter:drop-shadow(0 2px 8px rgba(56,189,248,0.4)); }
+.header-info { flex:1; }
+.header-city { font-size:24px; font-weight:900; letter-spacing:1px; }
+.header-date { font-size:12px; color:var(--text-muted); margin-top:4px; font-weight:300; }
+.header-temp { text-align:right; }
+.temp-big { font-size:42px; font-weight:900; line-height:1; background: linear-gradient(180deg, #fff, var(--accent-sky)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.temp-range { font-size:13px; color:var(--text-muted); margin-top:4px; }
+
+/* 分割线 */
+.divider { height:1px; margin:0 28px; background: linear-gradient(90deg, transparent, var(--card-border) 20%, var(--accent-blue) 50%, var(--card-border) 80%, transparent); }
+
+/* ── 播报区 ── */
+.talk-section { padding:18px 30px; }
+.talk-item { padding:6px 14px; margin:4px 0; border-radius:10px; font-size:14px; color:var(--text-secondary); background:rgba(56,189,248,0.05); border-left:3px solid var(--accent-blue); line-height:1.65; }
+.talk-item.highlight { background:rgba(251,146,60,0.08); border-left-color:var(--accent-orange); color:var(--text-primary); }
+.talk-item.warning { background:rgba(248,113,113,0.08); border-left-color:var(--accent-red); }
+
+/* ── 7日预报表格 ── */
+.forecast-section { padding:8px 30px 22px; }
+.section-title { font-size:15px; font-weight:700; color:var(--accent-cyan); margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+
+.forecast-table { width:100%; border-collapse:separate; border-spacing:0; border-radius:var(--radius-md); overflow:hidden; border:1px solid var(--card-border); }
+.forecast-table thead th {
+  padding:10px 8px; font-size:11px; font-weight:700; color:var(--text-muted);
+  text-align:center; text-transform:uppercase; letter-spacing:0.8px; border-bottom:1px solid rgba(56,189,248,0.2);
+  background: linear-gradient(135deg, rgba(56,189,248,0.08), rgba(34,211,238,0.04));
+}
+.forecast-table td {
+  padding:10px 6px; font-size:13px; color:var(--text-secondary); text-align:center;
+  border-bottom:1px solid rgba(255,255,255,0.03); transition:background 0.15s;
+}
+.forecast-table tbody tr:last-child td { border-bottom:none; }
+.forecast-table tbody tr:hover td { background:rgba(56,189,248,0.06); color:var(--text-primary); }
+
+/* 今日高亮行 */
+.forecast-table tbody tr.today-row td { background:rgba(56,189,248,0.1); color:var(--text-primary); font-weight:600; }
+.forecast-table tbody tr.today-row td:first-child {
+  color:var(--accent-cyan); font-weight:700; position:relative;
+}
+.forecast-table tbody tr.today-row td:first-child::after {
+  content:'今天'; position:absolute; top:-8px; right:4px; font-size:9px;
+  background:var(--accent-cyan); color:#000; padding:1px 6px; border-radius:8px; font-weight:700;
+}
+
+/* 天气图标 */
+.weather-icon-cell { font-size:22px !important; vertical-align:middle !important; }
+
+/* 温度颜色 */
+.temp-high { color:var(--accent-orange); font-weight:600; }
+.temp-low { color:var(--accent-sky); }
+
+/* AQI 标签 */
+.aqi-badge {
+  display:inline-block; padding:2px 8px; border-radius:8px; font-size:11px; font-weight:600; letter-spacing:0.3px;
+}
+.aqi-excellent { background:rgba(52,211,153,0.15); color:#34d399; border:1px solid rgba(52,211,153,0.3); }
+.aqi-good     { background:rgba(125,211,252,0.15); color:#7dd3fc; border:1px solid rgba(125,211,252,0.3); }
+.aqi-moderate{ background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid rgba(251,191,36,0.3); }
+.aqi-poor    { background:rgba(251,146,60,0.15); color:#fb923c; border:1px solid rgba(251,146,60,0.3); }
+.aqi-bad     { background:rgba(248,113,113,0.15); color:#f87171; border:1px solid rgba(248,113,113,0.3); }
+
+/* 风向文字缩写 */
+.wind-text { font-size:11px; color:var(--text-muted); }
+
+/* ── 底部 ── */
+.footer {
+  padding:14px 30px 18px; display:flex; align-items:center; justify-content:space-between;
+  border-top:1px solid var(--card-border); background:rgba(0,0,0,0.15);
+}
+.footer-info { display:flex; align-items:center; gap:14px; font-size:11px; color:var(--text-muted); }
+.footer-tag { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); border-radius:12px; }
+.footer-brand { font-size:10px; color:var(--text-muted); opacity:0.5; letter-spacing:1px; }
+
+</style>
+</head>
+<body>
+
+<div class="card-wrapper">
+  <div class="card">
+    <!-- 头部 -->
+    <div class="header">
+      <div class="header-icon">{{TODAY_ICON}}</div>
+      <div class="header-info">
+        <div class="header-city">{{CITY_NAME}}</div>
+        <div class="header-date">{{HEADER_DATE}}</div>
+      </div>
+      <div class="header-temp">
+        <div class="temp-big">{{TODAY_TEMP}}°</div>
+        <div class="temp-range">{{TODAY_COND}} / {{TEMP_RANGE}}</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- 口语化播报 -->
+    {{TALK_SECTION}}
+
+    <!-- 7日预报 -->
+    <div class="divider" style="margin-top:4px;"></div>
+    <div class="forecast-section">
+      <div class="section-title">📅 七日预报</div>
+      <table class="forecast-table">
+        <thead>
+          <tr>
+            <th>日期</th><th>天气</th><th>最高</th><th>最低</th><th>风向风力</th><th>AQI</th>
+          </tr>
+        </thead>
+        <tbody>{{FORECAST_ROWS}}</tbody>
+      </table>
+    </div>
+
+    <!-- AQI 总结 -->
+    <div style="padding:0 30px 20px;">
+      <div class="section-title">🌬️ 空气质量总评</div>
+      <div class="talk-item highlight" style="border-left-color:var(--accent-cyan);">
+        {{AQI_SUMMARY}}
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <div class="footer-info">
+        <span class="footer-tag">🌤️ 天气数据</span>
+        <span class="footer-tag">{{DATA_TIME}}</span>
+      </div>
+      <div class="footer-brand">{{BRAND}}</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

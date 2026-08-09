@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", "SimHei", sans-serif;
+    background: #1a1208;
+    color: #e8d5b0;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+  }
+
+  :root {
+    --cell: 54px;
+    --line: #8b6914;
+    --bg-card: linear-gradient(135deg, #2c1f0e 0%, #3d2b14 100%);
+    --gold: #d4a843;
+    --text-dim: #a08050;
+  }
+
+  .card {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 18px 28px 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+    border: 1px solid #5a3d22;
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 10px;
+  }
+  .header .title {
+    font-size: 20px; font-weight: 700;
+    color: var(--gold); letter-spacing: 3px;
+  }
+  .header .sub {
+    font-size: 12px; color: var(--text-dim); margin-top: 2px;
+  }
+
+  .info {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; font-size: 13px;
+  }
+  .side { text-align: center; min-width: 90px; }
+  .side .role { font-weight: 700; font-size: 14px; }
+  .side .role.red  { color: #e74c3c; }
+  .side .role.black { color: #ddd; }
+  .status { color: var(--gold); font-size: 13px; font-weight: 500; }
+  .status.win  { color: #4ecb71; }
+  .status.draw { color: var(--text-dim); }
+
+  .turn-indicator {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; margin-right: 4px; vertical-align: middle;
+  }
+  .turn-indicator.red  { background: #e74c3c; }
+  .turn-indicator.black { background: #ddd; }
+
+  /* ── 棋盘 ── */
+  .board-wrap {
+    position: relative;
+  }
+
+  /* 列标签 */
+  .col-labels {
+    display: flex; justify-content: center; margin-bottom: 4px;
+    font-size: 13px; color: var(--text-dim); letter-spacing: 2px;
+  }
+  .col-labels div {
+    width: var(--cell); text-align: center;
+  }
+
+  /* 棋盘格子层 */
+  .board {
+    position: relative;
+    background: #e8d5a0;
+    border: 3px solid #5a3d22;
+    border-radius: 4px;
+    box-shadow: inset 0 0 60px rgba(0,0,0,0.15);
+  }
+
+  .row {
+    display: flex;
+  }
+
+  .cell {
+    width: var(--cell); height: var(--cell);
+    position: relative;
+  }
+
+  /* 横线：每个格子底部画半根线 */
+  .cell .h-line {
+    position: absolute;
+    height: 2px;
+    background: var(--line);
+    top: 50%; margin-top: -1px;
+  }
+  .cell .h-line.h-full { left: 0; width: 100%; }
+  .cell .h-line.h-left { left: 0; width: 50%; }
+  .cell .h-line.h-right { left: 50%; width: 50%; }
+
+  /* 竖线：每个格子左侧画半根线 */
+  .cell .v-line {
+    position: absolute;
+    width: 2px;
+    background: var(--line);
+    left: 50%; margin-left: -1px;
+  }
+  .cell .v-line.v-full { top: 0; height: 100%; }
+  .cell .v-line.v-top  { top: 0; height: 50%; }
+  .cell .v-line.v-bot  { top: 50%; height: 50%; }
+
+  /* 楚河汉界 — 第5行顶部毛刺 */
+  .river-label {
+    position: absolute;
+    top: calc(var(--cell) * 4 + var(--cell) / 2);
+    left: 0; right: 0;
+    transform: translateY(-50%);
+    display: flex; justify-content: center;
+    align-items: center;
+    pointer-events: none;
+    font-size: 26px; font-weight: 900;
+    color: #5a3d22; opacity: 0.35;
+    letter-spacing: 16px;
+    white-space: nowrap;
+    line-height: 1;
+  }
+
+  /* 九宫斜线 */
+  .palace-x {
+    position: absolute;
+    width: 1px;
+    background: var(--line);
+    height: calc(var(--cell) * 1.414);
+    transform-origin: top left;
+  }
+
+  /* 棋子 */
+  .piece {
+    position: absolute;
+    width: 44px; height: 44px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 900;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .piece.red {
+    background: radial-gradient(circle at 38% 35%, #fff5e6, #e8c080 40%, #b8783c);
+    color: #b22222;
+    border: 2px solid #8b4513;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35), inset 0 1px 2px rgba(255,255,255,0.3);
+    text-shadow: 0 1px 1px rgba(0,0,0,0.2);
+  }
+  .piece.black {
+    background: radial-gradient(circle at 38% 35%, #fff5e6, #e8c080 40%, #987040);
+    color: #1a1a2e;
+    border: 2px solid #5a3d22;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35), inset 0 1px 2px rgba(255,255,255,0.3);
+    text-shadow: 0 1px 1px rgba(0,0,0,0.15);
+  }
+  .piece.last-move {
+    outline: 3px solid #f0c060;
+    outline-offset: -1px;
+  }
+
+  .footer {
+    text-align: center; margin-top: 10px;
+    font-size: 11px; color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="title">🏯 中国象棋</div>
+    <div class="sub">${SUB_TEXT}</div>
+  </div>
+
+  <div class="info">
+    <div class="side">
+      <div class="role red">${RED_NAME}</div>
+      <div style="font-size:11px;color:var(--text-dim);">红方</div>
+    </div>
+    <div class="status ${STATUS_CLASS}">
+      ${TURN_INDICATOR}${STATUS_TEXT}
+    </div>
+    <div class="side">
+      <div class="role black">${BLACK_NAME}</div>
+      <div style="font-size:11px;color:var(--text-dim);">黑方</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:4px;">
+    ${MOVE_COUNT}
+  </div>
+
+  <!-- 棋盘标尺 -->
+  <div class="col-labels">
+    ${COL_LABELS}
+  </div>
+
+  <div class="board-wrap">
+    <div class="board" style="width:${BOARD_W}px; height:${BOARD_H}px;">
+      <!-- 棋盘格子层 -->
+      <div class="board-inner">
+        ${CELLS}
+      </div>
+      <!-- 河界文字 -->
+      <div class="river-label">楚&nbsp;&nbsp;河&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;汉&nbsp;&nbsp;界</div>
+      <!-- 九宫斜线 -->
+      ${PALACE_LINES}
+      <!-- 棋子层 -->
+      <div class="pieces-layer">
+        ${PIECES}
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">${DATE}</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,78 @@
+---
+title: 幻梦 QQ Bot — Data Store Map
+config:
+  theme: dark
+---
+graph LR
+
+    subgraph CONFIG["config/ (Read-Only)"]
+        direction TB
+        ADC["adapter_config.toml<br/>host port group_list<br/>private_whitelist<br/>group_settings"]
+        BOTCFG["bot_config.toml<br/>personality reply_interest<br/>context_length models<br/>keywords antispam"]
+        LANG["lang.toml<br/>i18n strings<br/>${var} template"]
+        ROLES["roles.toml<br/>admin_qq<br/>friend_list<br/>qq_name_map"]
+    end
+
+    subgraph RUNTIME["data/ (Read-Write)"]
+        direction TB
+
+        subgraph GAME["Game State"]
+            WZQ_RES["wzq_results.json<br/>black white winner<br/>moves board final"]
+            WZQ_IMG["recall_images/<br/>recall_img_*.jpg"]
+        end
+
+        subgraph SOCIAL["Social Features"]
+            FAV_J["fav.json<br/>{chat}:{QQ}: value<br/>-100~+100 per chat"]
+            LUCK_J["luck.json<br/>user_id: {value, date}<br/>daily reset"]
+            RECALL_J["recall.json<br/>time user_id content<br/>per group FIFO 50"]
+            RECALL_BUF["recall_buffer.json<br/>1h TTL 200/group<br/>msg_id type content"]
+            STATS_J["stats_{group}_{date}.json<br/>user_id: {count, hours}<br/>auto archive"]
+        end
+
+        subgraph MEMORY_STORE["Memory & Context"]
+            MEM_FILES["memory_{chat_id}.md<br/>timestamp user content<br/>FIFO 50 lines"]
+            SEARCH_C["search_cache.json<br/>query: result<br/>dirty flush"]
+            IMG_C["Image_description_cache.txt<br/>MD5: description<br/>1000 entries 30d TTL"]
+        end
+
+        subgraph CONTROL["Control & Misc"]
+            CTRL["control.txt<br/>reload stop debug<br/>poll 1s"]
+            COUNTDOWN["countdown.json<br/>date event<br/>list management"]
+        end
+    end
+
+    subgraph TEMPLATES["data/templates/"]
+        T_CARD["changelog_card.html"]
+        T_WZQ["wzq_board.html<br/>15x15 CSS Grid<br/>A-O 1-15 labels"]
+        T_WEA["weather_card.html"]
+        T_BOX["box_card.html"]
+        T_TUF_L["tuf_level_card.html"]
+        T_TUF_S["tuf_search_results.html"]
+    end
+
+    subgraph OUTPUT["data/img_temp/ (Output)"]
+        IMG_CARD["card_*.jpg<br/>wzq_*.jpg<br/>weather_*.jpg<br/>box_*.jpg<br/>changelog_*.jpg"]
+    end
+
+    %% Readers
+    CONFIG --> ADC
+    CONFIG --> BOTCFG
+    CONFIG --> LANG
+    CONFIG --> ROLES
+
+    %% Writers
+    FAV_J -.-> RUNTIME
+    RECALL_J -.-> RUNTIME
+    STATS_J -.-> RUNTIME
+    WZQ_RES -.-> RUNTIME
+    MEM_FILES -.-> RUNTIME
+    CTRL -.-> RUNTIME
+
+    %% Template relationship
+    TEMPLATES -.-> OUTPUT
+
+    %% Size annotations
+    style GAME fill:#1a2a1a,stroke:#2a4a2a
+    style SOCIAL fill:#1a1a2a,stroke:#2a2a4a
+    style MEMORY_STORE fill:#2a1a1a,stroke:#4a2a2a
+    style CONTROL fill:#1a2a2a,stroke:#2a4a2a

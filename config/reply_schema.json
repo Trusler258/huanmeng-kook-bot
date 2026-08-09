@@ -1,0 +1,68 @@
+{
+  "_comment": "LLM 多句回复 JSON 字段定义 — 解析时自动补缺和校验",
+  "fields": {
+    "replies": {
+      "type": "list",
+      "default": [],
+      "item_type": "str",
+      "min_items": 1,
+      "max_items": 5,
+      "desc": "回复句子数组"
+    },
+    "fav": {
+      "type": "int",
+      "default": 0,
+      "min": -5,
+      "max": 5,
+      "desc": "好感度变化"
+    },
+    "calls": {
+      "type": "list",
+      "default": [],
+      "item_type": "dict",
+      "desc": "指令调用 [{\"name\":\"cmd\",\"args\":\"...\"}]"
+    },
+    "face": {
+      "type": "str|null",
+      "default": null,
+      "desc": "表情库关键词，通常 null"
+    },
+    "mood": {
+      "type": "str",
+      "default": "",
+      "max_len": 30,
+      "desc": "当前情绪"
+    },
+    "action": {
+      "type": "str",
+      "default": "",
+      "max_len": 30,
+      "desc": "动作描写"
+    },
+    "at": {
+      "type": "int|null",
+      "default": null,
+      "desc": "@的QQ号，不@就null"
+    },
+    "mode": {
+      "type": "str|null",
+      "default": null,
+      "desc": "模式切换，不需要就null"
+    },
+    "origin": {
+      "type": "str",
+      "default": "user",
+      "values": ["user", "bot"],
+      "desc": "谁发起操作"
+    },
+    "actor": {
+      "type": "dict|null",
+      "default": null,
+      "keys": {
+        "name": {"type": "str", "default": ""},
+        "qq": {"type": "int", "default": 0}
+      },
+      "desc": "替谁执行，bot发起时null"
+    }
+  }
+}

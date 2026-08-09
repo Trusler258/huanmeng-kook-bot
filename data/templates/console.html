@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>幻梦 KOOK Bot · 控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0d0d1a; --panel:#12122a; --panel2:#171735; --border:#1e1e3a;
+  --text:#e5e7eb; --muted:#6b7280; --soft:#9ca3af;
+  --time:#6b7280; --debug:#7dd3fc; --info:#c4b5fd; --warn:#fb923c; --error:#ef4444;
+  --source:#9ca3af; --symbol:#f9a8d4; --module:#4ade80; --num:#fde047;
+  --highlight:#67e8f9; --admin:#f472b6; --sep:#a78bfa; --ok:#22c55e;
+  --rainbow:linear-gradient(90deg,#ff5f6d,#ffb147,#ffe259,#3ddc84,#38bdf8,#8b7bff,#e879f9,#ff5f6d);
+  --fd:'Chakra Petch','Noto Sans SC',sans-serif;
+  --fb:'Noto Sans SC',system-ui,sans-serif;
+  --fm:'JetBrains Mono','Cascadia Code','Fira Code',Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--fb); font-size:13px;
+  overflow:hidden; display:flex; flex-direction:column; -webkit-font-smoothing:antialiased;
+}
+/* 环境背景：细网格 + 顶部微光 */
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:34px 34px;}
+body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(600px 220px at 18% 0%,rgba(255,95,109,.07),transparent 70%),
+             radial-gradient(600px 240px at 55% 0%,rgba(56,189,248,.06),transparent 70%),
+             radial-gradient(520px 220px at 88% 0%,rgba(232,121,249,.06),transparent 70%);}
+header,main,footer{position:relative;z-index:1}
+::selection{background:rgba(139,123,255,.45)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#26264a;border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:#3a3a6a}
+button{font-family:inherit;color:inherit}
+svg{display:block;flex:none}
+
+/* ============ 顶部：彩虹流动边 + 品牌 ============ */
+.rainbow-line{height:3px;flex:none;background:var(--rainbow);background-size:200% 100%;animation:flow 8s linear infinite}
+@keyframes flow{to{background-position:200% 0}}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:12px 16px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;flex:none}
+.brand{display:flex;align-items:center;gap:11px}
+.logo{width:38px;height:38px;border-radius:12px;padding:2px;background:var(--rainbow);
+  background-size:200% 100%;animation:flow 6s linear infinite;box-shadow:0 4px 18px rgba(139,123,255,.35)}
+.logo-in{width:100%;height:100%;border-radius:10px;background:#101024;display:grid;place-items:center}
+.brand h1{font-family:var(--fd);font-size:17px;font-weight:700;letter-spacing:.5px;line-height:1.15}
+.brand h1 em{font-style:normal;color:var(--highlight)}
+.brand .sub{font-size:10px;color:var(--muted);letter-spacing:2.5px;margin-top:2px}
+.conn{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);
+  border-radius:999px;padding:6px 13px;font-size:12px;transition:border-color .3s}
+.conn.live{border-color:rgba(34,197,94,.45)}
+.conn.warn{border-color:rgba(251,146,60,.5)}
+.conn.err{border-color:rgba(239,68,68,.55)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);position:relative}
+.dot::after{content:'';position:absolute;inset:-4px;border-radius:50%;border:2px solid transparent}
+.live .dot{background:var(--ok)} .live .dot::after{border-color:rgba(34,197,94,.5);animation:ping 1.6s ease-out infinite}
+.warn .dot{background:var(--warn);animation:blink 1s infinite}
+.err  .dot{background:var(--error);animation:blink .6s infinite}
+@keyframes ping{0%{transform:scale(.5);opacity:.9}100%{transform:scale(1.5);opacity:0}}
+@keyframes blink{50%{opacity:.25}}
+.clock{font-family:var(--fm);font-size:12px;color:var(--soft);background:var(--panel2);
+  border:1px solid var(--border);border-radius:10px;padding:6px 11px;letter-spacing:1px}
+.spacer{flex:1}
+
+/* ============ 筛选 / 工具 ============ */
+.filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.lv{display:flex;align-items:center;gap:6px;cursor:pointer;font-family:var(--fm);font-size:11px;
+  padding:5px 10px;border-radius:999px;border:1px solid var(--border);color:var(--soft);
+  transition:.2s;user-select:none}
+.lv:hover{transform:translateY(-1px);background:rgba(255,255,255,.05)}
+.lv i{width:7px;height:7px;border-radius:50%;background:var(--c)}
+.lv b{font-weight:500;opacity:.75}
+.lv.on{color:var(--text);border-color:var(--c);background:color-mix(in srgb,var(--c) 13%,transparent)}
+.lv.off i{background:transparent;box-shadow:inset 0 0 0 1.5px var(--c)}
+.lv[data-lv="INFO"]{--c:var(--info)} .lv[data-lv="DEBUG"]{--c:var(--debug)}
+.lv[data-lv="WARNING"]{--c:var(--warn)} .lv[data-lv="ERROR"]{--c:var(--error)}
+.search{display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--border);
+  border-radius:999px;padding:5px 12px;transition:.2s}
+.search:focus-within{border-color:var(--module);box-shadow:0 0 0 3px rgba(74,222,128,.12)}
+.search input{background:none;border:none;outline:none;color:var(--text);font-size:12px;width:150px;font-family:var(--fm)}
+.search input::placeholder{color:var(--muted)}
+.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.tbtn{display:flex;align-items:center;gap:6px;font-size:12px;padding:6px 12px;border-radius:10px;
+  border:1px solid var(--border);background:var(--panel2);color:var(--soft);transition:.2s}
+.tbtn:hover{color:var(--text);border-color:#3a3a6a;transform:translateY(-1px)}
+.tbtn:active{transform:scale(.95)}
+.tbtn.on{color:var(--text);border-color:rgba(103,232,249,.5);background:rgba(103,232,249,.09)}
+.tbtn.spin svg{animation:spin .5s linear}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fs{display:flex;align-items:center;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel2)}
+.fs button{width:28px;height:28px;font-family:var(--fm);font-size:13px;color:var(--soft);transition:.15s}
+.fs button:hover{background:rgba(255,255,255,.07);color:var(--text)}
+.fs span{font-family:var(--fm);font-size:11px;color:var(--soft);padding:0 7px;border-left:1px solid var(--border);border-right:1px solid var(--border);line-height:28px}
+
+/* ============ 主区 ============ */
+main{flex:1;display:flex;gap:12px;padding:12px 16px;min-height:0}
+.side{width:252px;flex:none;display:flex;flex-direction:column;gap:12px;overflow-y:auto;padding-right:2px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:13px 14px;transition:border-color .25s}
+.card:hover{border-color:#2c2c55}
+.card h3{font-family:var(--fd);font-size:11px;font-weight:700;letter-spacing:2px;color:var(--soft);
+  display:flex;align-items:center;gap:8px;margin-bottom:11px}
+.card h3::before{content:'';width:14px;height:3px;border-radius:2px;background:var(--rainbow);background-size:200% 100%;animation:flow 6s linear infinite}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:9px 11px;transition:.2s}
+.stat:hover{transform:translateY(-2px);border-color:#33335f}
+.stat .k{font-size:10px;color:var(--muted);letter-spacing:1px}
+.stat .v{font-family:var(--fd);font-size:19px;font-weight:700;margin-top:3px}
+.stat .v small{font-size:10px;font-weight:400;color:var(--muted);margin-left:2px}
+#st-err{color:var(--error)} #st-warn{color:var(--warn)} #st-rate{color:var(--highlight)}
+.spark-wrap{margin-top:10px}
+.spark-wrap .k{font-size:10px;color:var(--muted);letter-spacing:1px;display:flex;justify-content:space-between;margin-bottom:5px}
+#spark{width:100%;height:46px}
+#spark polyline{fill:none;stroke:url(#sparkGrad);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;
+  filter:drop-shadow(0 0 5px rgba(103,232,249,.4))}
+#spark polygon{fill:url(#sparkFill);opacity:.5}
+.dist{display:flex;flex-direction:column;gap:9px}
+.drow{display:flex;align-items:center;gap:8px;font-family:var(--fm);font-size:11px}
+.drow .tag{width:52px;color:var(--c)}
+.drow .bar{flex:1;height:8px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
+.drow .bar i{display:block;height:100%;width:0;border-radius:99px;background:var(--c);transition:width .5s cubic-bezier(.2,.8,.2,1);
+  box-shadow:0 0 8px color-mix(in srgb,var(--c) 60%,transparent)}
+.drow .n{width:44px;text-align:right;color:var(--soft)}
+.drow[data-lv="INFO"]{--c:var(--info)} .drow[data-lv="DEBUG"]{--c:var(--debug)}
+.drow[data-lv="WARNING"]{--c:var(--warn)} .drow[data-lv="ERROR"]{--c:var(--error)}
+.kv{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12px;border-bottom:1px dashed rgba(255,255,255,.06)}
+.kv:last-child{border:none}
+.kv .k{color:var(--muted)}
+.kv .v{font-family:var(--fm);font-size:11px;color:var(--soft)}
+.kv .v.hl{color:var(--highlight)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--fm);font-size:11px;
+  padding:3px 10px;border-radius:999px;border:1px solid rgba(249,168,212,.4);background:rgba(249,168,212,.1);color:var(--admin)}
+.chip button{color:var(--admin);opacity:.7;font-size:13px;line-height:1;transition:.15s}
+.chip button:hover{opacity:1;transform:scale(1.2)}
+.empty{font-size:11px;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:6px}
+.legend span{font-family:var(--fm);font-size:10px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--c);
+  background:color-mix(in srgb,var(--c) 9%,transparent);transition:.2s}
+.legend span:hover{transform:translateY(-1px)}
+
+/* ============ 日志流 ============ */
+.console{flex:1;min-width:0;display:flex;flex-direction:column;border-radius:16px;padding:1.5px;
+  background:var(--rainbow);background-size:200% 100%;animation:flow 12s linear infinite;
+  box-shadow:0 10px 40px rgba(0,0,0,.4),0 0 30px rgba(139,123,255,.12)}
+.console-in{flex:1;min-height:0;display:flex;flex-direction:column;background:#0e0e20;border-radius:14.5px;overflow:hidden}
+.console-bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+.mdot{width:10px;height:10px;border-radius:50%}
+.mdot:nth-child(1){background:#ff5f6d}.mdot:nth-child(2){background:#ffe259}.mdot:nth-child(3){background:#3ddc84}
+.console-bar .title{font-family:var(--fm);font-size:11px;color:var(--muted);margin-left:6px;letter-spacing:1px}
+.live-tag{margin-left:auto;display:flex;align-items:center;gap:6px;font-family:var(--fd);font-size:10px;
+  letter-spacing:2px;color:var(--error)}
+.live-tag i{width:7px;height:7px;border-radius:50%;background:var(--error);animation:blink 1s infinite}
+#filter-info{font-family:var(--fm);font-size:11px;color:var(--symbol);background:rgba(249,168,212,.08);
+  border:1px solid rgba(249,168,212,.3);border-radius:999px;padding:2px 10px}
+#filter-info:empty{display:none}
+#log-container{flex:1;overflow-y:auto;padding:8px 0;font-family:var(--fm);font-size:var(--fs,13px)}
+.log-line{padding:4px 16px;border-bottom:1px solid rgba(255,255,255,.02);gap:4px;
+  white-space:nowrap;line-height:1.6;animation:lineIn .25s ease both}
+@keyframes lineIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.log-line:hover{background:rgba(255,255,255,.03)}
+.log-line.hidden{display:none}
+.log-line.lv-ERROR{background:rgba(239,68,68,.055);box-shadow:inset 3px 0 0 var(--error)}
+.log-line.lv-WARNING{background:rgba(251,146,60,.04);box-shadow:inset 3px 0 0 var(--warn)}
+.time{color:var(--time);min-width:8.5ch;flex-shrink:0}
+.level{min-width:7ch;flex-shrink:0;font-weight:700;text-align:center}
+.level.debug{color:var(--debug)} .level.info{color:var(--info)}
+.level.warning{color:var(--warn)} .level.error{color:var(--error)}
+.source{color:var(--source);min-width:14ch;flex-shrink:0;font-size:.85em;opacity:.8}
+.msg{flex:1}
+.msg .sym{color:var(--symbol);font-weight:700}
+.msg .mod{color:var(--module)}
+.msg .num{color:var(--num)}
+.msg .admin{color:var(--admin);font-weight:700}
+.msg .hi{color:var(--highlight);font-weight:700}
+.msg .sep{color:var(--sep)}
+.jump{position:absolute;right:26px;bottom:64px;z-index:5;display:flex;align-items:center;gap:6px;
+  font-size:12px;padding:8px 14px;border-radius:999px;color:#fff;opacity:0;pointer-events:none;
+  transform:translateY(8px);transition:.25s;box-shadow:0 6px 20px rgba(139,123,255,.45);
+  background:linear-gradient(90deg,#8b7bff,#e879f9)}
+.jump.show{opacity:1;pointer-events:auto;transform:none}
+.jump:hover{transform:translateY(-2px)}
+
+/* ============ 底部彩虹状态条 ============ */
+footer{flex:none;display:flex;align-items:center;gap:18px;padding:7px 16px;font-size:11px;color:var(--source);
+  background:var(--panel);border-top:1px solid var(--border);position:relative;flex-wrap:wrap}
+footer::before{content:'';position:absolute;left:0;right:0;bottom:0;height:2.5px;
+  background:var(--rainbow);background-size:200% 100%;animation:flow 8s linear infinite}
+footer .f-item{display:flex;align-items:center;gap:6px}
+footer b{color:var(--text);font-family:var(--fm);font-weight:500}
+footer .right{margin-left:auto;display:flex;gap:16px;align-items:center}
+#status{font-weight:700}
+#status.ok{color:var(--ok)} #status.warn{color:var(--warn)} #status.err{color:var(--error)}
+
+/* ============ 响应式 ============ */
+/* 平板 */
+@media(max-width:1100px){
+  .side{width:200px}
+  .search input{width:110px}
+}
+@media(max-width:900px){
+  body{font-size:12px}
+  header{gap:6px;padding:8px 10px}
+  .brand h1{font-size:15px}
+  .clock,.sub,.brand .sub{display:none}
+  .conn{padding:5px 10px;font-size:11px}
+  .lv{padding:4px 8px;font-size:10px}
+  main{flex-direction:column;padding:8px;gap:8px}
+  .side{width:100%;flex:none;display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:visible}
+  .side .card:last-child{display:none}
+  .card{padding:10px 12px}
+  .stats{grid-template-columns:repeat(4,1fr)}
+  .stat .v{font-size:16px}
+  .spark-wrap,.dist{display:none}
+  .search input{width:80px}
+  .log-line{flex-wrap:wrap;gap:3px;padding:3px 10px;font-size:11px;white-space:normal;overflow-wrap:anywhere}
+  .time{min-width:auto;font-size:.9em}
+  .level{min-width:auto;font-size:.9em}
+  .source{min-width:0;display:none}
+  .tbtn{padding:5px 8px;font-size:11px;gap:4px}
+  .tools{gap:4px}
+  .filters{gap:4px}
+  .console{margin:0 -2px;border-radius:12px}
+  footer{gap:10px;padding:6px 10px;font-size:10px}
+  footer .right{gap:10px}
+}
+
+/* 手机 */
+@media(max-width:600px){
+  body{font-size:11px}
+  header{flex-wrap:wrap;gap:4px;padding:6px 8px;justify-content:space-between}
+  .brand h1{font-size:14px}
+  .logo{width:30px;height:30px;border-radius:10px}
+  .logo-in{border-radius:8px}
+  .conn{padding:4px 8px;font-size:10px}
+  .dot{width:7px;height:7px}
+  .clock{display:none}
+  .side{grid-template-columns:1fr;gap:6px}
+  .side .card:nth-child(3),.side .card:last-child{display:none}
+  .stats{grid-template-columns:1fr 1fr;gap:6px}
+  .stat{padding:7px 9px;border-radius:10px}
+  .stat .v{font-size:15px}
+  .card h3{font-size:10px;margin-bottom:8px}
+  .kv{font-size:11px;padding:3px 0}
+  .filters{order:10;width:100%;justify-content:center}
+  .search{order:9;width:100%}
+  .search input{width:100%}
+  .tools{order:11;width:100%;justify-content:center;flex-wrap:wrap}
+  .tools .fs{display:none}
+  .tbtn{padding:5px 10px;font-size:11px}
+  main{padding:4px;gap:6px}
+  .console{margin:0 -4px;border-radius:10px;font-size:var(--fs,11px)}
+  .console-bar{padding:6px 10px}
+  .log-line{padding:3px 8px;font-size:10px;gap:3px}
+  .time{font-size:.85em}
+  .source,.level{display:none}
+  .jump{right:12px;bottom:48px;padding:6px 12px;font-size:11px}
+  footer{padding:5px 8px;font-size:10px;gap:6px}
+  footer .right{gap:8px}
+  #st-rate,#spark-peak{display:none}
+  .spark-wrap{display:none}
+  .legend{gap:4px}
+  .legend span{padding:2px 7px;font-size:9px}
+}
+
+@media(max-width:380px){
+  .brand h1{font-size:12px}
+  .logo{width:24px;height:24px}
+  .conn{display:none}
+  .filters{gap:3px}
+  .lv{padding:3px 7px;font-size:10px}
+  .lv b{display:none}
+  .tbtn{padding:4px 7px;font-size:10px;gap:3px}
+  .tbtn svg{width:11px;height:11px}
+  .stat .v{font-size:13px}
+  footer{font-size:9px;gap:4px}
+  footer .f-item.gap{display:none}
+  .jump{right:8px;bottom:44px}
+}
+</style>
+
+<!-- ============ DevTools 反调试守卫：样式 ============ -->
+<style>
+/* ---- 提示框 Toast ---- */
+.dt-toast{
+  position:fixed;top:18px;right:18px;z-index:999998;
+  display:flex;align-items:flex-start;gap:12px;
+  width:336px;max-width:calc(100vw - 32px);
+  padding:14px 16px 16px;border-radius:16px;
+  background:var(--panel);border:1px solid var(--border);
+  box-shadow:0 20px 60px rgba(0,0,0,.55),0 0 0 1px rgba(239,68,68,.12);
+  transform:translateX(140%) scale(.92);opacity:0;
+  transition:transform .55s cubic-bezier(.16,1,.3,1),opacity .4s ease;
+  pointer-events:none;overflow:hidden;
+}
+.dt-toast::before{content:'';position:absolute;inset:0;border-radius:16px;padding:1.5px;
+  background:linear-gradient(135deg,var(--error),#ff5f6d,var(--warn));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;opacity:.55;pointer-events:none}
+.dt-toast.show{transform:translateX(0) scale(1);opacity:1;pointer-events:auto}
+.dt-toast-icon{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  background:rgba(239,68,68,.12);color:var(--error);position:relative}
+.dt-toast-icon::after{content:'';position:absolute;inset:-5px;border-radius:14px;border:1.5px solid rgba(239,68,68,.4);
+  animation:dtPing 1.7s ease-out infinite}
+@keyframes dtPing{0%{transform:scale(.85);opacity:.9}100%{transform:scale(1.35);opacity:0}}
+.dt-toast-body{flex:1;min-width:0}
+.dt-toast-title{font-family:var(--fd);font-size:13px;font-weight:700;letter-spacing:.3px;color:var(--text)}
+.dt-toast-msg{font-size:11.5px;color:var(--soft);margin-top:4px;line-height:1.5}
+.dt-toast-bar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.06)}
+.dt-toast-bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,var(--warn),var(--error))}
+
+/* ---- 全屏锁定层 ---- */
+.dt-lockdown{
+  position:fixed;inset:0;z-index:999999;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(5,5,14,.86);backdrop-filter:blur(22px) saturate(130%);-webkit-backdrop-filter:blur(22px) saturate(130%);
+  opacity:0;visibility:hidden;clip-path:circle(2% at calc(100% - 40px) 40px);
+  transition:clip-path .75s cubic-bezier(.16,1,.3,1),opacity .3s ease,visibility 0s linear .75s;
+  pointer-events:none;
+}
+.dt-lockdown.show{
+  opacity:1;visibility:visible;clip-path:circle(150% at calc(100% - 40px) 40px);
+  transition:clip-path .75s cubic-bezier(.16,1,.3,1),opacity .3s ease;
+  pointer-events:auto;
+}
+.dt-lockdown-grid{position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+                    linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+  background-size:36px 36px}
+.dt-lockdown-scan{position:absolute;left:0;right:0;height:120px;top:-120px;pointer-events:none;
+  background:linear-gradient(rgba(103,232,249,0),rgba(103,232,249,.08),rgba(103,232,249,0));
+  animation:dtScan 3.4s linear infinite}
+@keyframes dtScan{0%{top:-120px}100%{top:100%}}
+.dt-lockdown-content{position:relative;width:min(460px,88vw);text-align:center}
+.dt-lock-icon{width:56px;height:56px;margin:0 auto 18px;color:var(--error)}
+.dt-lock-icon svg{filter:drop-shadow(0 0 16px rgba(239,68,68,.45))}
+.dt-lock-icon .shackle{transform-origin:28px 22px;animation:dtLock .6s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes dtLock{0%{transform:translateY(-6px) rotate(-14deg)}100%{transform:none}}
+.dt-glitch{font-family:var(--fd);font-size:26px;font-weight:700;letter-spacing:1px;color:var(--text);
+  position:relative;margin-bottom:8px}
+.dt-glitch::before,.dt-glitch::after{content:attr(data-text);position:absolute;inset:0;opacity:0}
+.dt-glitch.burst::before{opacity:.75;color:#ff5f6d;animation:dtGlitch1 .32s steps(2,end)}
+.dt-glitch.burst::after{opacity:.75;color:#38bdf8;animation:dtGlitch2 .32s steps(2,end)}
+@keyframes dtGlitch1{0%{transform:translate(0,0)}20%{transform:translate(-3px,1px)}40%{transform:translate(3px,-1px)}60%{transform:translate(-2px,0)}100%{transform:translate(0,0)}}
+@keyframes dtGlitch2{0%{transform:translate(0,0)}20%{transform:translate(3px,-1px)}40%{transform:translate(-3px,1px)}60%{transform:translate(2px,0)}100%{transform:translate(0,0)}}
+.dt-sub{font-size:12.5px;color:var(--soft);margin-bottom:20px}
+.dt-term{text-align:left;background:#0e0e20;border:1px solid var(--border);border-radius:14px;overflow:hidden;
+  box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.dt-term-bar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+.dt-term-title{font-family:var(--fm);font-size:10.5px;color:var(--muted);letter-spacing:.5px}
+.dt-term-body{font-family:var(--fm);font-size:11.5px;line-height:1.9;padding:10px 14px;max-height:168px;overflow:hidden}
+.dt-term-body .ln{opacity:0;transform:translateY(3px);animation:dtLnIn .3s ease forwards}
+@keyframes dtLnIn{to{opacity:1;transform:none}}
+.dt-term-body .ok{color:var(--ok)} .dt-term-body .bad{color:var(--error)} .dt-term-body .mut{color:var(--muted)}
+.dt-term-cursor{display:inline-block;width:6px;height:12px;background:var(--highlight);margin-left:2px;vertical-align:-2px;
+  animation:dtBlink 1s step-end infinite}
+@keyframes dtBlink{50%{opacity:0}}
+.dt-lockdown-hint{margin-top:16px;font-size:11px;color:var(--muted);letter-spacing:.3px}
+
+@media (prefers-reduced-motion:reduce){
+  .dt-toast,.dt-lockdown,.dt-lock-icon .shackle,.dt-lockdown-scan,.dt-glitch::before,.dt-glitch::after{animation:none!important}
+  .dt-lockdown{transition:opacity .25s ease!important;clip-path:none!important}
+}
+@media(max-width:600px){
+  .dt-toast{right:10px;left:10px;width:auto;top:10px}
+  .dt-glitch{font-size:21px}
+  .dt-lock-icon{width:44px;height:44px}
+  .dt-term-body{max-height:130px;font-size:10.5px}
+}
+</style>
+</head>
+<body>
+
+<div class="rainbow-line"></div>
+
+<header>
+  <div class="brand">
+    <div class="logo"><div class="logo-in">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#67e8f9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v5L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+    </div></div>
+    <div>
+      <h1>幻梦 <em style="color:#87EB00">KOOK</em> Bot</h1>
+      <div class="sub">REALTIME CONSOLE</div>
+    </div>
+  </div>
+
+  <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">连接中</span></div>
+  <div class="clock" id="clock">--:--:--</div>
+  <div class="spacer"></div>
+
+  <div class="filters">
+    <label class="lv on" data-lv="INFO"><i></i>INFO<b id="c-info">0</b></label>
+    <label class="lv on" data-lv="DEBUG"><i></i>DEBUG<b id="c-debug">0</b></label>
+    <label class="lv on" data-lv="WARNING"><i></i>WARN<b id="c-warning">0</b></label>
+    <label class="lv on" data-lv="ERROR"><i></i>ERROR<b id="c-error">0</b></label>
+  </div>
+
+  <div class="search">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input id="search" placeholder="搜索日志...">
+  </div>
+
+  <div class="tools">
+    <button class="tbtn on" id="auto-scroll" title="自动滚动">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v13M6 12l6 6 6-6"/></svg>跟随
+    </button>
+    <button class="tbtn" id="btn-clear" title="清空屏幕">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>清空
+    </button>
+    <button class="tbtn" id="btn-copy" title="复制可见日志">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制
+    </button>
+    <button class="tbtn" id="btn-export" title="导出日志文件">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>导出
+    </button>
+    <button class="tbtn" id="btn-reconnect" title="重新连接">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>重连
+    </button>
+    <div class="fs">
+      <button id="fs-down" title="缩小字号">A-</button><span id="fs-val">13</span><button id="fs-up" title="放大字号">A+</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <aside class="side">
+    <section class="card">
+      <h3>运行概览</h3>
+      <div class="stats">
+        <div class="stat"><div class="k">总日志</div><div class="v" id="st-total">0</div></div>
+        <div class="stat"><div class="k">吞吐</div><div class="v" id="st-rate">0<small>条/分</small></div></div>
+        <div class="stat"><div class="k">警告</div><div class="v" id="st-warn">0</div></div>
+        <div class="stat"><div class="k">错误</div><div class="v" id="st-err">0</div></div>
+      </div>
+      <div class="spark-wrap">
+        <div class="k"><span>消息速率</span><span id="spark-peak">峰值 0</span></div>
+        <svg id="spark" viewBox="0 0 220 46" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#ff5f6d"/><stop offset=".25" stop-color="#ffe259"/>
+              <stop offset=".5" stop-color="#3ddc84"/><stop offset=".75" stop-color="#38bdf8"/>
+              <stop offset="1" stop-color="#e879f9"/>
+            </linearGradient>
+            <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="rgba(103,232,249,.35)"/><stop offset="1" stop-color="rgba(103,232,249,0)"/>
+            </linearGradient>
+          </defs>
+          <polygon id="spark-area" points="0,46 220,46"></polygon>
+          <polyline id="spark-line" points=""></polyline>
+        </svg>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>级别分布</h3>
+      <div class="dist">
+        <div class="drow" data-lv="INFO"><span class="tag">INFO</span><span class="bar"><i id="b-info"></i></span><span class="n" id="d-info">0</span></div>
+        <div class="drow" data-lv="DEBUG"><span class="tag">DEBUG</span><span class="bar"><i id="b-debug"></i></span><span class="n" id="d-debug">0</span></div>
+        <div class="drow" data-lv="WARNING"><span class="tag">WARN</span><span class="bar"><i id="b-warning"></i></span><span class="n" id="d-warning">0</span></div>
+        <div class="drow" data-lv="ERROR"><span class="tag">ERROR</span><span class="bar"><i id="b-error"></i></span><span class="n" id="d-error">0</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>会话信息</h3>
+      <div class="kv"><span class="k">运行时长</span><span class="v hl" id="uptime">--</span></div>
+      <div class="kv"><span class="k">屏幕缓冲</span><span class="v" id="buf">0 / 500</span></div>
+      <div class="kv"><span class="k">会话过滤</span><span class="v" id="chat-box"><span class="empty">全部会话</span></span></div>
+    </section>
+
+    <section class="card">
+      <h3>高亮图例</h3>
+      <div class="legend">
+        <span style="--c:var(--module)">[模块]</span>
+        <span style="--c:var(--num)">数字</span>
+        <span style="--c:var(--admin)">管理员</span>
+        <span style="--c:var(--highlight)">就绪词</span>
+        <span style="--c:var(--sep)">分隔符</span>
+      </div>
+    </section>
+  </aside>
+
+  <section class="console">
+    <div class="console-in">
+      <div class="console-bar">
+        <span class="mdot"></span><span class="mdot"></span><span class="mdot"></span>
+        <span class="title">huanmeng-bot / stdout</span>
+        <span id="filter-info"></span>
+        <span class="live-tag"><i></i>LIVE</span>
+      </div>
+      <div id="log-container"></div>
+    </div>
+  </section>
+</main>
+
+<button class="jump" id="jump">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v13M6 12l6 6 6-6"/></svg>回到底部 <b id="jump-n"></b>
+</button>
+
+<footer>
+  <span class="f-item" id="count">0 条</span>
+  <span class="f-item">可见 <b id="visible">0</b></span>
+  <span class="f-item">缓冲 <b id="buf2">0</b></span>
+  <div class="right">
+    <span class="f-item">WS <b id="ws-state">--</b></span>
+    <span class="f-item">状态 <span id="status" class="warn">连接中...</span></span>
+  </div>
+</footer>
+
+<!-- ============ DevTools 反调试守卫：结构 ============ -->
+<div class="dt-toast" id="dt-toast" role="status" aria-live="polite">
+  <div class="dt-toast-icon">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+  </div>
+  <div class="dt-toast-body">
+    <div class="dt-toast-title">检测到开发者工具</div>
+    <div class="dt-toast-msg">请关闭控制台，否则页面即将进入锁定状态</div>
+  </div>
+  <div class="dt-toast-bar"><i id="dt-toast-bar-i"></i></div>
+</div>
+
+<div class="dt-lockdown" id="dt-lockdown" aria-hidden="true">
+  <div class="dt-lockdown-grid"></div>
+  <div class="dt-lockdown-scan"></div>
+  <div class="dt-lockdown-content">
+    <div class="dt-lock-icon">
+      <svg viewBox="0 0 56 56" width="56" height="56" fill="none">
+        <rect x="14" y="24" width="28" height="22" rx="5" stroke="currentColor" stroke-width="2.6"/>
+        <path class="shackle" d="M19 24v-6a9 9 0 0 1 18 0v6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="28" cy="34" r="2.6" fill="currentColor"/>
+        <path d="M28 36.5v4" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <h2 class="dt-glitch" id="dt-glitch-title" data-text="访问已锁定">访问已锁定</h2>
+    <p class="dt-sub">系统检测到开发者工具处于开启状态，页面交互已冻结</p>
+    <div class="dt-term">
+      <div class="dt-term-bar"><span class="mdot"></span><span class="mdot"></span><span class="mdot"></span><span class="dt-term-title">security.log</span></div>
+      <div class="dt-term-body" id="dt-term-body"></div>
+    </div>
+    <div class="dt-lockdown-hint">关闭开发者工具后将自动恢复访问</div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const CONTAINER=$('log-container'), COUNT=$('count'), STATUS=$('status'),
+      SEARCH=$('search'), FILTER_INFO=$('filter-info'), AUTO_BTN=$('auto-scroll'),
+      CONN=$('conn'), CONN_TEXT=$('conn-text'), JUMP=$('jump');
+
+let total=0, maxLines=500, autoScroll=true, pending=0, fontSize=13;
+let hiddenLv=new Set(), searchText='';
+const counts={INFO:0,DEBUG:0,WARNING:0,ERROR:0};
+const buckets=Array.from({length:45},()=>0); let bucketTick=0, peak=0;
+const t0=Date.now();
+
+/* ?num=<群号或QQ号> */
+const chatFilter=new URLSearchParams(location.search).get('num')||'';
+if(chatFilter){
+  FILTER_INFO.textContent='群/私 '+chatFilter;
+  $('chat-box').innerHTML='<span class="chip">'+chatFilter+'<button id="chip-clear" title="清除过滤">×</button></span>';
+}
+
+/* ---------- 工具 ---------- */
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const nowTime=()=>new Date().toTimeString().slice(0,8);
+function fmtDur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);
+  return (h?h+'时 ':'')+m+'分 '+x+'秒';}
+function setConn(mode,text){CONN.className='conn '+mode;CONN_TEXT.textContent=text;
+  STATUS.textContent=text;STATUS.className=mode==='live'?'ok':mode==='warn'?'warn':'err';
+  $('ws-state').textContent=text;}
+
+/* ---------- 筛选 ---------- */
+document.querySelectorAll('.lv').forEach(lb=>{
+  lb.addEventListener('click',()=>{
+    const lv=lb.dataset.lv;
+    if(hiddenLv.has(lv)){hiddenLv.delete(lv);lb.classList.add('on');lb.classList.remove('off');}
+    else{hiddenLv.add(lv);lb.classList.remove('on');lb.classList.add('off');}
+    applyFilters();
+  });
+});
+SEARCH.addEventListener('input',()=>{searchText=SEARCH.value.toLowerCase();applyFilters();});
+
+/* ---------- 着色（无 emoji） ---------- */
+function colorMsg(msg){
+  return esc(msg)
+    .replace(/\[([^\]]+)\]/g,(m,c)=>'[<span class="mod">'+c+'</span>]')
+    .replace(/(\d{5,})(?=[\s,<)）])/g,'<span class="num">$1</span>')
+    .replace(/([\d.]+s|[\d.]+KB|[\d]+字|[\d]+条|[\d]+次)/g,'<span class="num">$1</span>')
+    .replace(/(^|\s)(\.[a-zA-Z][\w]*)/g,'$1<span class="admin">$2</span>')
+    .replace(/admin|管理员|主人/g,'<span class="admin">$&</span>')
+    .replace(/(启动成功|连接完成|重载完成|准备就绪|初始化完成)/g,'<span class="hi">$1</span>')
+    .replace(/([|｜])/g,'<span class="sep">$1</span>');
+}
+
+/* ---------- 日志行 ---------- */
+function addHistoryLine(text){
+  total++;
+  const div=document.createElement('div');
+  div.className='log-line';
+  div.dataset.level='INFO'; div.dataset.chat='';
+  div.dataset.text=text.toLowerCase();
+  div.dataset.raw=text;
+  div.innerHTML='<span class="msg">'+colorMsg(text)+'</span>';
+  CONTAINER.appendChild(div);
+  applyFilter(div);
+}
+function addLine(r){
+  total++;
+  const lv=(r.lv&&counts.hasOwnProperty(r.lv))?r.lv:'INFO';
+  counts[lv]++; buckets[bucketTick]++;
+  const div=document.createElement('div');
+  div.className='log-line lv-'+lv;
+  div.dataset.level=lv;
+  div.dataset.chat=r.chat||'';
+  div.dataset.text=((r.time||'')+' '+r.msg).toLowerCase();
+  div.dataset.raw=(r.time||'')+' ['+lv+'] ('+(r.src||'')+') '+r.msg;
+  div.innerHTML=
+    '<span class="time">'+esc(r.time||'')+'</span> '+
+    '<span class="level '+lv.toLowerCase()+'">['+esc(lv)+']</span> '+
+    '<span class="source">('+esc(r.src||'?')+')</span> '+
+    '<span class="msg">'+colorMsg(r.msg||'')+'</span>';
+  CONTAINER.appendChild(div);
+  while(CONTAINER.children.length>maxLines)CONTAINER.firstChild.remove();
+  if(autoScroll&&nearBottom())CONTAINER.scrollTop=CONTAINER.scrollHeight;
+  else if(!nearBottom()){pending++;JUMP.classList.add('show');$('jump-n').textContent='+'+pending;}
+  applyFilter(div);
+  updateStats();
+}
+function nearBottom(){return CONTAINER.scrollHeight-CONTAINER.scrollTop-CONTAINER.clientHeight<90;}
+CONTAINER.addEventListener('scroll',()=>{
+  if(nearBottom()){pending=0;JUMP.classList.remove('show');}
+});
+JUMP.addEventListener('click',()=>{CONTAINER.scrollTop=CONTAINER.scrollHeight;pending=0;JUMP.classList.remove('show');});
+
+/* ---------- 过滤 ---------- */
+function applyFilter(el){
+  const lv=el.dataset.level;
+  let hidden=hiddenLv.has(lv)||(searchText&&!el.dataset.text.includes(searchText));
+  if(!hidden&&chatFilter&&el.dataset.chat&&el.dataset.chat!==chatFilter)hidden=true;
+  el.classList.toggle('hidden',hidden);
+}
+function applyFilters(){
+  document.querySelectorAll('.log-line').forEach(applyFilter);
+  const v=CONTAINER.querySelectorAll('.log-line:not(.hidden)').length;
+  $('visible').textContent=v;
+}
+
+/* ---------- 统计 / 迷你图 ---------- */
+function updateStats(){
+  COUNT.textContent=total+' 条';
+  $('st-total').textContent=total;
+  $('st-warn').textContent=counts.WARNING;
+  $('st-err').textContent=counts.ERROR;
+  $('buf').textContent=CONTAINER.children.length+' / '+maxLines;
+  $('buf2').textContent=CONTAINER.children.length;
+  const max=Math.max(1,...Object.values(counts));
+  for(const lv in counts){
+    const k=lv.toLowerCase();
+    $('c-'+k).textContent=counts[lv];
+    $('d-'+k).textContent=counts[lv];
+    $('b-'+k).style.width=(counts[lv]/max*100)+'%';
+  }
+}
+function drawSpark(){
+  const W=220,H=46,n=buckets.length,max=Math.max(2,...buckets);
+  peak=Math.max(peak,...buckets);
+  const pts=buckets.map((v,i)=>[(i/(n-1))*W,H-3-(v/max)*(H-9)]);
+  $('spark-line').setAttribute('points',pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' '));
+  $('spark-area').setAttribute('points','0,'+H+' '+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')+' '+W+','+H);
+  $('spark-peak').textContent='峰值 '+peak+'/2s';
+  const sum=buckets.reduce((a,b)=>a+b,0);
+  $('st-rate').innerHTML=Math.round(sum/n*30)+'<small>条/分</small>';
+}
+
+/* ---------- WebSocket ---------- */
+let ws;
+function connectWS(){
+  setConn('warn','连接中...');
+  try{ws=new WebSocket('ws://'+location.host+'/ws');}
+  catch(e){setConn('err','断开');setTimeout(connectWS,3000);return;}
+  ws.onopen=()=>{setConn('live','已连接');pending=0;JUMP.classList.remove('show');};
+  ws.onclose=()=>{setConn('err','断开');setTimeout(connectWS,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      if(Array.isArray(d))d.forEach(addLine);else addLine(d);
+    }catch(err){}
+  };
+}
+$('btn-reconnect').addEventListener('click',e=>{
+  const b=e.currentTarget;b.classList.add('spin');setTimeout(()=>b.classList.remove('spin'),520);
+  if(ws){ws.onclose=null;ws.close();}
+  connectWS();
+});
+
+/* ---------- 历史日志 ---------- */
+async function loadHistory(){
+  if(total>0)return;
+  try{
+    const r=await fetch('/api/logs?lines=300');
+    if(!r.ok)return;
+    const lines=(await r.text()).split('\n').filter(Boolean);
+    lines.forEach(addHistoryLine);
+    updateStats();
+    CONTAINER.scrollTop=CONTAINER.scrollHeight;
+  }catch(e){}
+}
+connectWS();
+loadHistory();
+
+/* ---------- 工具栏 ---------- */
+AUTO_BTN.addEventListener('click',()=>{
+  autoScroll=!autoScroll;
+  AUTO_BTN.classList.toggle('on',autoScroll);
+  if(autoScroll)CONTAINER.scrollTop=CONTAINER.scrollHeight;
+});
+$('btn-clear').addEventListener('click',()=>{
+  CONTAINER.innerHTML='';pending=0;JUMP.classList.remove('show');
+  $('buf').textContent='0 / '+maxLines;$('buf2').textContent='0';$('visible').textContent='0';
+});
+function visibleLines(){return [...CONTAINER.querySelectorAll('.log-line:not(.hidden)')];}
+$('btn-copy').addEventListener('click',async e=>{
+  const b=e.currentTarget,t=visibleLines().map(el=>el.dataset.raw).join('\n');
+  try{await navigator.clipboard.writeText(t);}catch(err){}
+  const old=b.innerHTML;
+  b.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3ddc84" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>已复制';
+  setTimeout(()=>b.innerHTML=old,1200);
+});
+$('btn-export').addEventListener('click',()=>{
+  const t=visibleLines().map(el=>el.dataset.raw).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([t],{type:'text/plain;charset=utf-8'}));
+  a.download='huanmeng-bot-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.log';
+  a.click();URL.revokeObjectURL(a.href);
+});
+function setFS(v){
+  fontSize=Math.min(18,Math.max(10,v));
+  CONTAINER.style.setProperty('--fs',fontSize+'px');
+  $('fs-val').textContent=fontSize;
+}
+$('fs-up').addEventListener('click',()=>setFS(fontSize+1));
+$('fs-down').addEventListener('click',()=>setFS(fontSize-1));
+document.addEventListener('click',e=>{
+  if(e.target.id==='chip-clear'){
+    const u=location.pathname;
+    location.href=u; /* 清除 ?num 过滤 */
+  }
+});
+
+/* ---------- 时钟 / 定时器 ---------- */
+function tick(){
+  $('clock').textContent=nowTime();
+  $('uptime').textContent=fmtDur((Date.now()-t0)/1000);
+}
+tick();setInterval(tick,1000);
+setInterval(()=>{bucketTick=(bucketTick+1)%buckets.length;buckets[bucketTick]=0;drawSpark();},2000);
+updateStats();drawSpark();
+</script>
+
+<script>
+/* ============================================================
+   DevTools 反调试守卫 —— 纯前端实现，无后端依赖
+   ------------------------------------------------------------
+   信号来源（综合评分，需连续多次命中才触发，降低误报）：
+   1) size    窗口内外尺寸差 —— DevTools 停靠（下方/侧边）时会挤压
+              innerWidth/innerHeight，与 outerWidth/outerHeight 产生差值。
+              仅在桌面视口下检查，避免移动端工具栏造成误判。
+   2) debug   debugger 语句耗时 —— 当 DevTools 打开且断点功能生效时，
+              执行到 debugger; 会真正暂停脚本，前后 performance.now()
+              差值会明显变大；DevTools 未打开时该语句近乎零开销。
+   3) trap    console 格式化探针 —— 只有当 Console 面板真正打开、
+              浏览器需要"渲染"传入 console.log 的对象时，才会去访问
+              对象上定义的 getter；面板未打开时该 getter 不会被触发。
+   4) 快捷键  F12 / Ctrl(Cmd)+Shift+I/J/C / Ctrl(Cmd)+U 作为即时强信号，
+              命中后直接推动状态机前进（这类快捷键本身也做 preventDefault
+              拦截，作为兜底摩擦，但注意：浏览器不保证会尊重这个拦截）。
+
+   重要限制（如实说明，不夸大效果）：
+   - 这些都是启发式检测，没有任何浏览器官方 API 能 100% 确定 DevTools
+     的开启状态；尤其 Safari 的"检查器"以独立窗口打开时，无法通过窗口
+     尺寸判断，因此更依赖 debugger 时序与快捷键两个跨浏览器信号。
+   - 任何前端方案都可能被熟悉技术的用户绕过（如临时禁用 JS、使用浏览器
+     扩展等），它的作用是提高门槛 / 劝退大多数用户，而不是可靠的安全边界。
+     如果需要保护真正敏感的数据，请在服务端做鉴权，不要仅依赖本脚本。
+
+   本地开发调试方法：
+   在浏览器控制台执行 localStorage.setItem('__dtg_dev__','1') 后刷新页面，
+   即可临时关闭本守卫，方便你自己开着 DevTools 调整这个页面。
+   ============================================================ */
+(function(){
+  'use strict';
+
+  var CONFIG = {
+    enabled: true,
+    checkIntervalMs: 900,        // 常规轮询间隔（窗口尺寸）
+    heavyCheckIntervalMs: 1500,  // 重量级检测间隔（debugger + console 探针）
+    evalIntervalMs: 500,         // 状态机评估间隔
+    sizeThreshold: 170,          // 窗口内外尺寸差阈值(px)
+    debuggerThresholdMs: 100,    // debugger 语句耗时阈值(ms)
+    scoreToSuspect: 2,           // 单次评估达到该分即视为"疑似"
+    suspectStreakToToast: 2,     // 连续疑似次数，达到后弹出提示
+    lockdownDelayMs: 6000,       // 提示出现后，多久未解除则升级为全屏锁定
+    clearStreakToRelease: 3,     // 连续多少次"未检出"才解除提示/锁定
+    minViewportForSizeCheck: 640
+  };
+
+  try{ if(localStorage.getItem('__dtg_dev__')==='1') CONFIG.enabled=false; }catch(e){}
+  if(!CONFIG.enabled) return;
+
+  var toast=document.getElementById('dt-toast'),
+      toastBar=document.getElementById('dt-toast-bar-i'),
+      lockdown=document.getElementById('dt-lockdown'),
+      termBody=document.getElementById('dt-term-body'),
+      glitchTitle=document.getElementById('dt-glitch-title');
+
+  var reduceMotion = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  /* ---------- 信号采集 ---------- */
+  var flags={size:false,debug:false,trap:false};
+
+  function checkSize(){
+    if(innerWidth < CONFIG.minViewportForSizeCheck) return false;
+    var wDiff=outerWidth-innerWidth, hDiff=outerHeight-innerHeight;
+    return wDiff>CONFIG.sizeThreshold || hDiff>CONFIG.sizeThreshold;
+  }
+  function checkDebuggerTiming(){
+    var t0=performance.now();
+    debugger; // eslint-disable-line no-debugger
+    return (performance.now()-t0) > CONFIG.debuggerThresholdMs;
+  }
+  function checkConsoleTrap(){
+    var hit=false, probe=new Image();
+    Object.defineProperty(probe,'id',{get:function(){hit=true;return '';}});
+    try{ console.log('%c',probe); }catch(e){}
+    return hit;
+  }
+
+  setInterval(function(){ flags.size=checkSize(); }, CONFIG.checkIntervalMs);
+  setInterval(function(){ flags.debug=checkDebuggerTiming(); flags.trap=checkConsoleTrap(); }, CONFIG.heavyCheckIntervalMs);
+  addEventListener('resize', function(){ flags.size=checkSize(); });
+
+  /* ---------- 状态机：idle -> toast -> lockdown ---------- */
+  var state='idle', suspectStreak=0, clearStreak=0, lockdownTimer=null, glitchTimer=null;
+
+  function score(){ return (flags.size?1:0)+(flags.debug?2:0)+(flags.trap?2:0); }
+
+  function evaluate(){
+    var s=score();
+    if(s>=CONFIG.scoreToSuspect){
+      clearStreak=0; suspectStreak++;
+      if(state==='idle' && suspectStreak>=CONFIG.suspectStreakToToast) showToast();
+      if(state==='lockdown') logTermLine(flags);
+    }else{
+      suspectStreak=0; clearStreak++;
+      if(state!=='idle' && clearStreak>=CONFIG.clearStreakToRelease) release();
+    }
+  }
+  setInterval(evaluate, CONFIG.evalIntervalMs);
+
+  /* ---------- 提示框 ---------- */
+  function showToast(){
+    state='toast';
+    toast.classList.add('show');
+    toastBar.style.transition='none'; toastBar.style.width='100%';
+    void toastBar.offsetWidth; // 强制回流，确保下面的 transition 重新生效
+    toastBar.style.transition='width '+CONFIG.lockdownDelayMs+'ms linear';
+    toastBar.style.width='0%';
+    lockdownTimer=setTimeout(showLockdown, CONFIG.lockdownDelayMs);
+  }
+  function hideToast(){
+    toast.classList.remove('show');
+    toastBar.style.transition='none'; toastBar.style.width='100%';
+  }
+
+  /* ---------- 全屏锁定 ---------- */
+  var termSeen=0;
+  function logTermLine(f){
+    termSeen++;
+    if(termSeen%3!==0) return; // 降低刷新频率，避免刷屏
+    var line=document.createElement('div');
+    line.className='ln';
+    line.innerHTML='<span class="mut">['+new Date().toTimeString().slice(0,8)+']</span> 复检 · size='+
+      (f.size?'<span class="bad">开</span>':'<span class="ok">关</span>')+
+      ' debugger='+(f.debug?'<span class="bad">触发</span>':'<span class="ok">正常</span>')+
+      ' probe='+(f.trap?'<span class="bad">命中</span>':'<span class="ok">未命中</span>');
+    termBody.appendChild(line);
+    while(termBody.children.length>7) termBody.firstChild.remove();
+    termBody.scrollTop=termBody.scrollHeight;
+  }
+  function bootTerminal(){
+    termBody.innerHTML=''; termSeen=0;
+    var boot=[
+      ['mut','[SYSTEM] 完整性校验中...'],
+      ['bad','[SECURITY] 捕获到调试信号'],
+      ['bad','[SECURITY] 会话已标记为受监控'],
+      ['mut','[SYSTEM] 页面交互已冻结'],
+      ['mut','[SYSTEM] 等待开发者工具关闭...']
+    ];
+    boot.forEach(function(item,i){
+      setTimeout(function(){
+        var line=document.createElement('div');
+        line.className='ln';
+        line.innerHTML='<span class="'+item[0]+'">'+item[1]+'</span>'+(i===boot.length-1?'<span class="dt-term-cursor"></span>':'');
+        termBody.appendChild(line);
+      }, i*160);
+    });
+  }
+  function glitchBurst(){
+    if(reduceMotion) return;
+    glitchTitle.classList.remove('burst'); void glitchTitle.offsetWidth;
+    glitchTitle.classList.add('burst');
+  }
+
+  function showLockdown(){
+    state='lockdown';
+    hideToast();
+    document.body.style.overflow='hidden';
+    lockdown.classList.add('show');
+    lockdown.setAttribute('aria-hidden','false');
+    bootTerminal(); glitchBurst();
+    glitchTimer=setInterval(glitchBurst, 2600);
+    try{ if(typeof addLine==='function'){
+      addLine({lv:'ERROR',src:'security',msg:'检测到开发者工具，页面已锁定 | session='+Math.random().toString(36).slice(2,8)});
+    } }catch(e){}
+  }
+  function release(){
+    var was=state;
+    state='idle';
+    if(lockdownTimer){clearTimeout(lockdownTimer);lockdownTimer=null;}
+    if(glitchTimer){clearInterval(glitchTimer);glitchTimer=null;}
+    hideToast();
+    lockdown.classList.remove('show');
+    lockdown.setAttribute('aria-hidden','true');
+    document.body.style.overflow='';
+    if(was==='lockdown'){
+      try{ if(typeof addLine==='function'){
+        addLine({lv:'INFO',src:'security',msg:'开发者工具已关闭，页面访问已恢复'});
+      } }catch(e){}
+    }
+  }
+
+  /* ---------- 快捷键拦截：即时强信号 + 兜底摩擦 ---------- */
+  document.addEventListener('keydown', function(e){
+    var k=e.key;
+    var blocked =
+      k==='F12' ||
+      (e.ctrlKey && e.shiftKey && ['I','J','C','i','j','c'].indexOf(k)>-1) ||
+      (e.metaKey && e.altKey && ['I','J','C','i','j','c'].indexOf(k)>-1) ||
+      (e.ctrlKey && (k==='U'||k==='u')) ||
+      (e.metaKey && (k==='U'||k==='u'));
+    if(blocked){
+      e.preventDefault(); e.stopPropagation();
+      flags.debug=true; evaluate();
+    }
+    if(state==='lockdown' && k!=='F5'){ e.preventDefault(); e.stopPropagation(); }
+  }, true);
+
+  document.addEventListener('contextmenu', function(e){
+    if(state==='lockdown') e.preventDefault();
+  });
+})();
+</script>
+</body>
+</html>

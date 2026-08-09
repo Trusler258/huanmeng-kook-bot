@@ -1,0 +1,30 @@
+# adapter_config.toml — 字频道白名单与回复策略
+# 复制为 adapter_config.toml 并填入你的值
+#
+# KOOK 中的"频道"概念：
+#   - 服务器(Guild) → 顶级频道/分组(Category) → 文字频道(Channel)
+#   - 本配置中的 group_list 填的是"文字频道 ID"（即 bot 能收发消息的频道）
+#   - 私聊不需要在此配置，由 enable_private_chat 控制
+
+[group]
+# 字频道白名单：只有这里的频道 bot 才会回复（非指令消息）
+# 频道 ID 可在 KOOK 开发者工具或通过 bot 收到消息时从日志获取
+group_list = [
+    # 1234567890123456,
+]
+
+# 私聊白名单：留空表示允许所有人私聊，填了则只允许列表中的用户
+private_whitelist = [
+    # 1234567890123456,
+]
+
+# 字频道自定义回复策略
+# reply_threshold: 该频道的回复判断阈值（覆盖全局）
+# at_only: 仅在被 @ 时回复
+# nicknames: { user_id_str: "昵称" } 分频道昵称映射
+# 示例:
+# [group.group_settings.1234567890123456]
+# reply_threshold = 5
+# at_only = false
+# [group.group_settings.1234567890123456.nicknames]
+# "1234567890123456" = "小明"

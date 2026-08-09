@@ -1,0 +1,148 @@
+---
+title: 幻梦 QQ Bot — Pipeline 14-Step Sequence
+config:
+  theme: dark
+---
+sequenceDiagram
+    actor QQ as QQ Group
+    participant WS as NapCat WS
+    participant DISP as Dispatcher
+    participant PIPE as Pipeline
+    participant JUDGE as Judge Module
+    participant J_CHEAP as Cheap LLM
+    participant J_DEEP as Judge LLM
+    participant LLM as Reply LLM
+    participant MEM as Memory
+    participant FAV as Fav System
+    participant SRCH as Search
+    participant SEND as Sender
+
+    QQ->>WS: Send message
+    WS->>DISP: JSON Event
+
+    Note over DISP: Pre-processing
+    DISP->>DISP: 0. Whitelist check
+    DISP->>DISP: 1. Record recall buffer
+    DISP->>DISP: 2. Record stats counter
+    DISP->>DISP: 3. Image async recognition
+    DISP->>DISP: 4. @Username resolve
+    DISP->>DISP: 5. Quoted message fetch
+    DISP->>DISP: 6. Error report detect
+
+    DISP->>PIPE: process_message()
+
+    rect rgb(30, 30, 60)
+        Note over PIPE: Step -1: Preset Intercept
+        PIPE->>PIPE: Check {{...}} injection
+    end
+
+    rect rgb(30, 30, 60)
+        Note over PIPE: Step 0.5: Quote injection
+        PIPE->>PIPE: Inject quoted text
+    end
+
+    rect rgb(30, 40, 60)
+        Note over PIPE: Step 1: Context Write
+        PIPE->>PIPE: append_to_context()
+    end
+
+    rect rgb(30, 40, 60)
+        Note over PIPE: Step 2: Command Intercept
+        PIPE->>PIPE: Match . or /#
+        alt Command matched
+            PIPE->>PIPE: handle_command() COMMAND_MAP
+            PIPE->>SEND: Return result
+            SEND->>QQ: Reply
+        end
+    end
+
+    rect rgb(40, 30, 60)
+        Note over PIPE: Step 3: Reply Decision
+        PIPE->>JUDGE: should_respond()
+        alt @mentions
+            JUDGE-->>PIPE: Respond (forced)
+        else at_only mode
+            JUDGE-->>PIPE: Skip (no @)
+        else normal
+            par Quick Filter
+                JUDGE->>JUDGE: should_quick_reject()
+            and LLM Judge (parallel)
+                JUDGE->>J_CHEAP: judge_should_reply_cheap()
+                J_CHEAP-->>JUDGE: 0 or 1
+            and Interest Judge (parallel)
+                JUDGE->>J_DEEP: judge_interest()
+                J_DEEP-->>JUDGE: 0~10
+            end
+            JUDGE-->>PIPE: Reply or Skip
+        end
+    end
+
+    rect rgb(30, 30, 60)
+        Note over PIPE: Step 3.5: Spam Guard
+        PIPE->>PIPE: check_and_record()
+    end
+
+    rect rgb(30, 40, 60)
+        Note over PIPE: Step 4: Auto Search
+        PIPE->>SRCH: auto_search_if_needed()
+        opt needs search
+            SRCH->>SRCH: DuckDuckGo search
+            SRCH->>SRCH: Cache result
+            SRCH-->>PIPE: Search result text
+        end
+    end
+
+    rect rgb(40, 30, 60)
+        Note over PIPE: Step 5: Memory + Fav + Time
+        PIPE->>MEM: get_top_memories()
+        MEM-->>PIPE: Top 5 relevant
+        PIPE->>FAV: get_fav()
+        FAV-->>PIPE: Fav value
+        PIPE->>PIPE: Current time injection
+    end
+
+    rect rgb(50, 30, 60)
+        Note over PIPE: Step 6: LLM Generate
+        PIPE->>LLM: generate_multi_reply()
+        Note over LLM: System + Anchor + History + Current
+        LLM-->>PIPE: sentences + fav_change
+    end
+
+    rect rgb(30, 30, 60)
+        Note over PIPE: Step 7: Context Writeback
+        PIPE->>PIPE: append_to_context(reply)
+    end
+
+    rect rgb(30, 40, 60)
+        Note over PIPE: Step 8: Task Schedule
+        PIPE->>PIPE: Cancel old send task
+        PIPE->>SEND: send_sentences() async
+    end
+
+    rect rgb(40, 30, 60)
+        Note over PIPE: Step 9: Fav Update
+        PIPE->>FAV: update_fav(fav_change)
+    end
+
+    rect rgb(30, 30, 60)
+        Note over PIPE: Step 10: Auto Memory
+        PIPE->>MEM: maybe_save_memory()
+        opt 10min cooldown passed
+            MEM->>LLM: summarize_conversation()
+            LLM-->>MEM: 80-char summary
+            MEM->>MEM: append_memory()
+        end
+    end
+
+    Note over SEND: Multi-sentence delivery
+    SEND->>SEND: 2~4s random delay
+    SEND->>SEND: Send sentence 1
+    SEND->>QQ: CQ message 1
+
+    SEND->>SEND: 2~4s random delay
+    SEND->>SEND: Send sentence 2
+    SEND->>QQ: CQ message 2
+
+    SEND->>SEND: 2~4s random delay
+    SEND->>SEND: Send sentence 3
+    SEND->>QQ: CQ message 3

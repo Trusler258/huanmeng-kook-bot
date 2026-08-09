@@ -1,0 +1,151 @@
+# 语言文件：所有用户可见的文本集中管理
+# 变量用法：${name} 会被替换为 bot_config.toml 中的 [bot] bot的名字
+
+[bot]
+fallback_reply = "喵～${name}刚刚没听清，可以再说一遍吗？"
+card_fallback = "呜…卡片渲染出了点问题喵，将就着看文字版吧 (´・ω・`)"
+
+[help]
+header = "╭―――――― ${name} 指令帮助 ――――――╮"
+footer = "╰――  .help <指令> 查看详细用法  ――╯"
+usage_hint = ".help <指令>  查看某个指令的详细用法"
+usage_example = "例如: .help wzq"
+not_found = "没有「${keyword}」的详细帮助喵~ 试试 .help 看全部"
+
+sections = [
+    ["--- 聊天 ---", "@${name} <内容>     跟我说话"],
+    ["--- 工具 ---", ".s <关键词>        联网搜索", ".remind <时间> <事> 定时提醒", ".抽 <A> <B>        随机选择", ".countdown <日期> <事> 倒计时"],
+    ["--- 数据 ---", ".favlist           好感度"],
+    ["--- 游戏 ---", ".wzq ...          五子棋对战", ".luck              今日运气值"],
+    ["--- 系统 ---", ".cost              Token消耗统计", ".info             运行状态", ".up [版本]         更新日志", ".ping <目标>       全球延迟测试"],
+    ["--- 主人专用 ---", ".owner ...        配置/数据管理", ".memory ...       记忆查询", ".preset ...        提示词注入管理", ".reload           热重载配置"],
+]
+
+[help.detail]
+wzq = "【五子棋 .wzq】\nduel @某人    发起挑战\naccept        接受挑战\ndecline       拒绝挑战\ncancel        取消未开始的挑战\n<坐标>        落子 (H8 / 8,8)\nai <难度> [nofb] 人机对战\nboard         查看棋盘\nsurrender     认输\nundo          悔棋\nstatus        对局信息\nhistory [N]   历史战绩"
+remind = "【提醒 .remind】\n.remind 30分钟后 吃饭\n.remind 明天14:30 开会\n到期自动 @ 提醒"
+chou = "【抽签 .抽】\n.抽 吃面 吃饭 打游戏\n随机选一个 + 猫娘点评"
+s = "【搜索 .s】\n.s Python asyncio 用法"
+favlist = "【好感度 .favlist】\n查看当前群/私聊的好感度排行"
+luck = "【运气 .luck】\n获取今日运气值 (1~100)"
+up = "【更新日志 .up】\n.up            最新版本\n.up 0.9.4      指定版本\n.up all        完整日志"
+updateinfo = "【更新日志 .up】\n.up            最新版本\n.up 0.9.4      指定版本"
+info = "【系统信息 .info】\n显示运行状态: 系统/运行时间/内存/磁盘/CPU"
+ping = "【全球延迟测试 .ping】\n.ping <域名或IP>  测试延迟\n数据来源: Globalping"
+owner = "【配置管理 .owner (主人)】"
+memory = "【记忆管理 .memory (主人)】\n.memory list    查看所有记忆组\n.memory read <频道ID> [N]  查看记忆\n.memory search <频道ID> <词> 关键词搜索"
+preset = "【提示词注入 .preset (主人)】\n.preset clear    清除注入"
+reload = "【重载 .reload (主人)】\n热重载 .toml 配置"
+cost = "【Token消耗 .cost】\n查看今日/累计 Token 消耗和预估费用"
+token = "【Token计算 .token】\n.token <文本>   计算 token 数和费用"
+draw = "【绘画 .draw】\n.draw <提示词>   文生图"
+video = "【视频 .video】\n.video <提示词>  文生视频"
+img2video = "【图生视频 .img2video】\n.img2video <图片URL>  图生视频"
+eq = "【地震 .eq】\n.eq           最新 1 条地震速报\n.eq 3         最新 3 条"
+
+[ping]
+response = "喵~ ${name}在线中 (。>∀<。)ﾉ"
+
+[favlist]
+empty = "还没有任何好感度记录喵~"
+header = "【好感度列表】"
+item_format = "${name}: ${value}"
+
+[info]
+header = "【${name} 系统信息】"
+os = "操作系统: ${os}"
+memory = "内存: 总量 ${total} MB, 可用 ${available} MB (已用 ${percent}%)"
+cpu = "CPU: ${cpu_name} (${cpu_count} 逻辑核心)"
+hardware_unavailable = "硬件详情不可用 (安装 psutil 可获取更多信息)"
+model_header = "【已加载模型】"
+model_item = "${label}: ${model_name} (provider: ${provider})"
+no_model = "无启用模型"
+
+[search]
+prompt_input = "请输入搜索关键词，例如 .s 今天天气 喵~"
+no_result = "没有找到相关信息喵，可以试试其他关键词~"
+result_header = "【搜索结果】"
+searching = "正在帮你搜喵，等一下下..."
+
+[image]
+service_error = "图片服务暂时不可用喵"
+broken_image = "这张图片好像挂了喵"
+download_error = "图片下载失败喵"
+recognition_prompt = "请直接描写图片中的内容，不要输出任何推理或思考过程。若你认为这张图片可能是用于表达情绪的表情包，这时请着重输出他表达的情绪元素（其他的也要有，但是情绪元素至少有4点）。直接输出描述，不超过70字。"
+
+[relation]
+prompt_usage = "参数不足，请按格式：.添加关系 用户ID 昵称 关系"
+invalid_qq = "用户ID必须是纯数字"
+invalid_role = "关系不能设置为admin"
+success = "已更新关系：${qq}(${name}) -> ${role}"
+save_fail = "保存配置失败: ${error}"
+
+[reload]
+permission_denied = "权限不足喵~"
+success = "配置热重载完成喵~ done!"
+
+[resetfav]
+empty = "好感度记录本来就是空的喵"
+success = "好感度已全部重置喵~"
+
+[error]
+permission_denied = "Permission denied"
+unknown_command = "未知指令 ${prefix}${cmd}，使用 .help 查看可用指令喵~"
+command_error = "指令执行时出了点小问题喵，请稍后再试~"
+command_error_detail = "指令 .${cmd} 执行异常喵…\n错误: ${err}"
+api_fail = "服务暂时不可用喵，请稍后再试~"
+hallucination = "我好像说了些不确定的东西喵，换种问法试试？"
+
+[memory]
+file_header = "# ${name}的记忆 (${chat_id})\n"
+recall_header = "【你的过往记忆（与当前话题相关的部分）】"
+summarize_prompt = "请根据以下聊天记录，生成一条结构化记忆摘要。"
+
+[update_info]
+read_error = "读取更新日志失败喵: ${error}"
+
+[testsys]
+card_markdown = "系统测试卡片"
+button_label = "点我测试"
+button_visited = "已点"
+unsupport_tip = "当前版本不支持此按钮"
+
+[poke]
+message = "${name} 摸了摸${bot_name}的头"
+
+[remind]
+usage = "用法: .remind <时间> <内容>  例如: .remind 30分钟后 该吃饭啦喵~"
+invalid_time = "时间格式不对喵~ 试试: .remind 30分钟后 吃饭"
+
+[luck]
+prompt = "要抽什么呢？试试 .抽 吃饭 睡觉 打游戏 喵~"
+min_options = "至少给两个选项喵~ 比如 .抽 吃面 吃饭"
+
+[preset]
+permission = "权限不足喵~ 只有主人可以使用此指令"
+cleared = "提示词已清除喵~"
+no_preset = "当前没有注入的提示词喵~"
+empty = "当前没有注入的提示词喵~"
+
+[translate]
+fail = "翻译失败喵~ 稍后再试"
+
+[countdown]
+empty_list = "还没有倒计时喵~"
+empty_single = "还没有倒计时喵~"
+delete_invalid_id = "编号必须是数字喵~"
+delete_out_of_range = "编号超出范围喵~"
+
+[wzq]
+start = "人机对战开始！你执黑 vs AI，请先落子喵~"
+user_not_found = "找不到玩家喵~"
+no_game = "当前没有对局喵~"
+no_records = "还没有对局记录喵~"
+only_n_records = "只有 ${count} 场记录喵~"
+
+[wdsj]
+player_searching = "正在查询 ${player} 的 ${template} 战绩喵，稍等..."
+player_not_found = "没有找到 ${player} 的 ${template} 数据喵，检查一下名字？"
+img_download_fail = "图片下载失败喵，试试不带 img 看文字数据"
+lb_searching = "正在查询排行榜喵，稍等..."
+lb_fail = "排行榜 ${board} 查询失败喵，稍后再试"

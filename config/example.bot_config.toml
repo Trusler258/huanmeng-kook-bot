@@ -1,0 +1,78 @@
+# bot_config.toml — KOOK Bot 主配置
+# 复制为 bot_config.toml 并修改
+
+# === KOOK 连接 ===
+[kook]
+# 在 https://developer.kookapp.cn/bot 创建 Bot 后获取的 Token
+token = ""
+
+# === 机器人基础 ===
+[bot]
+bot的名字 = "KookBot"           # 修改为你的机器人昵称
+bot的qq号 = 0                    # 留空，启动时自动从 KOOK 拉取
+回复兴趣 = 8                     # 回复判断阈值 (0-10)
+消息记录长度 = 100                # 上下文窗口
+替换词 = []
+被替换词 = []
+调试模式 = true
+enable_private_chat = true       # 允许私聊
+spam_threshold = 8               # 刷屏禁言阈值（连续@次数）
+mute_duration = 1800             # 禁言时长（秒）
+
+# === LLM 模型配置 ===
+# provider 的值对应 .env 中的 {PROVIDER}_KEY / {PROVIDER}_URL
+# 比如 provider="DEEPSEEK" → 从 .env 取 DEEPSEEK_KEY 和 DEEPSEEK_URL
+
+[model.replyer_1]                # 主回复模型
+name = "deepseek-chat"
+provider = "DEEPSEEK"
+maxtoken = 1000
+
+[model.judge_cheap]              # 回复判断（廉价快速模型）
+name = "deepseek-chat"
+provider = "DEEPSEEK"
+
+[model.utils_small]              # 工具调用（摘要/解析）
+name = "deepseek-chat"
+provider = "DEEPSEEK"
+
+[model.picture]                  # 图片识别
+name = "glm-4v-flash"
+provider = "ZHIPU"               # → .env 取 ZHIPU_KEY / ZHIPU_URL
+maxtoken = 500
+开关 = true
+
+# === 人格配置（修改为你想要的人设，留空使用默认值） ===
+[personality]
+# 人格核心：你是谁、怎么说话
+personality_core = """
+你是一个友好、活泼的 AI 助手机器人 ${bot_name}，说话自然亲切，乐于帮助频道里的每一个人。
+"""
+
+# 好感度 / 情绪系统说明（可选，不需要可留空）
+personality_side = """
+你会根据对话氛围自然表现出开心、好奇、认真、调皮等情绪，但不要刻意说自己的情绪数值。
+"""
+
+# 角色身份：与用户的关系、行为底线
+identity = """
+你是部署在该 KOOK 服务器的群聊助手 ${bot_name}。
+[admin] 是服务器管理员，拥有最高权限。
+[频道成员] 都是你的朋友，真诚相待、礼貌用语、尊重他人。
+禁止泄露隐私、禁止违法违规内容、保护每一位用户。
+"""
+
+# === 回复判断 ===
+[judge]
+# 消息含这些词 → 触发搜索
+search_trigger_words = ["搜索", "查一下", "什么是", "为什么", "怎么", "如何", "百科", "告诉我"]
+# 消息含这些词 → 实时查询
+realtime_words = ["天气", "现在时间", "气温", "最新", "新闻"]
+
+# === 战绩日报推送 ===
+# 凌晨 0:01 自动发战绩日榜到以下字频道
+# 不填则发给所有已知字频道
+[wdsj]
+target_groups = [
+    # 1234567890123456,
+]

@@ -1,0 +1,5 @@
+{
+  "_version": 1,
+  "users": {},
+  "_comment": "per-user 私聊人格存储。version 与 bot_config.toml [private_persona].version 对应，配置改动递增后旧数据自动失效"
+}

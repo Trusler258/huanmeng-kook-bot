@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=560, initial-scale=1.0">
+<title>Weather · 幻梦</title>
+<style>
+:root {
+  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;
+  --bg-card:rgba(20,18,32,0.55);--bg-soft:rgba(255,255,255,0.04);
+  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);
+  --success:#34d399;--warning:#fbbf24;--danger:#f87171;--info:#60a5fa;
+  --radius:15px;--radius-s:9px;
+  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+  --border:rgba(255,255,255,0.10);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+@page{margin:0}
+html{width:560px;margin:0 auto;min-height:100vh}
+body::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at 25% 30%,rgba(255,255,255,0.025) 0%,transparent 2px),radial-gradient(circle at 75% 70%,rgba(255,255,255,0.02) 0%,transparent 2px),radial-gradient(circle at 50% 50%,rgba(255,255,255,0.015) 0%,transparent 1.5px);background-size:3px 3px,5px 5px,7px 7px;opacity:0.6}
+body{width:560px;margin:0 auto;position:relative;z-index:1;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),radial-gradient(ellipse 65% 60% at 50% 50%,rgba(86,134,254,0.12) 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 5% 80%,rgba(34,211,238,0.14) 0%,transparent 55%),conic-gradient(from 200deg at 30% 20%,transparent 0deg,rgba(236,72,153,0.08) 60deg,transparent 120deg,rgba(139,92,246,0.06) 200deg,transparent 280deg),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{padding:22px 18px 28px}
+.card{position:relative;background:var(--bg-card);border-radius:var(--radius);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),0 0 100px rgba(236,72,153,0.10),0 0 40px rgba(139,92,246,0.08),inset 0 1px 0 rgba(255,255,255,0.12),inset 0 -1px 0 rgba(0,0,0,0.3);overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1px;background:linear-gradient(135deg,rgba(236,72,153,0.55) 0%,rgba(139,92,246,0.40) 35%,rgba(86,134,254,0.30) 65%,rgba(34,211,238,0.35) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2}
+.card::after{content:'';position:absolute;top:0;left:15%;right:15%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent);filter:blur(0.5px);z-index:3}
+.head{padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;position:relative}
+.head::after{content:'';position:absolute;bottom:-1px;left:24px;right:24px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.5) 30%,rgba(139,92,246,0.4) 70%,transparent)}
+.head-ico{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:26px;background:linear-gradient(135deg,rgba(236,72,153,0.35),rgba(139,92,246,0.20)),radial-gradient(circle at 30% 30%,rgba(255,255,255,0.15),transparent 60%);border:1px solid rgba(236,72,153,0.45);box-shadow:0 4px 18px rgba(236,72,153,0.30),inset 0 1px 0 rgba(255,255,255,0.2);flex-shrink:0}
+.head-text{flex:1;min-width:0}
+.head-title{font-size:18px;font-weight:800;letter-spacing:0.3px;display:flex;align-items:baseline;gap:8px}
+.head-title .nm{background:linear-gradient(135deg,#f472b6 0%,#ec4899 40%,#8b5cf6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 0 10px rgba(236,72,153,0.4))}
+.head-title .sl{color:var(--text-3);font-weight:300;-webkit-text-fill-color:var(--text-3)}
+.head-title .tp{font-family:var(--mono);font-size:11px;font-weight:500;color:var(--text-2);letter-spacing:1.5px;text-transform:uppercase;-webkit-text-fill-color:var(--text-2)}
+.head-sub{font-family:var(--mono);font-size:10.5px;color:var(--text-3);margin-top:4px;letter-spacing:0.3px}
+.head-tag{font-family:var(--mono);font-size:11px;color:#fff;background:linear-gradient(135deg,rgba(236,72,153,0.25),rgba(139,92,246,0.20));border:1px solid rgba(236,72,153,0.45);padding:5px 12px;border-radius:20px;white-space:nowrap;box-shadow:0 4px 14px rgba(236,72,153,0.25),inset 0 1px 0 rgba(255,255,255,0.15)}
+.hero{padding:24px 24px;display:flex;align-items:center;gap:20px;border-bottom:1px solid var(--border)}
+.hero-ico{font-size:54px;line-height:1;flex-shrink:0;filter:drop-shadow(0 2px 12px rgba(236,72,153,0.3))}
+.hero-info{flex:1;min-width:0}
+.hero-temp{font-family:var(--mono);font-size:40px;font-weight:800;background:linear-gradient(135deg,#f472b6,#ec4899 50%,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1;letter-spacing:-1px;filter:drop-shadow(0 0 16px rgba(236,72,153,0.4))}
+.hero-temp .unit{font-size:18px;color:var(--text-3);-webkit-text-fill-color:var(--text-3);font-weight:400}
+.hero-cond{font-size:14px;color:var(--text-2);margin-top:6px}
+.hero-range{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:4px;letter-spacing:0.3px}
+.sec{padding:14px 24px 6px;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-2);letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.sec::before{content:'';width:3px;height:13px;background:linear-gradient(180deg,var(--primary),var(--accent));border-radius:2px;box-shadow:0 0 6px rgba(236,72,153,0.4)}
+.sec-cn{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);letter-spacing:0.3px;text-transform:none}
+.tbl-wrap{padding:4px 24px 8px}
+table{width:100%;border-collapse:collapse;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-s);overflow:hidden;background:rgba(255,255,255,0.02)}
+thead th{background:linear-gradient(180deg,rgba(236,72,153,0.15),rgba(236,72,153,0.08));color:var(--text);font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;padding:8px 8px;text-align:left;border-bottom:1px solid rgba(236,72,153,0.30)}
+td{padding:7px 8px;border-bottom:1px solid rgba(255,255,255,0.05);color:var(--text-2)}
+tbody tr:last-child td{border-bottom:none}
+tr.today-row{background:rgba(236,72,153,0.10)}
+tr.today-row td{color:var(--text)}
+.weather-icon-cell{font-size:18px;text-align:center;line-height:1.2}
+.weather-icon-cell span{display:block;font-size:10px;color:var(--text-3)}
+.temp-high{color:var(--danger);font-family:var(--mono);font-weight:700}
+.temp-low{color:var(--info);font-family:var(--mono);font-weight:700}
+.wind-text{font-size:11px;color:var(--text-3)}
+.aqi-badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;border:1px solid var(--border);letter-spacing:0.3px}
+.aqi-excellent{color:var(--success);background:rgba(52,211,153,0.15);border-color:rgba(52,211,153,0.40);box-shadow:0 0 8px rgba(52,211,153,0.15)}
+.aqi-good{color:var(--info);background:rgba(96,165,250,0.15);border-color:rgba(96,165,250,0.40);box-shadow:0 0 8px rgba(96,165,250,0.15)}
+.aqi-moderate{color:var(--warning);background:rgba(251,191,36,0.15);border-color:rgba(251,191,36,0.40);box-shadow:0 0 8px rgba(251,191,36,0.15)}
+.aqi-poor{color:#fb923c;background:rgba(251,146,60,0.15);border-color:rgba(251,146,60,0.40);box-shadow:0 0 8px rgba(251,146,60,0.15)}
+.aqi-bad{color:var(--danger);background:rgba(248,113,113,0.15);border-color:rgba(248,113,113,0.40);box-shadow:0 0 8px rgba(248,113,113,0.15)}
+.talk-section{padding:4px 24px 8px}
+.talk-item{font-size:12.5px;color:var(--text-2);line-height:1.6;padding:7px 14px;margin-bottom:3px;border-left:2px solid var(--border);background:rgba(255,255,255,0.02);border-radius:0 var(--radius-s) var(--radius-s) 0}
+.talk-item.highlight{border-left-color:var(--primary);background:rgba(236,72,153,0.06)}
+.talk-item.warning{border-left-color:var(--warning);background:rgba(251,191,36,0.06)}
+.talk-item b{color:var(--primary-light);font-weight:700}
+.aqi-summary{padding:6px 24px 10px;font-size:11.5px;color:var(--text-3);font-family:var(--mono);letter-spacing:0.3px}
+.aqi-summary b{color:var(--text-2)}
+.foot{padding:12px 24px 16px;border-top:1px solid var(--border);background:linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.30));display:flex;align-items:center;justify-content:space-between;position:relative}
+.foot::before{content:'';position:absolute;top:0;left:24px;right:24px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.4) 30%,rgba(139,92,246,0.3) 70%,transparent)}
+.foot-l{font-family:var(--mono);font-size:10px;color:var(--text-3);display:flex;align-items:center;gap:8px}
+.foot-l .dot{width:6px;height:6px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px rgba(52,211,153,0.7),0 0 4px rgba(52,211,153,0.9)}
+.foot-l .pk{color:var(--primary-light)}
+.foot-r{font-family:var(--mono);font-size:9px;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:1.8px;text-transform:uppercase;opacity:0.7}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<div class="head">
+<div class="head-ico">{{TODAY_ICON}}</div>
+<div class="head-text">
+<div class="head-title"><span class="nm">{{CITY_NAME}}</span><span class="sl">·</span><span class="tp">WEATHER</span></div>
+<div class="head-sub">{{HEADER_DATE}}</div>
+</div>
+<div class="head-tag">{{DATA_TIME}}</div>
+</div>
+<div class="hero">
+<div class="hero-ico">{{TODAY_ICON}}</div>
+<div class="hero-info">
+<div class="hero-temp">{{TODAY_TEMP}}<span class="unit">°C</span></div>
+<div class="hero-cond">{{TODAY_COND}}</div>
+<div class="hero-range">{{TEMP_RANGE}}</div>
+</div>
+</div>
+<div class="sec"><span class="sec-cn">7 日预报</span></div>
+<div class="tbl-wrap"><table><thead><tr><th>日期</th><th>天气</th><th>高</th><th>低</th><th>风</th><th>AQI</th></tr></thead><tbody>{{FORECAST_ROWS}}</tbody></table></div>
+<div class="sec"><span class="sec-cn">口语播报</span></div>
+{{TALK_SECTION}}
+<div class="aqi-summary">{{AQI_SUMMARY}}</div>
+<div class="foot">
+<div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span>·</span><span>{{BRAND}}</span></div>
+<div class="foot-r">HUANMENG</div>
+</div>
+</div></div>
+</body></html>
