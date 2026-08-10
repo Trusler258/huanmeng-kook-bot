@@ -138,12 +138,30 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 # ------消息处理主入口------
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
-                          is_mentioned=False):
+                          is_mentioned=False, image_urls=None, quoted_image_urls=None,
+                          **extra_kwargs):
+    """消息处理主管道。
+    注：image_urls / quoted_image_urls 由 dispatcher 提取 KOOK 附件后传入。
+    **extra_kwargs 用于前向兼容：避免未来 dispatcher/enqueue 新增参数时
+    process_message 签名不匹配直接抛出 TypeError 导致全量消息静默（P0 事故）。
+    """
     from core.context_manager import get_context_mgr
     cfg = get_config()
     ctx = get_context_mgr()
 
     sender_name = _clean_name(sender_name)
+
+    # ── 图片/引用图片占位注入（dispatcher 已在入队前同步完成识图，此处兜底挂上下文标签）
+    img_urls = image_urls or []
+    qimg_urls = quoted_image_urls or []
+    if img_urls:
+        ctx.append_to_context(chat_id, f"[本条消息附带图片 {len(img_urls)} 张]")
+        logger.info("附带图片已记录 [chat=%d] count=%d", chat_id, len(img_urls))
+    if qimg_urls:
+        ctx.append_to_context(chat_id, f"[被引用消息附带图片 {len(qimg_urls)} 张]")
+        logger.info("引用附带图片已记录 [chat=%d] count=%d", chat_id, len(qimg_urls))
+    if extra_kwargs:
+        logger.debug("process_message 收到未识别扩展参数: %s", list(extra_kwargs.keys()))
 
     # 首次对话自动注册好感度
     from modules.fav import ensure_fav
