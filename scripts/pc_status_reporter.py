@@ -1,8 +1,27 @@
 """
-PC 状态上报 v6.80 — 纯 Windows 原生检测（SMTC + Win32 API）
+PC 状态上报 v7.00 — 纯 Windows 原生检测（SMTC + Win32 API）
 完全脱离 Now Playing Service / WebSocket 音乐追踪
 依赖: pip install pywin32 psutil requests
 可选: pip install pynvml (NVIDIA GPU), wmi (电压), Pillow (截屏)
+
+══ v7.00 P0 根治「SMTC 上报频率不一致导致歌词一卡一卡」——本地单调时钟驱动进度系统 ══
+  架构：切歌/seek/暂停恢复/倍速变化 4 类事件时，仅锚定一次 SMTC 位置 + time.perf_counter() 墙钟
+        之后 100% 由本地 perf_counter 单调积分 × play_rate 驱动 eff_ms 匀速增长，
+        offset 直接叠加在最终 eff_ms 上（正=延后 负=提前），彻底摆脱 SMTC 上报频率
+  细节：
+    - LYRIC_TICK_MS 80ms → 10ms：主循环 10ms 细粒度推进，歌词行切换精度 ±10ms
+    - 4 类事件触发 _anchor_clock(pos_ms, reason)：重置锚点 + 清空 drift_trim
+    - seek 检测：SMTC.pos vs 本地理想值差 > 3000ms → 重锚（拖动进度条秒响应）
+    - 倍速支持：读取 SMTC PlaybackRate，0.5x/2x 任意倍速进度严格对齐
+    - 每 30s drift 检查：|SMTC.pos - 本地理想值| > 200ms → 设置 drift_target 渐进校正
+      _apply_drift_step() 每轮 10ms tick ±50ms 向 target 推进（最多 5000ms/s 校正速度）
+      保证长时间播放不累积漂移，校正过程无突跳不卡
+    - 统一入口：tick / TIMER / FORCE / POST_T5 / TCP 上报 6 处进度计算
+      **唯一使用 get_local_eff_ms()**，offset/drift/play_rate 4 条路径 100% 语义统一，
+      不会再出现"定时和 tick 差一个 offset"的错位
+    - playing 状态切换（paused→resumed）必须重锚：暂停期间 perf_counter 仍走，但
+      _CLOCK_paused=true 让 dt_effective=0，恢复时重锚避免把暂停时长算进进度
+
 
 ══ v6.80 P0 双根修（解决「卡一下→慢→慢慢对齐→又卡」周期性卡慢 + TIMER 被DROP等tick追 导致卡）══
   P0-1 进度滤波相同y值不入窗（根治周期性卡慢循环，完美对应你描述）
@@ -715,8 +734,109 @@ def _stage_lyric_event(line: str, event: str):
             log(f"[LYRIC_PROFILE] LYRIC_EVENT_QUEUE_APPEND_FAIL msg={_e!r} → 丢弃: {line[:20]!r}")
         except Exception:
             pass
-LYRIC_TICK_MS = 80
+LYRIC_TICK_MS = 10          # ══ v7.00 本地时钟驱动：10ms 细粒度主循环，eff_ms 严格单调匀速不卡
 LYRIC_SONG_INIT_MS = 300   # 切歌/初始化后等待 SMTC 的最小间隔（避免抢跑）
+
+# ═══════════════════════════════════════════════════════════════
+# v7.00 本地单调时钟进度系统（按用户方案：切歌/seek/暂停恢复 只锚定一次 SMTC，
+#       之后 100% 由本地 perf_counter 积分驱动进度，offset 直接作用）
+# ══ 根治「SMTC 上报频率不一致导致歌词一卡一卡」：eff_ms 不再依赖每次 poll 得到的 progress_ms
+# ═══════════════════════════════════════════════════════════════
+# 锚定的墙上时间戳（使用 perf_counter — 单调不回拨，NTP 校时不影响歌词进度）
+_CLOCK_anchor_wall_perf: float = 0.0
+# 锚定时刻的 SMTC 播放位置（毫秒）
+_CLOCK_anchor_pos_ms: int = 0
+# 当前播放速率（SMTC.PlaybackRate，1.0=正常 0.5=半速 2.0=双倍）
+_CLOCK_play_rate: float = 1.0
+# 是否已暂停（暂停期间墙上时长不计入进度）
+_CLOCK_paused: bool = False
+# 漂移校正累计偏移（毫秒）：每 30s 对比一次 SMTC 位置，超出 200ms 阈值时
+#                       每轮 tick 渐进式拉 ±50ms，避免突跳"卡一下"
+_CLOCK_drift_trim_ms: int = 0
+# 漂移校正目标值（非 0 时每轮 tick 向其推进 ±50ms，归零后清零）
+_CLOCK_drift_target_ms: int = 0
+# 上次 drift 校正检查的 wall_ts（time.time()，每 30s 一次）
+_CLOCK_last_drift_check_ts: float = 0.0
+# 锚定时记录的 pos_ms（用于 seek 检测，若 SMTC 下一次 pos 与本地理想值差 >3s 判定 seek）
+_CLOCK_last_anchor_snapshot_ms: int = 0
+# 上次的播放状态（用于检测 paused→resumed）
+_CLOCK_last_playing_state: bool = False
+# 上次的播放速率（用于检测倍速变化，若变化则顺手重锚一次 pos）
+_CLOCK_last_playback_rate: float = 1.0
+
+_CLOCK_lock = threading.Lock()
+
+
+def get_local_eff_ms() -> int:
+    """v7.00 统一的进度计算入口 — 所有路径（tick / TIMER / force / catchup / intro）**必须唯一使用此函数**。
+    进度公式：
+      eff_ms = elapsed_ms_since_anchor * play_rate
+             + anchor_pos_ms
+             + drift_trim_ms   (渐进式漂移校正)
+             + _LYRIC_OFFSET_MS (人工延迟调节，正=延后 负=提前)
+    保证 4 条路径 offset / drift / play_rate 语义 100% 统一，不会再出现"定时和 tick 差一个 offset"的错位。
+    使用 time.perf_counter()（单调高精度，Windows 下 100ns 级，NTP 不回拨）。
+    """
+    with _CLOCK_lock:
+        now_perf = time.perf_counter()
+        if _CLOCK_anchor_wall_perf <= 0:
+            # 未锚定过（启动前几秒，或 SMTC 会话为空）→ 兜底返回 0，等下次锚定
+            return max(0, int(_LYRIC_OFFSET_MS or 0))
+        # 1) 墙上时间差（秒）
+        dt_wall_s = max(0.0, now_perf - _CLOCK_anchor_wall_perf)
+        if _CLOCK_paused:
+            dt_effective_s = 0.0
+        else:
+            dt_effective_s = dt_wall_s * float(_CLOCK_play_rate if _CLOCK_play_rate else 1.0)
+        eff = int(dt_effective_s * 1000) \
+              + int(_CLOCK_anchor_pos_ms or 0) \
+              + int(_CLOCK_drift_trim_ms or 0) \
+              + int(_LYRIC_OFFSET_MS or 0)
+        return max(0, eff)
+
+
+def _anchor_clock(pos_ms: int, *, reason: str = "") -> None:
+    """v7.00 统一的时钟重锚入口 — 切歌/seek/暂停恢复/倍速变化 所有路径都必须走这里，
+    绝不能直接改 _CLOCK_* 变量以免某处漏写状态不一致。
+    每次重锚都会清空 drift_trim（新锚点本身就是正确基准，旧累计校正已无意义）。"""
+    global _CLOCK_anchor_wall_perf, _CLOCK_anchor_pos_ms, \
+           _CLOCK_drift_trim_ms, _CLOCK_drift_target_ms, \
+           _CLOCK_last_anchor_snapshot_ms
+    with _CLOCK_lock:
+        pos_i = max(0, int(pos_ms or 0))
+        _CLOCK_anchor_wall_perf = time.perf_counter()
+        _CLOCK_anchor_pos_ms = pos_i
+        _CLOCK_last_anchor_snapshot_ms = pos_i
+        # 新锚点 → drift 校正全部清零（重新开始积累误差）
+        _CLOCK_drift_trim_ms = 0
+        _CLOCK_drift_target_ms = 0
+    if reason:
+        try:
+            log(f"[LOCAL_CLOCK] ANCHOR reason={reason!r} pos_ms={pos_i} rate={_CLOCK_play_rate:.2f} paused={_CLOCK_paused}")
+        except Exception:
+            pass
+
+
+def _apply_drift_step() -> None:
+    """v7.00 每轮 tick 末尾调用一次 — 渐进式推进漂移校正（每轮最多 ±50ms），
+    避免校正时歌词"跳一下卡一下"。_CLOCK_drift_target_ms 为 0 直接 return。"""
+    global _CLOCK_drift_trim_ms, _CLOCK_drift_target_ms
+    with _CLOCK_lock:
+        if not _CLOCK_drift_target_ms:
+            return
+        target = int(_CLOCK_drift_target_ms)
+    step = max(-50, min(50, target))  # 每轮最多 ±50ms（10ms tick → 5000ms/s 校正速度足够快）
+    remaining_after = target - step
+    if remaining_after == 0 or (abs(remaining_after) < 10):
+        # 剩 <10ms 直接一步到位 + 清 target
+        with _CLOCK_lock:
+            _CLOCK_drift_trim_ms += int(target)
+            _CLOCK_drift_target_ms = 0
+    else:
+        with _CLOCK_lock:
+            _CLOCK_drift_trim_ms += int(step)
+            _CLOCK_drift_target_ms = int(remaining_after)
+
 _last_song_change_ts = 0.0 # 切歌时刻
 _smtc_song_intro_emitted_at = 0.0  # v6.64: 切歌提示刚发出时间戳（poll_smtc 立刻打了就记这里，tick_lyric 防重复）
 _last_playing_state = None # 播放/暂停状态切换检测
@@ -1140,13 +1260,7 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                     _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
                     # v6.66 [LYRIC_SYNC] Timer 发句：打 drift = wall - LRC_target
                     lrc_t_now = tl[next_idx][0] * 1000.0 + _LYRIC_OFFSET_MS
-                    now_eff_ms = _SMTC_STATE.get("progress_ms", 0)
-                    if playing and _last_smtc_ts > 0:
-                        now_eff_ms += int((time.time() - _last_smtc_ts) * 1000)
-                    if _LYRIC_OFFSET_MS:
-                        now_eff_ms += _LYRIC_OFFSET_MS
-                        if now_eff_ms < 0:
-                            now_eff_ms = 0
+                    now_eff_ms = get_local_eff_ms()
                     drift_cb = now_eff_ms - lrc_t_now
                     # ══ v6.67 分析：TIMER real_gap vs LRC_gap
                     cur_wall_ms = int(ts * 1000)
@@ -1558,6 +1672,7 @@ def poll_smtc():
     - 返回是否有有效会话
     """
     global _last_smtc_ts, _last_song_key, _last_song_change_ts, _lyrics_fetched_for, _cover_fetched_for
+    global _CLOCK_play_rate, _CLOCK_paused, _CLOCK_last_playing_state, _CLOCK_last_playback_rate, _CLOCK_last_drift_check_ts, _CLOCK_drift_target_ms
     mgr = _ensure_smtc_mgr()
     if mgr is None:
         return False
@@ -1690,6 +1805,11 @@ def poll_smtc():
                 _cancel_all_lyric_timers(cur_key)
                 _cancel_catchup(cur_key)
                 tick_lyric._last_song_sent = cur_key
+                # ══ v7.00 本地时钟：切歌 → 初始化 clock state 变量，下面再按 pos 锚定
+                _CLOCK_play_rate = 1.0
+                _CLOCK_last_playback_rate = 1.0
+                _CLOCK_paused = (not playing)
+                _CLOCK_last_playing_state = playing
                 # ── 歌词 & 封面：先查本地缓存，命中就不走网络，严格 0ms 抢第一句 ──
                 if artist and title:
                     _lyrics_fetched_for = cur_key
@@ -1729,6 +1849,11 @@ def poll_smtc():
                             log(f"封面: 缓存命中 {csrc} → {curl[:70]}...")
                         else:
                             threading.Thread(target=_fetch_cover_bg, args=(artist, title, cur_key), daemon=True).start()
+                # ══ v7.00 本地时钟：切歌 → 按当前读到的 SMTC pos 立刻首次锚定（下一轮会自愈修正0点问题）
+                pos_ms_tmp = int(pos_sec * 1000)
+                if not playing:
+                    pos_ms_tmp = 0
+                _anchor_clock(pos_ms_tmp, reason=f"song_init {cur_key!r}")
         else:
             # 没拿到 media_info，但已有 song，仍更新 duration_str 兜底
             if duration_str and cur_key == "":
@@ -1736,90 +1861,111 @@ def poll_smtc():
                     if _SMTC_STATE["song"] and not _SMTC_STATE["duration_str"]:
                         _SMTC_STATE["duration_str"] = duration_str
 
-        # ══ v6.74 P1-2 进度平滑滤波 ══
-        # ══ v6.80 P0 根修：相同y值不入窗（playing时）
-        #   Spotify SMTC 仅 1s 更新一次 progress，主循环 80ms 一轮，1s 内有 ~12 轮 pos_ms_raw 相同
-        #   → 旧逻辑：5 点滑窗全是相同 y → 最小二乘拟合斜率≈0 → clamp 到 900 → pred 比真实慢 10%
-        #   → fused = 0.6*pred(慢) + 0.4*raw(停) → eff_ms 卡在原地 → tick 算 idx 不推进 → 歌词"卡一下"
-        #   → 直到 SMTC 1s 后更新，滑窗混入新点 → rate 慢慢回到 1000 → "慢→慢慢对齐"
-        #   → 下一次 SMTC 刷新 → 又卡 → 完美对应你描述的周期性卡慢循环！
-        #   修复：playing 且 pos_ms_raw == 滑窗最后一条 y 且（墙上距离 < 2s）→ 不入窗污染样本
-        #         超过 2s 的重复点才强制入窗兜底，避免窗口太旧外推过远
-        global _progress_window, _last_predicted_pos_ms
+        # ═══════════════════════════════════════════════════════════════
+        # v7.00 本地时钟驱动进度系统（替换 v6.74~v6.80 滑窗滤波）
+        #   - 切歌/seek/暂停恢复/倍速变化 4 类事件 → 立即调用 _anchor_clock() 重锚 SMTC.pos
+        #   - 之后 100% 由本地 time.perf_counter() 单调积分驱动，完全摆脱 SMTC 上报频率
+        #   - 每 30s 对比 SMTC.pos 与本地理想位置，偏差>200ms → 渐进式 drift_trim 校正
+        # ═══════════════════════════════════════════════════════════════
         pos_ms_raw = int(pos_sec * 1000)
         now_wall = time.time()
-        eff_ms_for_write = pos_ms_raw
+        # ── ① 读取 PlaybackRate（倍速）：多数播放器 SMTC 给，失败默认 1.0 ──
+        playback_rate = 1.0
         try:
-            # 1) seek/切歌检测：当次 pos_ms 与上次预测值相差 > 3000ms → 重置窗口
-            if _last_predicted_pos_ms is not None:
-                diff = abs(pos_ms_raw - _last_predicted_pos_ms)
-                if diff > 3000:
-                    with _progress_window_lock:
-                        _progress_window.clear()
-                    _last_predicted_pos_ms = None
-            # 2) 写入滑窗（加锁，超过上限 pop 最旧）
-            with _progress_window_lock:
-                skip_append = False
-                if playing and _progress_window:
-                    last_w_win, last_p_win = _progress_window[-1]
-                    if last_p_win == pos_ms_raw and (now_wall - last_w_win) < 2.0:
-                        skip_append = True
-                if not skip_append:
-                    _progress_window.append((now_wall, pos_ms_raw))
-                    if len(_progress_window) > _PROGRESS_WINDOW_MAX:
-                        _progress_window.pop(0)
-                window_snapshot = list(_progress_window)
-            # 3) 窗口 >=3 条：拟合播放速率 + 预测校准
-            if playing and len(window_snapshot) >= 3:
-                n = len(window_snapshot)
-                sum_x = 0.0
-                sum_y = 0.0
-                sum_xx = 0.0
-                sum_xy = 0.0
-                x0 = window_snapshot[0][0]
-                for (wx, wy) in window_snapshot:
-                    x = wx - x0
-                    y = float(wy)
-                    sum_x += x
-                    sum_y += y
-                    sum_xx += x * x
-                    sum_xy += x * y
-                denom = n * sum_xx - sum_x * sum_x
-                if denom != 0:
-                    rate_ms_per_sec = (n * sum_xy - sum_x * sum_y) / denom
-                else:
-                    rate_ms_per_sec = 1000.0
-                # ══ v6.76 P1-2 致命量纲修复 + rate clamp：
-                #   - x=wall秒, y=pos_ms → rate 量纲 = ms/秒，正常播放≈1000
-                #   - v6.74~v6.75 命名 ms_per_wallms 且 Line1619 再×1000 → 微秒量级
-                #     → fused = 0.6×(pred超前几e5ms) + 0.4×实测 → poll 重置窗口前累计超前 2~4s
-                #     → 表现：drift_eff_vs_LRC=-2000~-3800ms (Timer 提前2~4秒emit)，idx=7→8仅82ms连发
-                #   - rate clamp [900,1100]（0.9x~1.1x 速度），防止暂停/切歌残点给出<100或>2000的乱率
-                #   - pred clamp：与 pos_raw 偏差>5000ms → 降级用 pos_raw，免单轮拟合异常拉飞进度
-                rate_ms_per_sec = min(1100.0, max(900.0, rate_ms_per_sec))
-                last_wall_ts, last_pos_ms = window_snapshot[-1]
-                pred_pos_ms = int(last_pos_ms + (now_wall - last_wall_ts) * rate_ms_per_sec)
-                if pred_pos_ms < 0:
-                    pred_pos_ms = 0
-                if abs(pred_pos_ms - pos_ms_raw) > 5000:
-                    pred_pos_ms = pos_ms_raw
-                _last_predicted_pos_ms = pred_pos_ms
-                # 融合：0.6*预测 + 0.4*实测
-                fused = int(0.6 * pred_pos_ms + 0.4 * pos_ms_raw)
-                if fused < 0:
-                    fused = 0
-                eff_ms_for_write = fused
-            else:
-                _last_predicted_pos_ms = pos_ms_raw
+            playback_rate = float(getattr(pb, "playback_rate", 1.0) or 1.0)
         except Exception:
-            # 滤波任何异常 → 降级用原始采样值，不崩主流程
-            eff_ms_for_write = pos_ms_raw
+            playback_rate = 1.0
+        if playback_rate <= 0 or playback_rate > 10.0:
+            playback_rate = 1.0
+        # ── ② 事件检测： paused→resumed / rate_changed / seek / 首次未anchor ──
+        need_anchor = False
+        anchor_reason = ""
+        # ②-1: paused → resumed（暂停→播放）必须 anchor
+        if playing and (not _CLOCK_last_playing_state):
+            need_anchor = True
+            anchor_reason = "paused→resumed"
+        # ②-2: 倍速变化 → 顺手重锚（保证 play_rate 更新后基准正确）
+        elif abs(playback_rate - _CLOCK_last_playback_rate) > 0.01:
+            need_anchor = True
+            anchor_reason = f"rate_change {_CLOCK_last_playback_rate:.2f}→{playback_rate:.2f}"
+        # ②-3: seek 检测（同歌内拖动进度条）→ SMTC 与本地理想差>3s
+        elif _CLOCK_anchor_wall_perf > 0:
             try:
-                with _progress_window_lock:
-                    _progress_window.clear()
+                with _CLOCK_lock:
+                    wperf = _CLOCK_anchor_wall_perf
+                    apos = _CLOCK_anchor_pos_ms
+                    prate = _CLOCK_play_rate if _CLOCK_play_rate else 1.0
+                dt_wall_s = max(0.0, time.perf_counter() - wperf)
+                ideal_pos_ms = int(apos + dt_wall_s * float(prate) * 1000)
+                if abs(pos_ms_raw - ideal_pos_ms) > 3000:
+                    need_anchor = True
+                    anchor_reason = f"seek smtc={pos_ms_raw}ms ideal={ideal_pos_ms}ms diff={abs(pos_ms_raw-ideal_pos_ms)}ms"
             except Exception:
                 pass
-            _last_predicted_pos_ms = None
+        # ②-4: 完全没 anchor 过（启动首轮有歌但未切歌）→ 兜底
+        elif _CLOCK_anchor_wall_perf <= 0 and pos_ms_raw >= 0:
+            need_anchor = True
+            anchor_reason = "first_poll_after_start"
+        # ②-5: 切歌1s内 anchor_snapshot 与 pos差 >5s 兜底自愈
+        if (not need_anchor) and _SMTC_STATE.get("song", "") and (time.time()-_last_song_change_ts < 1.0):
+            try:
+                if abs(_CLOCK_last_anchor_snapshot_ms - pos_ms_raw) > 5000:
+                    need_anchor = True
+                    anchor_reason = "song_changed_snapshot_gap_heal"
+            except Exception:
+                pass
+        # ── ③ 执行 anchor ──
+        if need_anchor:
+            _CLOCK_play_rate = playback_rate
+            _CLOCK_last_playback_rate = playback_rate
+            _CLOCK_paused = (not playing)
+            _anchor_clock(pos_ms_raw, reason=anchor_reason)
+        else:
+            _CLOCK_paused = (not playing)
+            # rate 小变化仍同步（不重锚）
+            if abs(_CLOCK_play_rate - playback_rate) > 0.001:
+                with _CLOCK_lock:
+                    _CLOCK_play_rate = playback_rate
+            _CLOCK_last_playback_rate = playback_rate
+        _CLOCK_last_playing_state = playing
+        # ── ④ 每 30s drift 检查：SMTC.pos vs 本地理想位置（不含 drift_trim/offset） ──
+        if now_wall - _CLOCK_last_drift_check_ts >= 30.0:
+            _CLOCK_last_drift_check_ts = now_wall
+            if playing and _CLOCK_anchor_wall_perf > 0:
+                try:
+                    with _CLOCK_lock:
+                        wperf = _CLOCK_anchor_wall_perf
+                        apos = _CLOCK_anchor_pos_ms
+                        prate = _CLOCK_play_rate if _CLOCK_play_rate else 1.0
+                    dt_wall_s = max(0.0, time.perf_counter() - wperf)
+                    ideal_no_drift_ms = int(apos + dt_wall_s * float(prate) * 1000)
+                    delta_ms = pos_ms_raw - ideal_no_drift_ms  # +:SMTC领先 → 让歌词加速(正trim)
+                    if abs(delta_ms) > 200:
+                        target = int(delta_ms)
+                        with _CLOCK_lock:
+                            _CLOCK_drift_target_ms = target
+                        try:
+                            log(f"[LOCAL_CLOCK] DRIFT_CHECK_SET_TARGET smtc={pos_ms_raw}ms ideal={ideal_no_drift_ms}ms delta={delta_ms}ms → drift_target={target}ms (渐进±50ms/10ms_tick)")
+                        except Exception:
+                            pass
+                    else:
+                        # 误差<200ms 且有 residual drift_trim → 归零
+                        try:
+                            with _CLOCK_lock:
+                                cur_trim = _CLOCK_drift_trim_ms
+                            if abs(cur_trim) > 0 and abs(delta_ms) < 100:
+                                with _CLOCK_lock:
+                                    _CLOCK_drift_target_ms = -cur_trim
+                                try:
+                                    log(f"[LOCAL_CLOCK] DRIFT_CHECK_TRIM_RETURN trim={cur_trim}ms delta={delta_ms}ms<100ms → return to zero target={-cur_trim}ms")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        # ── ⑤ 把 SMTC raw pos 写入状态（仅展示/调试用，歌词计算统一走 get_local_eff_ms()） ──
+        eff_ms_for_write = pos_ms_raw
 
         # 总是更新: 进度、播放状态、SMTC 时间戳
         with _state_lock:
@@ -2857,16 +3003,9 @@ def _fetch_lyrics_bg(artist: str, title: str, song_key: str, t_intro: float = 0.
                 log(f"[LYRIC_PROFILE] POST_T5:DROP_song_changed_before_emit song={song_key!r} current={_SMTC_STATE.get('song')!r}")
                 _cache_put_lyric(artist, title, name, tl_clean, trans_clean)
                 return
-            progress_raw = _SMTC_STATE.get("progress_ms", 0)
             playing_now = _SMTC_STATE.get("playing", False)
-            eff_ms = progress_raw
-            if playing_now and _last_smtc_ts > 0:
-                eff_ms += int((time.time() - _last_smtc_ts) * 1000)
-            dt_from_last_smtc = (int((time.time() - _last_smtc_ts) * 1000) if _last_smtc_ts > 0 else 0)
-            if _LYRIC_OFFSET_MS:
-                eff_ms += _LYRIC_OFFSET_MS
-                if eff_ms < 0:
-                    eff_ms = 0
+            eff_ms = get_local_eff_ms()
+            dt_from_last_smtc = 0
             cur_idx, cur_txt = _current_lyric_idx(tl_clean, eff_ms)
             # ══ v6.71 P0 修复：LRC 时间戳取法加 try/except，坏行绝不抛到外层
             try:
@@ -2906,14 +3045,7 @@ def _force_emit_current_lyric(song_key: str):
         if not timeline:
             return
         playing = _SMTC_STATE.get("playing", False)
-        eff_ms = _SMTC_STATE["progress_ms"]
-        if playing and _last_smtc_ts > 0:
-            eff_ms += int((time.time() - _last_smtc_ts) * 1000)
-        # ══ 人工毫秒级校准（正=延后 负=提前） ══
-        if _LYRIC_OFFSET_MS:
-            eff_ms += _LYRIC_OFFSET_MS
-            if eff_ms < 0:
-                eff_ms = 0
+        eff_ms = get_local_eff_ms()
         idx, cur = _current_lyric_idx(timeline, eff_ms)
         trans_idx, cur_trans = _current_lyric_idx(trans_timeline, eff_ms)
         if not cur:
@@ -3136,15 +3268,8 @@ def tick_lyric():
         playing = _SMTC_STATE.get("playing", False)
         timeline = _SMTC_STATE.get("timeline", [])
         trans_timeline = _SMTC_STATE.get("trans_timeline", [])
-        # 进度本地推算：SMTC 采样时间 + 采样时位置
-        eff_ms = _SMTC_STATE["progress_ms"]
-        if playing and _last_smtc_ts > 0:
-            eff_ms += int((time.time() - _last_smtc_ts) * 1000)
-        # ══ 人工毫秒级校准（正=延后 负=提前）══════════════════
-        if _LYRIC_OFFSET_MS:
-            eff_ms += _LYRIC_OFFSET_MS
-            if eff_ms < 0:
-                eff_ms = 0
+        # ══ v7.00：统一走本地单调时钟，完全脱离 SMTC 上报频率 ══
+        eff_ms = get_local_eff_ms()
         # 切歌初期: 强制显示 ▶ 歌名（只发一次）
         since_change = time.time() - _last_song_change_ts
         if since_change < LYRIC_SONG_INIT_MS / 1000.0 and _last_lyric_raw == "" and not timeline:
@@ -3379,7 +3504,7 @@ tick_lyric._last_song_sent = ""  # type: ignore
 
 
 def _lyric_tick_loop():
-    """独立线程：每 LYRIC_TICK_MS ms 做一次 SMTC 轮询 + 歌词推算"""
+    """独立线程：每 LYRIC_TICK_MS ms 做一次 SMTC 轮询 + 歌词推算 + drift渐进校正"""
     while True:
         try:
             tick_lyric()
@@ -3387,6 +3512,11 @@ def _lyric_tick_loop():
             import traceback
             log(f"歌词tick异常: {e}")
             log(traceback.format_exc())
+        # ══ v7.00：每轮 tick 末尾推进 drift_trim 渐进校正一步（每轮 ±50ms，避免突跳卡）
+        try:
+            _apply_drift_step()
+        except Exception:
+            pass
         time.sleep(LYRIC_TICK_MS / 1000.0)
 
 
@@ -3630,14 +3760,8 @@ def run():
             music = {}
             with _state_lock:
                 if _SMTC_STATE.get("song"):
-                    eff_ms = _SMTC_STATE["progress_ms"]
-                    if _SMTC_STATE.get("playing") and _last_smtc_ts > 0:
-                        eff_ms += int((time.time() - _last_smtc_ts) * 1000)
-                    if _LYRIC_OFFSET_MS:
-                        eff_ms_offset = eff_ms + _LYRIC_OFFSET_MS
-                        eff_ms_for_music = eff_ms_offset if eff_ms_offset >= 0 else 0
-                    else:
-                        eff_ms_for_music = eff_ms
+                    eff_ms_for_music = get_local_eff_ms()
+                    eff_ms = eff_ms_for_music
                     music = {
                         "song": _SMTC_STATE["song"],
                         "cover": _SMTC_STATE["cover"],
