@@ -140,7 +140,30 @@ class EventDispatcher:
         attachments_raw = getattr(msg, 'attachments', None) or []
         if attachments_raw:
             image_urls = self._extract_image_urls(attachments_raw)
-        msg_type = "图文" if (image_urls and content.strip()) else (
+
+        # ══ P0 修复（v1.1 / 2026-08-11）：KOOK 用户端发图片时，平台有时不走 attachments
+        #    而是包装成一条 MessageTypes.CARD 消息，content = '[{"theme":"invisible",...}]'
+        #    卡片内部用 image / image-group / container 模块嵌图片，旧版完全不解析。
+        _raw_type_str = str(_raw_type) if _raw_type is not None else ""
+        _looks_like_card = isinstance(content, str) and content.lstrip().startswith("[{")
+        if ("CARD" in _raw_type_str.upper()) or _looks_like_card:
+            try:
+                card_imgs = EventDispatcher._extract_card_images(content)
+            except Exception:
+                card_imgs = []
+            if card_imgs:
+                logger.info("🧩 CARD 消息解析到 %d 张图片 (attachments=%d, theme_json=%s)",
+                            len(card_imgs), len(image_urls), content[:40].replace("\n", " "))
+            # 去重合并保持顺序
+            _seen: set[str] = set()
+            merged: list[str] = []
+            for u in [*image_urls, *card_imgs]:
+                if u and u not in _seen:
+                    _seen.add(u)
+                    merged.append(u)
+            image_urls = merged
+
+        msg_type = "图文" if (image_urls and content.strip() and not _looks_like_card) else (
             "图片" if image_urls else "文字"
         )
 
@@ -320,6 +343,77 @@ class EventDispatcher:
         return urls
 
     @staticmethod
+    def _extract_card_images(card_payload) -> list[str]:
+        """
+        从 KOOK 卡片 JSON（list[card] / dict card / JSON 字符串）里递归提取所有图片 URL。
+        覆盖 12 个 KOOK 卡片模块中含图的场景：
+          - image:            src
+          - image-group:      elements[].src
+          - container:        modules[] 递归
+          - section:          accessory (若 type=image 则取 src)
+          - context:          elements[] 里可能嵌套 image 元素（type=image/src 字段）
+        纯文本类模块（header/divider/action-group/file/audio/video/countdown/invite）无独立图片，跳过。
+        """
+        urls: list[str] = []
+        import json as _json
+
+        def _push(u: str) -> None:
+            if u and isinstance(u, str) and (u.startswith("http://") or u.startswith("https://")):
+                urls.append(u)
+
+        def _walk(node) -> None:
+            if node is None:
+                return
+            if isinstance(node, list):
+                for item in node:
+                    _walk(item)
+                return
+            if not isinstance(node, dict):
+                return
+            t = node.get("type", "") or ""
+            if t == "image":
+                _push(node.get("src", "") or node.get("url", ""))
+            elif t == "image-group":
+                for el in node.get("elements", []) or []:
+                    if isinstance(el, dict):
+                        _push(el.get("src", "") or el.get("url", ""))
+            elif t == "section":
+                acc = node.get("accessory")
+                if isinstance(acc, dict) and (acc.get("type") == "image"):
+                    _push(acc.get("src", "") or acc.get("url", ""))
+                # section.text 是 paragraph，其字段里无图片
+            elif t == "context":
+                for el in node.get("elements", []) or []:
+                    if isinstance(el, dict):
+                        if el.get("type") == "image":
+                            _push(el.get("src", "") or el.get("url", ""))
+                        elif isinstance(el.get("src"), str):
+                            _push(el["src"])  # KMarkdown 元素没有 type，但有时带 src
+            # ══ 统一递归任何含 modules 字段的节点：
+            #    - 顶层 card dict（theme/color 等，**无 type 字段**，KOOK 包装图片消息的默认格式）
+            #    - container 模块（type="container"，含 modules）
+            #    - 其他带 modules 的未知扩展模块
+            #    避免只在 container 分支单独 walk 导致漏顶层 / 重复遍历。
+            #    纯文本类模块（header/divider/action-group/file/audio/video/countdown/invite）
+            #    无 modules 字段，会自然跳过。
+            if "modules" in node:
+                _walk(node.get("modules", []))
+
+        # 入口：可能是 JSON 字符串（CARD 消息 content）、单个 card dict、或 card list
+        if isinstance(card_payload, str):
+            s = (card_payload or "").strip()
+            if not (s.startswith("[") or s.startswith("{")):
+                return []
+            try:
+                parsed = _json.loads(s)
+            except Exception:
+                return []
+            _walk(parsed)
+        else:
+            _walk(card_payload)
+        return urls
+
+    @staticmethod
     def _extract_quote_info(msg) -> tuple[str, list[str]]:
         """
         从 khl Message.quote 中提取：
@@ -343,8 +437,26 @@ class EventDispatcher:
                     v = getattr(quote, k, None)
                     if v:
                         quoted_images.extend(EventDispatcher._extract_image_urls(v))
+            # ══ 引用的消息本身可能是 CARD 类型（用户引用一条卡片包装的图片消息），
+            #    attachments 可能为空，图片嵌在 quoted_text=卡片 JSON 里
+            if quoted_text and isinstance(quoted_text, str) and quoted_text.lstrip().startswith("[{"):
+                try:
+                    q_card_imgs = EventDispatcher._extract_card_images(quoted_text)
+                    if q_card_imgs:
+                        quoted_images.extend(q_card_imgs)
+                except Exception:
+                    pass
         except Exception:
             pass
+        # 去重保持顺序
+        if quoted_images:
+            _seen_q: set[str] = set()
+            _uniq: list[str] = []
+            for _u in quoted_images:
+                if _u and _u not in _seen_q:
+                    _seen_q.add(_u)
+                    _uniq.append(_u)
+            quoted_images = _uniq
         return quoted_text or "", quoted_images
 
     def _replace_mentions(self, content: str, cfg) -> str:
