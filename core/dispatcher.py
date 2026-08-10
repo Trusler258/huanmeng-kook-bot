@@ -49,6 +49,12 @@ class EventDispatcher:
                 self._msg_count, e, traceback.format_exc())
 
     async def _dispatch_inner(self, msg) -> None:
+        # ══ 注意：这里必须在方法内部直接取 msg.type / msg.content
+        #    之前曾错误地引用了 dispatch() 方法里的局部变量 _raw_type，
+        #    导致 NameError: name '_raw_type' is not defined
+        _raw_type = getattr(msg, 'type', None)
+        _raw_content = getattr(msg, 'content', None)
+
         cfg = get_config()
 
         # ── 消息去重 ──
