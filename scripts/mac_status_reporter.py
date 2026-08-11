@@ -886,11 +886,13 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
         return
     if _math.isnan(wait_f):
         return
+    # v7.01 修链不中断：wait_f 负值/<=15ms 不再静默return（依赖tick兜底会造成clamped/seek后卡多轮或丢句）
+    # 统一最小 1ms 调度，保证Timer链条永不中断
     if wait_f < 0:
-        return
+        wait_f = 1.0
     wait_f = min(wait_f, 30.0 * 60.0 * 1000.0)
-    if wait_f <= LYRIC_TICK_MS * 1.5:
-        return
+    if wait_f < 1.0:
+        wait_f = 1.0
 
     def _cb():
         try:
@@ -1056,20 +1058,22 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                     old_next_t_ms = int(tl2[next_idx + 1][0] * 1000 + _LYRIC_OFFSET_MS)
                     old_cur_t_ms = int(tl2[next_idx][0] * 1000 + _LYRIC_OFFSET_MS)
                     old_next_wait = max(0, old_next_t_ms - old_cur_t_ms) - LYRIC_TICK_MS
+                    # v7.01 修链不中断：0/负/短等待不再跳过（<=15ms不调度会导致整句漏发或末尾卡死）
+                    if next_wait_f < 1.0:
+                        next_wait_f = 1.0
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT idx={next_idx}->{next_idx+1} next_wait_f={next_wait_f:.3f}ms (Timer_s={next_wait_f/1000.0:.6f}s) | old_int={old_next_wait}ms (diff_f-old={next_wait_f-float(old_next_wait):.3f}ms)")
-                    if next_wait_f > LYRIC_TICK_MS * 1.5:
-                        with _next_lyric_timer_lock:
-                            if _next_lyric_timer_song == song_key:
-                                try:
-                                    t = threading.Timer(next_wait_f / 1000.0,
-                                                        _schedule_next_lyric_at,
-                                                        args=(song_key, tl2, ttl2, next_idx + 1, 0.0))
-                                    t.daemon = True
-                                    t.start()
-                                    _next_lyric_timer = t
-                                except Exception:
-                                    pass
+                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT idx={next_idx}->{next_idx+1} next_wait_f={next_wait_f:.3f}ms (Timer_s={next_wait_f/1000.0:.6f}s min=1ms强制) | old_int={old_next_wait}ms (diff_f-old={next_wait_f-float(old_next_wait):.3f}ms)")
+                    with _next_lyric_timer_lock:
+                        if _next_lyric_timer_song == song_key:
+                            try:
+                                t = threading.Timer(next_wait_f / 1000.0,
+                                                    _schedule_next_lyric_at,
+                                                    args=(song_key, tl2, ttl2, next_idx + 1, 0.0))
+                                t.daemon = True
+                                t.start()
+                                _next_lyric_timer = t
+                            except Exception:
+                                pass
         except Exception as e:
             if _LYRIC_SYNC_LOG:
                 log(f"[LYRIC_SYNC] TIMER:EXCEPTION_TRACEBACK err={e}\n{_tb.format_exc()}")
@@ -2984,20 +2988,22 @@ def tick_lyric():
                 _last_trans_idx = trans_idx
                 if timeline and idx + 1 < len(timeline):
                     next_wait_f = max(0.0, (timeline[idx + 1][0] - timeline[idx][0]) * 1000.0)
+                    # v7.01 修链不中断：空行调度也强制min=1ms，不再<=15ms跳过
+                    if next_wait_f < 1.0:
+                        next_wait_f = 1.0
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] tick:EMPTY_LINE_SCHEDULE_NEXT idx={idx}->{idx+1} next_wait_f={next_wait_f:.3f}ms (Timer_s={next_wait_f/1000.0:.6f}s)")
-                    if next_wait_f > LYRIC_TICK_MS * 1.5:
-                        with _next_lyric_timer_lock:
-                            if _next_lyric_timer_song == song:
-                                try:
-                                    t = threading.Timer(next_wait_f / 1000.0,
-                                                        _schedule_next_lyric_at,
-                                                        args=(song, timeline, trans_timeline, idx + 1, 0.0))
-                                    t.daemon = True
-                                    t.start()
-                                    _next_lyric_timer = t
-                                except Exception:
-                                    pass
+                        log(f"[LYRIC_SYNC] tick:EMPTY_LINE_SCHEDULE_NEXT idx={idx}->{idx+1} next_wait_f={next_wait_f:.3f}ms (Timer_s={next_wait_f/1000.0:.6f}s min=1ms强制)")
+                    with _next_lyric_timer_lock:
+                        if _next_lyric_timer_song == song:
+                            try:
+                                t = threading.Timer(next_wait_f / 1000.0,
+                                                    _schedule_next_lyric_at,
+                                                    args=(song, timeline, trans_timeline, idx + 1, 0.0))
+                                t.daemon = True
+                                t.start()
+                                _next_lyric_timer = t
+                            except Exception:
+                                pass
                 return
             target_idx = idx
             lrc_t_target = float(timeline[target_idx][0]) * 1000.0 + OFFSET_f

@@ -1117,15 +1117,16 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
             return
     except Exception:
         return
-    # 已经错过了时间点 → 不调度（tick 兜底）
+    # 已经错过了时间点（负值）→ 1ms 后立即触发，让回调内 burst 追进度（不让 tick 兜底导致 10ms~未知卡顿）
     if wait_f < 0:
-        return
+        wait_f = 1.0
     # 极端值保护：最多等 30 分钟
     if wait_f > 30 * 60 * 1000:
         wait_f = 30 * 60 * 1000.0
-    # 80ms 精度下限：再短就交给 tick 兜底
-    if wait_f <= LYRIC_TICK_MS * 1.5:
-        return
+    # ══ v7.01 修链不中断：<=15ms 不再 return 静默（之前依赖tick兜底，但tick在clamped_by_drift/seek后可能卡多轮或漏句）
+    #    改为最小 1ms 调度 — 0 会被 threading.Timer 当0立刻fire但仍建Timer开销；统一拉到1ms（下一个调度切片立刻fire，回调内burst会追平实际进度，不晚）
+    if wait_f < 1.0:
+        wait_f = 1.0
     lrc_next_t_ms = timeline[next_idx][0] * 1000.0 + _LYRIC_OFFSET_MS
     if _LYRIC_SYNC_LOG:
         log(f"[LYRIC_SYNC] TIMER:SCHEDULE song={song_key!r} next_idx={next_idx}/{len(timeline)} LRC_next_t={lrc_next_t_ms:.0f}ms wait_ms_float={wait_f:.2f} Timer_s(=wait/1000)={wait_f/1000.0:.4f}")
@@ -1195,20 +1196,23 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                     # ══ v7.01：按当前真实进度算还剩多少到下一句（不管LRC里两句之间写死的固定间隔）
                     timer_now_eff = get_local_eff_ms()
                     next_wait_f = max(0.0, (next_t_ms_f - timer_now_eff) - _LYRIC_TIMER_PREMISS_MS)
+                    # ══ v7.01 修链不中断：0/负/短等待不再跳过（之前<=15ms不调度，会造成idx=39/46这类"整句消失"和末尾idx=48→49卡死4min）
+                    #    最小 1ms 保证链条始终挂下一个 Timer；哪怕下一句马上就到（甚至已经过了），1ms后回调里 burst 会追平。
+                    if next_wait_f < 1.0:
+                        next_wait_f = 1.0
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={cur_idx_now2} next_idx={cur_idx_now2+1} LRC_next={next_t_ms_f:.0f}ms eff_now={timer_now_eff}ms wait_ms_float={next_wait_f:.2f}")
-                    if next_wait_f > LYRIC_TICK_MS * 1.5:
-                        with _next_lyric_timer_lock:
-                            if _next_lyric_timer_song == song_key:
-                                try:
-                                    t = threading.Timer(next_wait_f / 1000.0,
-                                                        _schedule_next_lyric_at,
-                                                        args=(song_key, tl2, ttl2, cur_idx_now2 + 1, 0.0))
-                                    t.daemon = True
-                                    t.start()
-                                    _next_lyric_timer = t
-                                except Exception:
-                                    pass
+                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={cur_idx_now2} next_idx={cur_idx_now2+1} LRC_next={next_t_ms_f:.0f}ms eff_now={timer_now_eff}ms wait_ms_float={next_wait_f:.2f}(min=1ms强制)")
+                    with _next_lyric_timer_lock:
+                        if _next_lyric_timer_song == song_key:
+                            try:
+                                t = threading.Timer(next_wait_f / 1000.0,
+                                                    _schedule_next_lyric_at,
+                                                    args=(song_key, tl2, ttl2, cur_idx_now2 + 1, 0.0))
+                                t.daemon = True
+                                t.start()
+                                _next_lyric_timer = t
+                            except Exception:
+                                pass
         except Exception as e:
             log(f"WARN: 下一句歌词定时器回调异常: {e}")
             if _LYRIC_SYNC_LOG:
