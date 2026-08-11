@@ -1166,129 +1166,22 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                     if _LYRIC_SYNC_LOG:
                         log(f"[LYRIC_SYNC] TIMER:DROP_next<=last song={song_key!r} next_idx={next_idx} last={last}")
                     return
-                # ══ v6.80 P0 根修：顺序放宽容忍 3 句（diff=2/3 快速补发跳过的句子）
-                #   之前：next_idx > last + 1 → DROP 等 tick 兜底逐句补
-                #   问题：进度滤波卡慢时 tick 推不动 last，TIMER 精确到点了却被 DROP → "卡一下等 tick 慢慢追"
-                #   修复：diff ∈ {2,3} → 从 last+1 到 next_idx-1 每句快速补发（利用 v6.79 的歌词事件队列不覆盖）
-                #         补发完 last == next_idx-1 → 完美复用后面原代码发精确版 next_idx（含 drift 计算 + TIMER 链延续）
-                #         diff >= 4 → 判定 seek/切歌 → DROP，交 tick 兜底（防串歌/seek 乱发）
-                diff = next_idx - last
-                if diff >= 4:
-                    if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] TIMER:DROP_diff>=4 song={song_key!r} next_idx={next_idx} last={last} diff={diff} → 疑似 seek/切歌，交 tick 兜底")
-                    return
-                if diff >= 2:
-                    fill_start = last + 1
-                    fill_end = next_idx - 1
-                    for fill_idx in range(fill_start, fill_end + 1):
-                        try:
-                            if fill_idx >= len(tl):
-                                break
-                            fill_txt = tl[fill_idx][1] if fill_idx < len(tl) else ""
-                            best_fill_trans = ""
-                            best_fill_dt = 0.6
-                            if ttl:
-                                target_t_fill = tl[fill_idx][0]
-                                for tt, ttxt in ttl:
-                                    dtt = abs(tt - target_t_fill)
-                                    if dtt < best_fill_dt and ttxt:
-                                        best_fill_dt = dtt
-                                        best_fill_trans = ttxt
-                                    if best_fill_dt == 0:
-                                        break
-                            _last_lyric_idx = fill_idx
-                            _last_trans_idx = fill_idx
-                            if fill_txt and fill_txt.strip():
-                                _last_lyric_raw = fill_txt
-                                if best_fill_trans:
-                                    _last_trans_raw = best_fill_trans
-                            fts = time.time()
-                            fwall_ms = int(fts * 1000)
-                            prev_last_emit = _last_emit_wall_ts_ms if _last_emit_wall_ts_ms else 0.0
-                            freal_gap = int(float(fwall_ms) - prev_last_emit) if prev_last_emit else 0
-                            N_fill = fill_idx + 1
-                            try:
-                                if fill_idx > 0:
-                                    flrc_gap = int((tl[fill_idx][0] - tl[fill_idx-1][0]) * 1000)
-                                else:
-                                    flrc_gap = 0
-                            except Exception:
-                                flrc_gap = 0
-                            if fill_idx == 0:
-                                fgap_line = f"{N_fill} (FIRST)"
-                            else:
-                                fgap_line = f"[{freal_gap}ms] {N_fill}  | LRC_gap={flrc_gap}ms"
-                            if fill_txt and fill_txt.strip():
-                                f_formatted = fill_txt
-                                if best_fill_trans and best_fill_trans.strip():
-                                    f_formatted = f"{fill_txt}\n翻译: {best_fill_trans}"
-                                _stage_lyric_event(f_formatted, f"{f_formatted}|{fts:.3f}")
-                            if _LYRIC_SYNC_LOG:
-                                log(f"[LYRIC_SYNC] TIMER:FILL+{fill_idx-last} song={song_key!r} idx={fill_idx}/{len(tl)} last_old={last} next_target={next_idx} → 补{fill_idx-last}句（原应DROP_next>last+1）")
-                            if fill_txt and fill_txt.strip():
-                                log(f"歌词(补位Timer) [{fts:.3f}] idx={fill_idx}/{len(tl)} offset={_LYRIC_OFFSET_MS}ms: {fill_txt}" + (f" | 翻译: {best_fill_trans}" if best_fill_trans else "") + f"  | {fgap_line}")
-                            else:
-                                log(f"歌词(补位Timer) [{fts:.3f}] idx={fill_idx}/{len(tl)} offset={_LYRIC_OFFSET_MS}ms: (空行)" + f"  | {fgap_line}")
-                            _last_emit_wall_ts_ms = float(fwall_ms)
-                        except Exception as _fill_e:
-                            try:
-                                if _LYRIC_SYNC_LOG:
-                                    log(f"[LYRIC_SYNC] TIMER:FILL_EXCEPTION song={song_key!r} fill_idx={fill_idx} msg={_fill_e!r}")
-                            except Exception:
-                                pass
-                            continue
-                    # 补发完 last 正好是 next_idx-1 → 复用原代码精确发 next_idx
-                    last = _last_lyric_idx
-                cur_txt = tl[next_idx][1] if next_idx < len(tl) else ""
-                if not cur_txt or not cur_txt.strip():
-                    # 空行：只推索引
-                    _last_lyric_idx = next_idx
-                    _last_trans_idx = next_idx
-                else:
-                    best_trans = ""
-                    best_dt = 0.6
-                    if ttl:
-                        target_t = tl[next_idx][0]
-                        for tt, ttxt in ttl:
-                            dt = abs(tt - target_t)
-                            if dt < best_dt and ttxt:
-                                best_dt = dt
-                                best_trans = ttxt
-                            if best_dt == 0:
-                                break
-                    _last_lyric_idx = next_idx
-                    _last_trans_idx = next_idx
-                    _last_lyric_raw = cur_txt
-                    _last_trans_raw = best_trans
-                    formatted = _format_lyric_line(cur_txt, best_trans)
-                    ts = time.time()
-                    # v6.79：统一走 _stage_lyric_event（防溢出覆盖丢句）
-                    _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
-                    # v6.66 [LYRIC_SYNC] Timer 发句：打 drift = wall - LRC_target
-                    lrc_t_now = tl[next_idx][0] * 1000.0 + _LYRIC_OFFSET_MS
-                    now_eff_ms = get_local_eff_ms()
-                    drift_cb = now_eff_ms - lrc_t_now
-                    # ══ v6.67 分析：TIMER real_gap vs LRC_gap
-                    cur_wall_ms = int(ts * 1000)
-                    N = next_idx + 1
-                    real_gap_ms = 0
-                    lrc_gap_ms = 0
-                    real_gap_str = "FIRST"
-                    gap_analysis_line = ""
-                    if _last_emit_wall_ts_ms == 0.0:
-                        gap_analysis_line = f"{N} (FIRST)"
-                    else:
-                        real_gap_ms = cur_wall_ms - int(_last_emit_wall_ts_ms)
-                        real_gap_str = f"{real_gap_ms}ms"
-                        try:
-                            lrc_gap_ms = int((tl[next_idx][0] - tl[next_idx - 1][0]) * 1000) if next_idx > 0 else 0
-                        except Exception:
-                            lrc_gap_ms = 0
-                        gap_analysis_line = f"[{real_gap_ms}ms] {N}  | LRC_gap={lrc_gap_ms}ms"
-                    log(f"[LYRIC_SYNC] TIMER:EMIT song={song_key!r} idx={next_idx}/{len(tl)} drift_eff_vs_LRC={drift_cb:.0f}ms(+超前 -滞后) now_eff_ms={now_eff_ms} LRC_t={lrc_t_now:.0f}ms emit_ts={ts:.3f} real_gap={real_gap_str} LRC_gap={lrc_gap_ms}ms")
-                    # v6.78：gap_analysis_line 直接并到歌词行末尾，不再独立 2 行
-                    log(f"歌词(定时) [{ts:.3f}] idx={next_idx}/{len(tl)} offset={_LYRIC_OFFSET_MS}ms: {cur_txt}" + (f" | 翻译: {best_trans}" if best_trans else "") + f"  | {gap_analysis_line}")
-                    _last_emit_wall_ts_ms = float(cur_wall_ms)
+                # ══ v7.01：Timer 回调不再 diff>=4 DROP，也不再手写 fill 循环。
+                #   直接使用 _burst_catchup_to_idx：
+                #     - 从 last+1 追到「定时器原定的 next_idx」与「当前 eff_ms 实际已到的 idx」两者较大值
+                #     - 最多 200 句（防 seek 到几百句的极端情况刷屏）
+                #     - 中间句不挂 Timer，只在最后一句自动挂 schedule_next
+                now_eff_cb = get_local_eff_ms()
+                idx_now, _ = _current_lyric_idx(tl, now_eff_cb)
+                if idx_now < 0:
+                    idx_now = next_idx
+                target_idx_cb = max(next_idx, idx_now)
+                target_idx_cb = min(target_idx_cb, len(tl) - 1)
+                if _LYRIC_SYNC_LOG and (target_idx_cb > last + 1 or idx_now > next_idx):
+                    log(f"[LYRIC_SYNC] TIMER:BURST_CATCHUP song={song_key!r} scheduled_next={next_idx} eff_now_idx={idx_now} last={last} → burst_target={target_idx_cb} lines={target_idx_cb-last} eff_now_ms={now_eff_cb}")
+                _burst_catchup_to_idx(song_key, tl, ttl, target_idx_cb,
+                                      playing=playing, eff_ms_ref=now_eff_cb,
+                                      max_lines=200)
             # 发完继续挂下一句 Timer：严格按 LRC 间隔 float
             with _state_lock:
                 cur_song = _SMTC_STATE.get("song")
@@ -1296,20 +1189,21 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                 ttl2 = _SMTC_STATE.get("trans_timeline", [])
                 playing2 = _SMTC_STATE.get("playing", False)
             if cur_song == song_key and cur_song == _next_lyric_timer_song and playing2:
-                if tl2 and next_idx + 1 < len(tl2):
-                    next_t_ms_f = tl2[next_idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
+                cur_idx_now2 = _last_lyric_idx  # 直接拿 burst 后实际追到的最新 idx
+                if tl2 and cur_idx_now2 + 1 < len(tl2):
+                    next_t_ms_f = tl2[cur_idx_now2 + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
                     # ══ v7.01：按当前真实进度算还剩多少到下一句（不管LRC里两句之间写死的固定间隔）
                     timer_now_eff = get_local_eff_ms()
                     next_wait_f = max(0.0, (next_t_ms_f - timer_now_eff) - _LYRIC_TIMER_PREMISS_MS)
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={next_idx} next_idx={next_idx+1} LRC_next={next_t_ms_f:.0f}ms eff_now={timer_now_eff}ms wait_ms_float={next_wait_f:.2f}")
+                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={cur_idx_now2} next_idx={cur_idx_now2+1} LRC_next={next_t_ms_f:.0f}ms eff_now={timer_now_eff}ms wait_ms_float={next_wait_f:.2f}")
                     if next_wait_f > LYRIC_TICK_MS * 1.5:
                         with _next_lyric_timer_lock:
                             if _next_lyric_timer_song == song_key:
                                 try:
                                     t = threading.Timer(next_wait_f / 1000.0,
                                                         _schedule_next_lyric_at,
-                                                        args=(song_key, tl2, ttl2, next_idx + 1, 0.0))
+                                                        args=(song_key, tl2, ttl2, cur_idx_now2 + 1, 0.0))
                                     t.daemon = True
                                     t.start()
                                     _next_lyric_timer = t
@@ -3047,6 +2941,123 @@ def _fetch_lyrics_bg(artist: str, title: str, song_key: str, t_intro: float = 0.
         log(f"WARN: 歌词后台线程异常(已吞): {e}")
 
 
+def _emit_one_lyric_at_idx(song_key: str, timeline, trans_timeline, emit_idx: int,
+                           playing: bool, schedule_next: bool,
+                           eff_ms_ref: int):
+    """v7.01 burst helper：按**给定精确索引 emit_idx** 发一句歌词（不再按eff_ms重算idx，严格顺序）。
+    用于 tick / Timer 追过期行时的连发循环。
+    - emit_idx: 必须 > _last_lyric_idx（调用方负责，否则本条静默跳过）
+    - schedule_next: True → 发完本句挂 emit_idx+1 的精确定时器；False → 仅发（中间行），不挂 Timer
+    - eff_ms_ref: 用于 drift 日志 / schedule_next wait 计算 / FIRST gap 判定 的进度参考快照
+    返回：是否真的发送了（空行不stage_event，但仍会推进last索引，也返回True；被drop返回False）"""
+    global _last_lyric_raw, _last_trans_raw, _last_lyric_idx, _last_trans_idx, _last_emit_wall_ts_ms
+    if emit_idx < 0 or not timeline or emit_idx >= len(timeline):
+        return False
+    # 严格顺序强保证：emit_idx 必须大于 _last_lyric_idx
+    if emit_idx <= _last_lyric_idx:
+        if _LYRIC_SYNC_LOG:
+            log(f"[LYRIC_SYNC] BURST:DROP_emit_idx<=last song={song_key!r} emit_idx={emit_idx} last={_last_lyric_idx}")
+        return False
+    # 取文本 + 翻译
+    try:
+        t_sec, txt = timeline[emit_idx]
+    except Exception as _e:
+        log(f"[LYRIC_PROFILE] BURST:UNPACK_FAIL emit_idx={emit_idx} timeline[i]={timeline[emit_idx]!r} msg={_e!r} → skip")
+        return False
+    trans_txt = ""
+    if trans_timeline:
+        best_dt = 0.6
+        target_t = timeline[emit_idx][0]
+        for tt, ttxt in trans_timeline:
+            try:
+                dt = abs(float(tt) - float(target_t))
+            except Exception:
+                continue
+            if dt < best_dt and ttxt:
+                best_dt = dt
+                trans_txt = ttxt
+            if best_dt == 0:
+                break
+    # 先更新 last 索引（即使是空行也推进，防止下一轮再发）
+    _last_lyric_idx = emit_idx
+    # 翻译行索引保持简单策略：直接把 emit_idx 记上，后续 tick 里 _current_lyric_idx 会重算正确值
+    _last_trans_idx = emit_idx
+    _last_lyric_raw = txt if (txt and txt.strip()) else _last_lyric_raw
+    if trans_txt:
+        _last_trans_raw = trans_txt
+    # 空行 / 纯空白：不发送事件到 KOOK（但索引已推进），只在 schedule_next=True 时挂下一句定时器
+    if not txt or not txt.strip():
+        if schedule_next and playing and emit_idx + 1 < len(timeline):
+            next_t_ms_f = timeline[emit_idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
+            wait_ms_f = max(0.0, (next_t_ms_f - eff_ms_ref) - _LYRIC_TIMER_PREMISS_MS)
+            _schedule_next_lyric_at(song_key, timeline, trans_timeline, emit_idx + 1, wait_ms_f)
+        return True
+    # 正常有文本：写 lyric_event（走 stage 队列，防覆盖）
+    formatted = _format_lyric_line(txt, trans_txt)
+    ts = time.time()
+    _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
+    # ── 日志：gap + drift ──
+    cur_wall_ms_f = int(ts * 1000)
+    N_f = emit_idx + 1
+    if _last_emit_wall_ts_ms == 0.0:
+        gap_for = f"{N_f} (FIRST)"
+        real_gap_str_f = "FIRST"
+        lrc_gap_ms_f = 0
+    else:
+        rg_f = cur_wall_ms_f - int(_last_emit_wall_ts_ms)
+        real_gap_str_f = f"{rg_f}ms"
+        try:
+            lrc_gap_ms_f = int((timeline[emit_idx][0] - timeline[emit_idx - 1][0]) * 1000) if emit_idx > 0 else 0
+        except Exception:
+            lrc_gap_ms_f = 0
+        gap_for = f"[{rg_f}ms] {N_f}  | LRC_gap={lrc_gap_ms_f}ms"
+    if _LYRIC_SYNC_LOG:
+        try:
+            lrc_t_now = timeline[emit_idx][0] * 1000.0 + _LYRIC_OFFSET_MS
+            drift_now = (eff_ms_ref - lrc_t_now)
+            marker_next = " +schedule_next" if schedule_next else ""
+            log(f"[LYRIC_SYNC] BURST:EMIT song={song_key!r} idx={emit_idx}/{len(timeline)} drift={drift_now:.0f}ms(+超前 -滞后) eff_ref={eff_ms_ref}ms LRC_t={lrc_t_now:.0f}ms emit_ts={ts:.3f} real_gap={real_gap_str_f} LRC_gap={lrc_gap_ms_f}ms{marker_next}")
+        except Exception:
+            pass
+    log(f"歌词(burst) [{ts:.3f}] idx={emit_idx}/{len(timeline)} offset={_LYRIC_OFFSET_MS}ms: {txt}" + (f" | 翻译: {trans_txt}" if trans_txt else "") + f"  | {gap_for}")
+    _last_emit_wall_ts_ms = float(cur_wall_ms_f)
+    # 挂下一句 Timer（仅 schedule_next=True 时挂 1 次）
+    if schedule_next and playing and emit_idx + 1 < len(timeline):
+        next_t_ms_f = timeline[emit_idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
+        wait_ms_f = max(0.0, (next_t_ms_f - eff_ms_ref) - _LYRIC_TIMER_PREMISS_MS)
+        if _LYRIC_SYNC_LOG:
+            log(f"[LYRIC_SYNC] BURST:SCHEDULE_NEXT song={song_key!r} cur={emit_idx} next={emit_idx+1} LRC_next={next_t_ms_f:.0f}ms eff_ref={eff_ms_ref}ms wait_ms_float={wait_ms_f:.2f}")
+        _schedule_next_lyric_at(song_key, timeline, trans_timeline, emit_idx + 1, wait_ms_f)
+    return True
+
+
+def _burst_catchup_to_idx(song_key: str, timeline, trans_timeline,
+                          target_idx: int, playing: bool,
+                          eff_ms_ref: int,
+                          max_lines: int = 200) -> int:
+    """v7.01：连发 _last_lyric_idx+1 → target_idx（含）。
+    - 单次最多发 max_lines 句（防止 seek 到几百句后一次性刷屏）
+    - 最后一句发完自动挂 schedule_next=True（下一句定时器），中间句不挂
+    - 返回实际发了几句（含跳过的空行/丢的drop行也算推进了idx的消耗数）"""
+    if target_idx is None or target_idx < 0:
+        return 0
+    start_i = _last_lyric_idx + 1
+    if start_i > target_idx:
+        return 0
+    end_i = min(target_idx, len(timeline) - 1, start_i + max_lines - 1)
+    if end_i < start_i:
+        return 0
+    sent = 0
+    for i in range(start_i, end_i + 1):
+        is_final = (i == end_i)
+        ok = _emit_one_lyric_at_idx(song_key, timeline, trans_timeline, i,
+                                    playing=playing,
+                                    schedule_next=is_final,
+                                    eff_ms_ref=eff_ms_ref)
+        sent += 1 if ok else 0
+    return sent
+
+
 def _force_emit_current_lyric(song_key: str):
     """歌词下载完成或状态变化时立即调用：按当前进度强行发出一句，保证歌词与音乐严格同步
     用 timeline 索引去重而不是文本去重，解决副歌/重复句被误跳过的问题。
@@ -3447,70 +3458,26 @@ def tick_lyric():
                 log(f"[LYRIC_SYNC] tick:DROP_idx<=last song={song!r} idx={idx} last={_last_lyric_idx} eff_ms={eff_ms}")
             return
 
-        # ══ 按时间轴索引去重（副歌重复句不被误跳过）═══════
-        if idx != -1 and (idx != _last_lyric_idx or trans_idx != _last_trans_idx):
-            # ══ 空行/纯空格（间奏、纯标点、LRCLIB 间奏占位）：只推进索引，不发到 KOOK 刷屏 ══
-            if not cur or not cur.strip():
-                _last_lyric_idx = idx
-                _last_trans_idx = trans_idx
-                # v6.66 严格模式：严格按 LRC 间隔计算 wait_ms，float 不 int，减去 premiss(0ms 默认)
-                if timeline and idx + 1 < len(timeline):
-                    next_t_ms_f = timeline[idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-                    # ══ v7.01：按当前真实进度算剩余，不管LRC固定间隔
-                    next_wait_f = max(0.0, (next_t_ms_f - eff_ms) - _LYRIC_TIMER_PREMISS_MS)
-                    if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] tick:EMPTY_LINE_SCHEDULE_NEXT song={song!r} idx={idx}(空行) next_idx={idx+1} LRC_next_t={next_t_ms_f:.0f}ms eff_now={eff_ms}ms wait_ms_float={next_wait_f:.2f}")
-                    if next_wait_f > LYRIC_TICK_MS * 1.5:
-                        with _next_lyric_timer_lock:
-                            if _next_lyric_timer_song == song:
-                                try:
-                                    t = threading.Timer(next_wait_f / 1000.0,
-                                                        _schedule_next_lyric_at,
-                                                        args=(song, timeline, trans_timeline, idx + 1, 0.0))
-                                    t.daemon = True
-                                    t.start()
-                                    _next_lyric_timer = t
-                                except Exception:
-                                    pass
-                return
-            _last_lyric_idx = idx
-            _last_trans_idx = trans_idx
-            _last_lyric_raw = cur
-            _last_trans_raw = cur_trans
-            formatted = _format_lyric_line(cur, cur_trans)
-            ts = time.time()
-            # v6.79：统一走 _stage_lyric_event（防溢出覆盖丢句）
-            _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
-            # v6.66 [LYRIC_SYNC] 发句日志：drift=eff-LRC[target] 正数=进度超前LRC（歌词"快"了）负数=进度落后LRC（歌词"慢"了）
-            cur_wall_ms = int(ts * 1000)
-            N = idx + 1
-            lrc_gap_ms_display = 0
-            real_gap_str = "FIRST"
-            real_gap_ms = 0
-            if _last_emit_wall_ts_ms == 0.0:
-                gap_line = f"{N} (FIRST)"
-            else:
-                real_gap_ms = cur_wall_ms - int(_last_emit_wall_ts_ms)
-                real_gap_str = f"{real_gap_ms}ms"
-                try:
-                    lrc_gap_ms_display = int((timeline[idx][0] - timeline[idx - 1][0]) * 1000) if idx > 0 else 0
-                except Exception:
-                    lrc_gap_ms_display = 0
-                gap_line = f"[{real_gap_ms}ms] {N}  | LRC_gap={lrc_gap_ms_display}ms"
-            if _LYRIC_SYNC_LOG and timeline and idx < len(timeline):
-                lrc_t_cur = timeline[idx][0] * 1000.0 + _LYRIC_OFFSET_MS
-                drift_now = eff_ms - lrc_t_cur
-                log(f"[LYRIC_SYNC] tick:EMIT song={song!r} idx={idx}/{len(timeline)} drift={drift_now:.0f}ms(+超前 -滞后) eff_ms={eff_ms} LRC_t={lrc_t_cur:.0f}ms emit_ts={ts:.3f} clamped={clamped_by_drift and clamped_original_idx is not None}{'' if not (clamped_by_drift and clamped_original_idx is not None) else f'(from {clamped_original_idx})'} real_gap={real_gap_str} LRC_gap={lrc_gap_ms_display}ms")
-            # v6.78：gap_line 直接并到歌词行末尾，不再独立 2 行
-            log(f"歌词 [{ts:.3f}] idx={idx}/{len(timeline)} offset={_LYRIC_OFFSET_MS}ms: {cur}" + (f" | 翻译: {cur_trans}" if cur_trans else "") + f"  | {gap_line}")
-            _last_emit_wall_ts_ms = float(cur_wall_ms)
-            # ══ tick 推进到新一句 → 立刻挂下一句的精确定时器（v7.01：按当前真实eff_ms算剩余，不管LRC固定间隔）══
-            if playing and idx + 1 < len(timeline):
-                next_t_ms_f = timeline[idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-                wait_ms_f = max(0.0, (next_t_ms_f - eff_ms) - _LYRIC_TIMER_PREMISS_MS)
+        # ══ v7.01：tick 侧改「单步推进」为「burst 连发追满当前进度」
+        #    没夹逼(clamped_by_drift=False) → 直接从 last+1 连发追到 idx_original（当前 eff_ms 应到的行）
+        #    被夹逼(clamped_by_drift=True，drift>MAX_DRIFT 疑似seek/长暂停) → 只推进 last+1 这1步(保持原严格顺序不漏句策略)
+        #    单次 tick 最多追 200 句（一首歌不可能 10ms 内真的过 200 句以上，防 seek 刷屏）
+        if idx != -1 and idx > _last_lyric_idx:
+            if clamped_by_drift:
+                target = _last_lyric_idx + 1
+                if target >= len(timeline):
+                    target = len(timeline) - 1
                 if _LYRIC_SYNC_LOG:
-                    log(f"[LYRIC_SYNC] tick:SCHEDULE_NEXT song={song!r} cur={idx} next={idx+1} LRC_next={next_t_ms_f:.0f}ms eff_now={eff_ms}ms wait_ms_float={wait_ms_f:.2f}")
-                _schedule_next_lyric_at(song, timeline, trans_timeline, idx + 1, wait_ms_f)
+                    log(f"[LYRIC_SYNC] tick:BURST_CLAMPED song={song!r} original_idx={clamped_original_idx} → clamped_burst_to_last+1={target} max_catchup=1 (drift>{_LYRIC_MAX_DRIFT_MS:.0f}ms，防止seek乱跳) last={_last_lyric_idx} eff_ms={eff_ms}")
+                _burst_catchup_to_idx(song, timeline, trans_timeline, target,
+                                      playing=playing, eff_ms_ref=eff_ms, max_lines=1)
+            else:
+                target = idx
+                if _LYRIC_SYNC_LOG and target > _last_lyric_idx + 1:
+                    log(f"[LYRIC_SYNC] tick:BURST_CATCHUP song={song!r} from={_last_lyric_idx+1} → to={target} eff_ms={eff_ms} lines={target-_last_lyric_idx}(含空行)")
+                _burst_catchup_to_idx(song, timeline, trans_timeline, target,
+                                      playing=playing, eff_ms_ref=eff_ms, max_lines=200)
+            return
 
 
 tick_lyric._last_song_sent = ""  # type: ignore
