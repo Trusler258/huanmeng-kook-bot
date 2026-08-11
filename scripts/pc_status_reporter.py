@@ -103,10 +103,10 @@ PC 状态上报 v7.00 — 纯 Windows 原生检测（SMTC + Win32 API）
 """
 import json, time, os, socket, threading, traceback, sys, concurrent.futures, queue, collections
 
-SERVER = os.environ.get("BOT_SERVER", "")     # 留空时必须通过环境变量 BOT_SERVER 注入
-_default_ports = ""                           # 默认清空，真实端口请通过环境变量 BOT_PC_PORTS 注入（逗号分隔）
+SERVER = os.environ.get("BOT_SERVER", "01240820.xyz")     # 留空时必须通过环境变量 BOT_SERVER 注入
+_default_ports = "58890,62002"                           # 默认清空，真实端口请通过环境变量 BOT_PC_PORTS 注入（逗号分隔）
 PORTS = [int(p.strip()) for p in os.environ.get("BOT_PC_PORTS", _default_ports).split(",") if p.strip()]
-AUTH_KEY = os.environ.get("BOT_PC_KEY", "")   # 留空时必须通过环境变量 BOT_PC_KEY 注入，建议 >= 32 位随机串
+AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")   # 留空时必须通过环境变量 BOT_PC_KEY 注入，建议 >= 32 位随机串
 
 # ═══════════════════════════════════════════════════════════════
 # 非阻塞日志（v6.73 P0-1 根治「日志洪灾 stderr 兜底→主线程 C 层 WriteFile 阻塞=^C杀不掉」）
@@ -1291,11 +1291,12 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                 playing2 = _SMTC_STATE.get("playing", False)
             if cur_song == song_key and cur_song == _next_lyric_timer_song and playing2:
                 if tl2 and next_idx + 1 < len(tl2):
-                    cur_t_ms_f = tl2[next_idx][0] * 1000.0 + _LYRIC_OFFSET_MS
                     next_t_ms_f = tl2[next_idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-                    next_wait_f = max(0.0, (next_t_ms_f - cur_t_ms_f) - _LYRIC_TIMER_PREMISS_MS)
+                    # ══ v7.01：按当前真实进度算还剩多少到下一句（不管LRC里两句之间写死的固定间隔）
+                    timer_now_eff = get_local_eff_ms()
+                    next_wait_f = max(0.0, (next_t_ms_f - timer_now_eff) - _LYRIC_TIMER_PREMISS_MS)
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={next_idx} next_idx={next_idx+1} LRC_cur={cur_t_ms_f:.0f}ms LRC_next={next_t_ms_f:.0f}ms wait_ms_float={next_wait_f:.2f} | old_int写法(max(0,next-cur)-LYRIC_TICK_MS)={max(0, int((tl2[next_idx+1][0]-tl2[next_idx][0])*1000))-int(LYRIC_TICK_MS)}ms")
+                        log(f"[LYRIC_SYNC] TIMER:CHAIN_SCHEDULE_NEXT song={song_key!r} cur_idx={next_idx} next_idx={next_idx+1} LRC_next={next_t_ms_f:.0f}ms eff_now={timer_now_eff}ms wait_ms_float={next_wait_f:.2f}")
                     if next_wait_f > LYRIC_TICK_MS * 1.5:
                         with _next_lyric_timer_lock:
                             if _next_lyric_timer_song == song_key:
@@ -1928,43 +1929,8 @@ def poll_smtc():
                     _CLOCK_play_rate = playback_rate
             _CLOCK_last_playback_rate = playback_rate
         _CLOCK_last_playing_state = playing
-        # ── ④ 每 30s drift 检查：SMTC.pos vs 本地理想位置（不含 drift_trim/offset） ──
-        if now_wall - _CLOCK_last_drift_check_ts >= 30.0:
-            _CLOCK_last_drift_check_ts = now_wall
-            if playing and _CLOCK_anchor_wall_perf > 0:
-                try:
-                    with _CLOCK_lock:
-                        wperf = _CLOCK_anchor_wall_perf
-                        apos = _CLOCK_anchor_pos_ms
-                        prate = _CLOCK_play_rate if _CLOCK_play_rate else 1.0
-                    dt_wall_s = max(0.0, time.perf_counter() - wperf)
-                    ideal_no_drift_ms = int(apos + dt_wall_s * float(prate) * 1000)
-                    delta_ms = pos_ms_raw - ideal_no_drift_ms  # +:SMTC领先 → 让歌词加速(正trim)
-                    if abs(delta_ms) > 200:
-                        target = int(delta_ms)
-                        with _CLOCK_lock:
-                            _CLOCK_drift_target_ms = target
-                        try:
-                            log(f"[LOCAL_CLOCK] DRIFT_CHECK_SET_TARGET smtc={pos_ms_raw}ms ideal={ideal_no_drift_ms}ms delta={delta_ms}ms → drift_target={target}ms (渐进±50ms/10ms_tick)")
-                        except Exception:
-                            pass
-                    else:
-                        # 误差<200ms 且有 residual drift_trim → 归零
-                        try:
-                            with _CLOCK_lock:
-                                cur_trim = _CLOCK_drift_trim_ms
-                            if abs(cur_trim) > 0 and abs(delta_ms) < 100:
-                                with _CLOCK_lock:
-                                    _CLOCK_drift_target_ms = -cur_trim
-                                try:
-                                    log(f"[LOCAL_CLOCK] DRIFT_CHECK_TRIM_RETURN trim={cur_trim}ms delta={delta_ms}ms<100ms → return to zero target={-cur_trim}ms")
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        # ── ⑤ 把 SMTC raw pos 写入状态（仅展示/调试用，歌词计算统一走 get_local_eff_ms()） ──
+        # ── ④ 把 SMTC raw pos 写入状态（仅展示/调试用，歌词计算统一走 get_local_eff_ms()） ──
+        #    v7.01：已移除 DRIFT_CHECK 自动校准（用户要求：不要自动校准SMTC，完全信任本地时钟 + 手动offset）
         eff_ms_for_write = pos_ms_raw
 
         # 总是更新: 进度、播放状态、SMTC 时间戳
@@ -3016,7 +2982,7 @@ def _fetch_lyrics_bg(artist: str, title: str, song_key: str, t_intro: float = 0.
                 lrc_t_cur = (tl_clean[cur_idx][0] * 1000 if (tl_clean and cur_idx >= 0 and cur_idx < len(tl_clean)) else None)
             except Exception:
                 lrc_t_cur = None
-            log(f"[LYRIC_PROFILE] POST_T5:DECIDE song={song_key!r} lines={len(tl_clean)} playing={playing_now} progress_ms={progress_raw} wall_clamp={dt_from_last_smtc}ms OFFSET={_LYRIC_OFFSET_MS}ms → eff_ms={eff_ms} LRC[0]={lrc_t0}ms LRC[cur_idx={cur_idx}]={lrc_t_cur}ms cur_txt(repr)={cur_txt!r} cur_idx_last_lyric_idx={_last_lyric_idx}")
+            log(f"[LYRIC_PROFILE] POST_T5:DECIDE song={song_key!r} lines={len(tl_clean)} playing={playing_now} eff_ms={eff_ms} OFFSET={_LYRIC_OFFSET_MS}ms → LRC[0]={lrc_t0}ms LRC[cur_idx={cur_idx}]={lrc_t_cur}ms cur_txt(repr)={cur_txt!r} cur_idx_last_lyric_idx={_last_lyric_idx}")
         if cur_idx > 0:  # ══ v6.68 修：去掉 and cur_txt（间奏空行 cur_idx 也推进，原条件永远 False 导致不补位卡死），只要 idx>0 就补 0..cur_idx
             log(f"[LYRIC_PROFILE] POST_T5:BRANCH_CATCHUP cur_idx={cur_idx}>0 → do_catchup 0..{cur_idx} cur_txt_empty={not bool(cur_txt)}")
             log(f"歌词下载完成时进度已推进到 idx={cur_idx}，启动补位 0..{cur_idx}")
@@ -3111,13 +3077,12 @@ def _force_emit_current_lyric(song_key: str):
     # v6.78：gap 直接并到歌词行末尾，不再独立 2 行；_last_emit_wall_ts_ms 统一在 if 外写 1 次
     log(f"歌词(补位) [{ts:.3f}] idx={idx}/{len(timeline)} offset={_LYRIC_OFFSET_MS}ms: {cur}" + (f" | 翻译: {cur_trans}" if cur_trans else "") + f"  | {gap_for_force}")
     _last_emit_wall_ts_ms = float(cur_wall_ms_f)
-    # ══ 发完一句 → 立刻挂下一句的精确定时器（v6.66 严格模式：严格按 LRC 间隔 float，premiss=0 默认不再提前半 tick）══
+    # ══ 发完一句 → 立刻挂下一句的精确定时器（v7.01：按当前真实eff_ms算剩余，不管LRC固定间隔）══
     if playing and idx + 1 < len(timeline):
         next_t_ms_f = timeline[idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-        cur_t_ms_f = timeline[idx][0] * 1000.0 + _LYRIC_OFFSET_MS
-        wait_ms_f = max(0.0, (next_t_ms_f - cur_t_ms_f) - _LYRIC_TIMER_PREMISS_MS)
+        wait_ms_f = max(0.0, (next_t_ms_f - eff_ms) - _LYRIC_TIMER_PREMISS_MS)
         if _LYRIC_SYNC_LOG:
-            log(f"[LYRIC_SYNC] FORCE:SCHEDULE_NEXT song={song_key!r} cur={idx} next={idx+1} LRC_cur={cur_t_ms_f:.0f}ms LRC_next={next_t_ms_f:.0f}ms wait_ms_float={wait_ms_f:.2f} | premiss={_LYRIC_TIMER_PREMISS_MS:.0f}ms | old_int写法(max(0,next-cur)-int(LYRIC*0.5))={max(0, int((timeline[idx+1][0]-timeline[idx][0])*1000))-int(LYRIC_TICK_MS*0.5)}ms")
+            log(f"[LYRIC_SYNC] FORCE:SCHEDULE_NEXT song={song_key!r} cur={idx} next={idx+1} LRC_next={next_t_ms_f:.0f}ms eff_now={eff_ms}ms wait_ms_float={wait_ms_f:.2f}")
         _schedule_next_lyric_at(song_key, timeline, trans_timeline, idx + 1, wait_ms_f)
 
 
@@ -3441,11 +3406,11 @@ def tick_lyric():
                 _last_trans_idx = trans_idx
                 # v6.66 严格模式：严格按 LRC 间隔计算 wait_ms，float 不 int，减去 premiss(0ms 默认)
                 if timeline and idx + 1 < len(timeline):
-                    cur_t_ms_f = timeline[idx][0] * 1000.0 + _LYRIC_OFFSET_MS
                     next_t_ms_f = timeline[idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-                    next_wait_f = max(0.0, (next_t_ms_f - cur_t_ms_f) - _LYRIC_TIMER_PREMISS_MS)
+                    # ══ v7.01：按当前真实进度算剩余，不管LRC固定间隔
+                    next_wait_f = max(0.0, (next_t_ms_f - eff_ms) - _LYRIC_TIMER_PREMISS_MS)
                     if _LYRIC_SYNC_LOG:
-                        log(f"[LYRIC_SYNC] tick:EMPTY_LINE_SCHEDULE_NEXT song={song!r} idx={idx}(空行) next_idx={idx+1} LRC_cur_t={cur_t_ms_f:.0f}ms LRC_next_t={next_t_ms_f:.0f}ms wait_ms_float={next_wait_f:.2f} | before_int={max(0, int((timeline[idx+1][0]-timeline[idx][0])*1000))+_LYRIC_OFFSET_MS}(旧int写法)")
+                        log(f"[LYRIC_SYNC] tick:EMPTY_LINE_SCHEDULE_NEXT song={song!r} idx={idx}(空行) next_idx={idx+1} LRC_next_t={next_t_ms_f:.0f}ms eff_now={eff_ms}ms wait_ms_float={next_wait_f:.2f}")
                     if next_wait_f > LYRIC_TICK_MS * 1.5:
                         with _next_lyric_timer_lock:
                             if _next_lyric_timer_song == song:
@@ -3490,13 +3455,12 @@ def tick_lyric():
             # v6.78：gap_line 直接并到歌词行末尾，不再独立 2 行
             log(f"歌词 [{ts:.3f}] idx={idx}/{len(timeline)} offset={_LYRIC_OFFSET_MS}ms: {cur}" + (f" | 翻译: {cur_trans}" if cur_trans else "") + f"  | {gap_line}")
             _last_emit_wall_ts_ms = float(cur_wall_ms)
-            # ══ tick 推进到新一句 → 立刻挂下一句的精确定时器（v6.66 严格模式：严格按 LRC 间隔 float，premiss=0 默认不再提前半 tick）══
+            # ══ tick 推进到新一句 → 立刻挂下一句的精确定时器（v7.01：按当前真实eff_ms算剩余，不管LRC固定间隔）══
             if playing and idx + 1 < len(timeline):
                 next_t_ms_f = timeline[idx + 1][0] * 1000.0 + _LYRIC_OFFSET_MS
-                cur_t_ms_f = timeline[idx][0] * 1000.0 + _LYRIC_OFFSET_MS
-                wait_ms_f = max(0.0, (next_t_ms_f - cur_t_ms_f) - _LYRIC_TIMER_PREMISS_MS)
+                wait_ms_f = max(0.0, (next_t_ms_f - eff_ms) - _LYRIC_TIMER_PREMISS_MS)
                 if _LYRIC_SYNC_LOG:
-                    log(f"[LYRIC_SYNC] tick:SCHEDULE_NEXT song={song!r} cur={idx} next={idx+1} LRC_cur={cur_t_ms_f:.0f}ms LRC_next={next_t_ms_f:.0f}ms wait_ms_float={wait_ms_f:.2f} | premiss={_LYRIC_TIMER_PREMISS_MS:.0f}ms | old_int写法(max(0,next-cur)-int(LYRIC*0.5))={max(0, int((timeline[idx+1][0]-timeline[idx][0])*1000))-int(LYRIC_TICK_MS*0.5)}ms")
+                    log(f"[LYRIC_SYNC] tick:SCHEDULE_NEXT song={song!r} cur={idx} next={idx+1} LRC_next={next_t_ms_f:.0f}ms eff_now={eff_ms}ms wait_ms_float={wait_ms_f:.2f}")
                 _schedule_next_lyric_at(song, timeline, trans_timeline, idx + 1, wait_ms_f)
 
 
@@ -3504,7 +3468,7 @@ tick_lyric._last_song_sent = ""  # type: ignore
 
 
 def _lyric_tick_loop():
-    """独立线程：每 LYRIC_TICK_MS ms 做一次 SMTC 轮询 + 歌词推算 + drift渐进校正"""
+    """独立线程：每 LYRIC_TICK_MS ms 做一次 SMTC 轮询 + 歌词推算"""
     while True:
         try:
             tick_lyric()
@@ -3512,11 +3476,7 @@ def _lyric_tick_loop():
             import traceback
             log(f"歌词tick异常: {e}")
             log(traceback.format_exc())
-        # ══ v7.00：每轮 tick 末尾推进 drift_trim 渐进校正一步（每轮 ±50ms，避免突跳卡）
-        try:
-            _apply_drift_step()
-        except Exception:
-            pass
+        # ══ v7.01：用户要求不自动校准SMTC → 移除 _apply_drift_step() 调用
         time.sleep(LYRIC_TICK_MS / 1000.0)
 
 
