@@ -759,6 +759,12 @@ _CLOCK_drift_target_ms: int = 0
 _CLOCK_last_drift_check_ts: float = 0.0
 # 锚定时记录的 pos_ms（用于 seek 检测，若 SMTC 下一次 pos 与本地理想值差 >3s 判定 seek）
 _CLOCK_last_anchor_snapshot_ms: int = 0
+# 上次 poll_smtc 拿到的原始 pos（用于检测 SMTC 位置是否真的发生了跳变）
+#   酷狗音乐等流氓播放器会 SMTC 永远上报 0ms，导致"每 3s 本地走满3000ms 触发 seek 锚回0"死循环。
+#   因此 seek 判定必须额外要求：本轮 pos_ms_raw 与 上轮 pos 不同（真·跳变），否则视为 SMTC 已挂，不重锚。
+_CLOCK_last_smtc_pos_raw: int = -1
+# 连续 poll 轮数 pos_ms_raw 与上次完全相同（>=2 轮时 seek 判定禁用，即便 |diff|>3s 也不重锚）
+_CLOCK_smtc_pos_stuck_count: int = 0
 # 上次的播放状态（用于检测 paused→resumed）
 _CLOCK_last_playing_state: bool = False
 # 上次的播放速率（用于检测倍速变化，若变化则顺手重锚一次 pos）
@@ -1881,6 +1887,9 @@ def poll_smtc():
         # ── ② 事件检测： paused→resumed / rate_changed / seek / 首次未anchor ──
         need_anchor = False
         anchor_reason = ""
+        # v7.01：SMTC pos卡死检测的临时工作变量（每轮必初始化，避免②-1/②-2/②-4分支走到未赋值）
+        _CLOCK_smtc_pos_stuck_count_wip = 0
+        _CLOCK_smtc_pos_raw_wip = pos_ms_raw
         # ②-1: paused → resumed（暂停→播放）必须 anchor
         if playing and (not _CLOCK_last_playing_state):
             need_anchor = True
@@ -1889,20 +1898,43 @@ def poll_smtc():
         elif abs(playback_rate - _CLOCK_last_playback_rate) > 0.01:
             need_anchor = True
             anchor_reason = f"rate_change {_CLOCK_last_playback_rate:.2f}→{playback_rate:.2f}"
-        # ②-3: seek 检测（同歌内拖动进度条）→ SMTC 与本地理想差>3s
+        # ②-3: seek 检测（同歌内拖动进度条）→ SMTC 与本地理想差>3s 且 SMTC 位置真的跳变过
+        #      v7.01 修：酷狗/部分网易云SMTC会恒报0导致"每3s本地走满 → seek锚回0"死循环。
+        #               所以必须同时满足：
+        #                 a) |pos_ms_raw - ideal_pos_ms| > 3000
+        #                 b) 本轮 pos_ms_raw != 上轮 pos (即 SMTC 真的发生了跳变，不是永远卡同一个值)
+        #                    连续 2+ 轮 pos 完全相同 → 标记 SMTC 位置挂掉，整条 seek 判定短路禁用。
         elif _CLOCK_anchor_wall_perf > 0:
             try:
                 with _CLOCK_lock:
                     wperf = _CLOCK_anchor_wall_perf
                     apos = _CLOCK_anchor_pos_ms
                     prate = _CLOCK_play_rate if _CLOCK_play_rate else 1.0
-                dt_wall_s = max(0.0, time.perf_counter() - wperf)
-                ideal_pos_ms = int(apos + dt_wall_s * float(prate) * 1000)
-                if abs(pos_ms_raw - ideal_pos_ms) > 3000:
-                    need_anchor = True
-                    anchor_reason = f"seek smtc={pos_ms_raw}ms ideal={ideal_pos_ms}ms diff={abs(pos_ms_raw-ideal_pos_ms)}ms"
+                    last_smtc_pos = _CLOCK_last_smtc_pos_raw
+                    stuck_count = _CLOCK_smtc_pos_stuck_count
+                # 先更新连续相同计数（不计入全局 lock，与下面 anchor 分支一起在函数末尾统一写回）
+                if last_smtc_pos == pos_ms_raw:
+                    stuck_count_now = stuck_count + 1
+                else:
+                    stuck_count_now = 0
+                if stuck_count_now >= 2:
+                    # SMTC 位置连续 2 轮完全没动 → 视为位置上报失效（酷狗恒报0类），跳过 seek 判定
+                    pass
+                else:
+                    dt_wall_s = max(0.0, time.perf_counter() - wperf)
+                    ideal_pos_ms = int(apos + dt_wall_s * float(prate) * 1000)
+                    big_diff = abs(pos_ms_raw - ideal_pos_ms) > 3000
+                    # 首轮（last_smtc_pos == -1，无任何历史可参考跳变）：不能认定 seek
+                    smtc_jumped = (last_smtc_pos >= 0) and (pos_ms_raw != last_smtc_pos)
+                    if big_diff and smtc_jumped:
+                        need_anchor = True
+                        anchor_reason = f"seek smtc={pos_ms_raw}ms ideal={ideal_pos_ms}ms diff={abs(pos_ms_raw-ideal_pos_ms)}ms"
+                # 把 stuck_count_now 写回（后续仍需：本轮 pos_ms_raw 作为下一轮 last_smtc_pos_raw，一起写）
+                _CLOCK_smtc_pos_stuck_count_wip = stuck_count_now
+                _CLOCK_smtc_pos_raw_wip = pos_ms_raw
             except Exception:
-                pass
+                _CLOCK_smtc_pos_stuck_count_wip = 0
+                _CLOCK_smtc_pos_raw_wip = pos_ms_raw
         # ②-4: 完全没 anchor 过（启动首轮有歌但未切歌）→ 兜底
         elif _CLOCK_anchor_wall_perf <= 0 and pos_ms_raw >= 0:
             need_anchor = True
@@ -1929,7 +1961,24 @@ def poll_smtc():
                     _CLOCK_play_rate = playback_rate
             _CLOCK_last_playback_rate = playback_rate
         _CLOCK_last_playing_state = playing
-        # ── ④ 把 SMTC raw pos 写入状态（仅展示/调试用，歌词计算统一走 get_local_eff_ms()） ──
+        # ── ②末尾：把 SMTC 本轮 pos 写入"上次pos"+"卡死计数"（供下一轮 seek 判定使用）
+        #    在 ②-3 分支里已经算好 wip；其他分支(②-1/②-2/②-4)走默认值 stuck=0 raw=本轮值
+        #    注意：真实 seek 拖动时 pos_ms_raw 会跳变 → stuck_count 重置为 0，下轮立即恢复判定
+        try:
+            with _CLOCK_lock:
+                prev_stuck = _CLOCK_smtc_pos_stuck_count
+                _CLOCK_last_smtc_pos_raw = _CLOCK_smtc_pos_raw_wip
+                _CLOCK_smtc_pos_stuck_count = _CLOCK_smtc_pos_stuck_count_wip
+            new_stuck = _CLOCK_smtc_pos_stuck_count_wip
+            # 卡死态"初触发"打一次日志，避免每轮刷（连续>=2 轮卡死）
+            if prev_stuck < 2 and new_stuck >= 2:
+                try:
+                    log(f"[LOCAL_CLOCK] SMTC_POS_STUCK 连续{new_stuck}轮 pos_ms_raw={pos_ms_raw}ms 完全未变 → 禁用 seek 自动重锚（仅 paused→resume/切歌/拉条才会重锚）。若播放器SMTC确实不动，进度完全由本地 perf_clock 积分驱动")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # ── ③ 把 SMTC raw pos 写入状态（仅展示/调试用，歌词计算统一走 get_local_eff_ms()） ──
         #    v7.01：已移除 DRIFT_CHECK 自动校准（用户要求：不要自动校准SMTC，完全信任本地时钟 + 手动offset）
         eff_ms_for_write = pos_ms_raw
 
