@@ -3831,18 +3831,67 @@ def run():
             #    本轮立刻逐句"小包单发"清队列，不等下一次心跳。
             #    协议完全不变（服务端不用改）— 仍然每条 lyric_event 一个独立 TCP 行/json，
             #    用精简 payload（不带 sys_info/window/app_detail），降低序列化/带宽开销。
+            # ── 关键时序：主心跳路径A消费完槽后，一定会"补槽1条并置pending=True"再发正常心跳，
+            #    所以这里进循环时 pending 就是 True（代表补好的第1条待发），要先消费槽，不要 abort。
             BURST_DRAIN_LIMIT = 200
             burst_sent_n = 0
-            burst_queue_expected = len(_lyric_event_queue)
+            # 初始估算总待发：queue剩的 + 槽里可能还剩的 1 条
+            burst_queue_expected = len(_lyric_event_queue) + (1 if _lyric_pending else 0)
             while burst_sent_n < BURST_DRAIN_LIMIT:
-                # 前置：pending=True 说明补槽后状态异常（错位），本轮停，等下一轮自愈
+                # ── Step 1：先消费槽（若 pending 且槽非空）→ 发包
+                consumed_this_round = False
                 if _lyric_pending:
+                    b_event = _SMTC_STATE.get("lyric_event") or ""
+                    b_line = _SMTC_STATE.get("lyric_line", "")
+                    if not b_event:
+                        # pending=True 但槽空串 → 错位自愈，清 pending 进入补槽步骤
+                        _lyric_pending = False
+                    else:
+                        # 正常消费：发包 + 清 pending
+                        _lyric_pending = False
+                        burst_music = {}
+                        if music:
+                            burst_music.update(music)
+                            burst_music.pop("lyric_event", None)
+                        burst_music["lyric_line"] = b_line
+                        burst_music["lyric_event"] = b_event
+                        b_data = {
+                            "hostname": socket.gethostname(),
+                            "music": burst_music,
+                        }
+                        b_payload = json.dumps(b_data, ensure_ascii=False) + "\n"
+                        b_bytes = b_payload.encode("utf-8")
+                        send_fail = False
+                        for port in list(socks.keys()):
+                            entry = socks.get(port) or {}
+                            sk = entry.get("sock")
+                            if sk is None:
+                                continue
+                            try:
+                                try:
+                                    sk.settimeout(5.0)
+                                except Exception:
+                                    pass
+                                sk.sendall(b_bytes)
+                                entry["last_send_ts"] = time.time()
+                                socks[port] = entry
+                            except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
+                                send_fail = True
+                                log(f"TCP(burst): {SERVER}:{port} 发送断开，重连...")
+                                _reconnect_port(port, ip, socks)
+                        # 哪怕重连也先算这轮消费过（重连也已发），只当真·全断再减
+                        if not (send_fail and not any((socks.get(p) or {}).get("sock") is not None for p in list(socks.keys()))):
+                            burst_sent_n += 1
+                            consumed_this_round = True
+                # ── Step 2：现在 pending 一定是 False（要么被 Step1 清了，要么错位自愈清了）
+                #           从 queue 补 1 条回到槽，pending=True，下一轮 while 头消费
+                if _lyric_pending:
+                    # 理论不会到这里，保险：pending=True 就停止（防止死循环）
                     try:
-                        log(f"[LYRIC_PROFILE] BURST_DRAIN_ABORT_PENDING_TRUE expected={burst_queue_expected} sent={burst_sent_n} remaining_queue={len(_lyric_event_queue)} → pending=True错位，停止burst drain")
+                        log(f"[LYRIC_PROFILE] BURST_DRAIN_STOP_STILL_PENDING sent={burst_sent_n} remaining_queue={len(_lyric_event_queue)} → pending=True状态异常，停止本轮burst drain")
                     except Exception:
                         pass
                     break
-                # 从 queue 补 1 条到槽
                 got_one = False
                 try:
                     if _lyric_event_queue:
@@ -3852,57 +3901,21 @@ def run():
                             _SMTC_STATE["lyric_event"] = q_event
                         _lyric_pending = True
                         got_one = True
-                except Exception as _qe2:
+                except Exception as _qe3:
                     try:
-                        log(f"[LYRIC_PROFILE] BURST_DRAIN_QUEUE_POP_FAIL msg={_qe2!r}")
+                        log(f"[LYRIC_PROFILE] BURST_DRAIN_QUEUE_POP_FAIL msg={_qe3!r}")
                     except Exception:
                         pass
                 if not got_one:
-                    break  # queue 空 → 结束
-                # 消费槽：清 pending + 发包
-                b_event = _SMTC_STATE.get("lyric_event") or ""
-                b_line = _SMTC_STATE.get("lyric_line", "")
-                if not b_event:
-                    # pending=True 但槽空 → 错位自愈，下一条
-                    _lyric_pending = False
-                    continue
-                _lyric_pending = False
-                burst_music = {}
-                if music:
-                    burst_music.update(music)
-                    burst_music.pop("lyric_event", None)
-                burst_music["lyric_line"] = b_line
-                burst_music["lyric_event"] = b_event
-                b_data = {
-                    "hostname": socket.gethostname(),
-                    "music": burst_music,
-                }
-                b_payload = json.dumps(b_data, ensure_ascii=False) + "\n"
-                b_bytes = b_payload.encode("utf-8")
-                for port in list(socks.keys()):
-                    entry = socks.get(port) or {}
-                    sk = entry.get("sock")
-                    if sk is None:
-                        continue
-                    try:
-                        try:
-                            sk.settimeout(5.0)
-                        except Exception:
-                            pass
-                        sk.sendall(b_bytes)
-                        entry["last_send_ts"] = time.time()
-                        socks[port] = entry
-                    except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
-                        log(f"TCP(burst): {SERVER}:{port} 发送断开，重连...")
-                        _reconnect_port(port, ip, socks)
-                burst_sent_n += 1
+                    break  # queue 空 → 结束，pending=False 等着下次 tick/stage
             # burst 结束日志（只在实际发过>0条时打）
             if burst_sent_n > 0:
                 try:
-                    if _lyric_event_queue:
-                        log(f"[LYRIC_PROFILE] BURST_DRAIN_PARTIAL sent={burst_sent_n}/{burst_queue_expected} 剩余_queue={len(_lyric_event_queue)}(>={BURST_DRAIN_LIMIT}已触发上限) → 交给下轮心跳/drain继续")
-                    elif burst_sent_n > 1:
-                        log(f"[LYRIC_PROFILE] BURST_DRAIN_DONE sent={burst_sent_n}/{burst_queue_expected} 本轮队列清空")
+                    remaining = len(_lyric_event_queue) + (1 if _lyric_pending else 0)
+                    if remaining:
+                        log(f"[LYRIC_PROFILE] BURST_DRAIN_PARTIAL sent={burst_sent_n}/{burst_queue_expected} 剩余={remaining}(>={BURST_DRAIN_LIMIT}hit上限或中断) → 交给下轮心跳/drain继续")
+                    else:
+                        log(f"[LYRIC_PROFILE] BURST_DRAIN_DONE sent={burst_sent_n}/{burst_queue_expected} 槽+队列本轮清空")
                 except Exception:
                     pass
 
