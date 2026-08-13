@@ -455,10 +455,11 @@ async def send_raw_group(raw_obj: dict, group_id) -> bool:
         channel = await _get_channel(group_id, is_group=True)
         if channel is None:
             return False
-        # raw_obj 可能是卡片消息
+        # raw_obj 可能是卡片消息（markdown+keyboard 或 card JSON）
         import json as _json
         content = _json.dumps(raw_obj) if isinstance(raw_obj, dict) else str(raw_obj)
-        await _bot.client.send(channel, content)
+        from khl import MessageTypes
+        await _bot.client.send(channel, content, type=MessageTypes.CARD)
         return True
     except Exception as e:
         logger.error("send_raw_group 失败: %s", e)
@@ -475,7 +476,8 @@ async def send_raw_user(raw_obj: dict, user_id) -> bool:
             return False
         import json as _json
         content = _json.dumps(raw_obj) if isinstance(raw_obj, dict) else str(raw_obj)
-        await _bot.client.send(channel, content)
+        from khl import MessageTypes
+        await _bot.client.send(channel, content, type=MessageTypes.CARD)
         return True
     except Exception as e:
         logger.error("send_raw_user 失败: %s", e)
