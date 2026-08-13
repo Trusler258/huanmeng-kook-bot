@@ -320,6 +320,41 @@ def _create_client(model_cfg: ModelConfig) -> OpenAI:
     return OpenAI(base_url=model_cfg.url, api_key=model_cfg.key, timeout=60.0)
 
 
+def _is_deepseek(model_cfg: ModelConfig) -> bool:
+    """判断是否为 DeepSeek 模型（用于关闭 thinking 省延迟/降本）"""
+    return "deepseek" in (model_cfg.url or "").lower()
+
+
+def _thinking_disabled_body(model_cfg: ModelConfig) -> dict | None:
+    """DeepSeek 默认思考模式 enabled，且思考模式下 temperature 无效。
+    返回 extra_body 关闭 thinking，让 temperature 生效并降低延迟/成本。"""
+    return {"thinking": {"type": "disabled"}} if _is_deepseek(model_cfg) else None
+
+
+def _to_strict_tools(tools: list[dict]) -> list[dict]:
+    """把工具 schema 转换为 DeepSeek strict 模式（Beta）要求：
+    - 每个 function 设 strict=true
+    - object 添加 additionalProperties=false
+    - 所有 properties 键加入 required
+    不修改原 TOOLS 定义，仅用于本次请求。"""
+    from copy import deepcopy
+    out = []
+    for t in tools:
+        t = deepcopy(t)
+        fn = t.get("function", {})
+        fn["strict"] = True
+        params = fn.get("parameters")
+        if isinstance(params, dict) and params.get("type") == "object":
+            props = params.get("properties", {})
+            params["additionalProperties"] = False
+            keys = list(props.keys())
+            if keys:
+                reqs = list(dict.fromkeys([*(params.get("required") or []), *keys]))
+                params["required"] = reqs
+        out.append(t)
+    return out
+
+
 async def call_llm(
     model_cfg: ModelConfig,
     messages: list[dict],
@@ -361,6 +396,10 @@ async def call_llm(
             req_params["max_tokens"] = max_tokens
         if json_mode:
             req_params["response_format"] = {"type": "json_object"}
+        # DeepSeek 关闭 thinking（默认 enabled），省延迟/降本，并让 temperature 生效
+        _td = _thinking_disabled_body(model_cfg)
+        if _td:
+            req_params["extra_body"] = _td
         
         completion = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
@@ -387,8 +426,11 @@ async def call_llm(
             usage = completion.usage
             if usage:
                 from core.token_tracker import record_usage
-                cached = getattr(usage, 'prompt_tokens_details', None)
-                cached_tokens = cached.cached_tokens if cached else 0
+                # DeepSeek 在 usage 顶层返回 prompt_cache_hit_tokens（非 OpenAI 的 prompt_tokens_details.cached_tokens）
+                cached_tokens = getattr(usage, 'prompt_cache_hit_tokens', None) or 0
+                if not cached_tokens:
+                    _cached = getattr(usage, 'prompt_tokens_details', None)
+                    cached_tokens = getattr(_cached, 'cached_tokens', 0) or 0
                 record_usage(
                     model=model_cfg.name,
                     prompt_tokens=usage.prompt_tokens,
@@ -436,21 +478,49 @@ async def call_llm_with_tools(
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
 
+    # 工具/strict 模式 & thinking 关闭（仅 DeepSeek）
+    _td = _thinking_disabled_body(model_cfg)
+    _use_strict = _td is not None  # DeepSeek 支持 strict 模式（Beta，需 /beta base_url）
+    _strict_tools = _to_strict_tools(tools) if _use_strict else tools
+
     req_params = {
         "model": model_cfg.model if hasattr(model_cfg, 'model') else model_cfg.name,
         "temperature": temperature,
         "messages": messages,
-        "tools": tools,
+        "tools": _strict_tools,
         "tool_choice": "auto",
     }
     if max_tokens is not None:
         req_params["max_tokens"] = max_tokens
+    if _td:
+        req_params["extra_body"] = _td
+
+    # strict 模式需要 beta base_url；失败则回退普通调用
+    _strict_client = None
+    if _use_strict:
+        _strict_client = OpenAI(
+            base_url=model_cfg.url.rstrip("/") + "/beta",
+            api_key=model_cfg.key, timeout=60.0,
+        )
 
     try:
-        completion = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
-            timeout=timeout,
-        )
+        try:
+            _client = _strict_client if _strict_client is not None else client
+            completion = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: _client.chat.completions.create(**req_params)),
+                timeout=timeout,
+            )
+        except Exception as se:
+            # strict/Beta 失败 → 回退普通客户端 + 原始 tools（去掉 strict）
+            if _use_strict:
+                logger.warning("LLM FC strict 模式失败，回退普通调用: %s", se)
+                req_params["tools"] = tools
+                completion = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
+                    timeout=timeout,
+                )
+            else:
+                raise
         msg = completion.choices[0].message
         content = msg.content or ""
         tc_list: list[dict] = []

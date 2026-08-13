@@ -24,16 +24,16 @@ mute_duration = 1800             # 禁言时长（秒）
 # 比如 provider="DEEPSEEK" → 从 .env 取 DEEPSEEK_KEY 和 DEEPSEEK_URL
 
 [model.replyer_1]                # 主回复模型
-name = "deepseek-chat"
+name = "deepseek-v4-flash"
 provider = "DEEPSEEK"
 maxtoken = 1000
 
 [model.judge_cheap]              # 回复判断（廉价快速模型）
-name = "deepseek-chat"
+name = "deepseek-v4-flash"
 provider = "DEEPSEEK"
 
 [model.utils_small]              # 工具调用（摘要/解析）
-name = "deepseek-chat"
+name = "deepseek-v4-flash"
 provider = "DEEPSEEK"
 
 [model.picture]                  # 图片识别
