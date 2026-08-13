@@ -1027,13 +1027,21 @@ async def _handle_command_route(text, user_id, group_id, sender_name, is_group, 
 async def _send_test_card(chat_id, is_group, user_id):
     from utils.format_lang import format_lang
     md = format_lang("testsys.card_markdown")
-    button = {
-        "id": "btn_test",
-        "render_data": {"label": format_lang("testsys.button_label"), "visited_label": format_lang("testsys.button_visited"), "style": 1},
-        "action": {"type": 2, "permission": {"type": 2}, "data": ".testok", "enter": True, "unsupport_tips": format_lang("testsys.unsupport_tip", default="当前版本不支持此按钮")},
-    }
-    keyboard = {"rows": [{"buttons": [button]}]}
-    card = {"type": "markdown", "data": {"markdown": {"content": md}, "keyboard": keyboard}}
+    card = [{
+        "type": "card",
+        "theme": "secondary",
+        "size": "lg",
+        "modules": [
+            {"type": "section", "text": {"type": "kmarkdown", "content": md}},
+            {"type": "action-group", "elements": [{
+                "type": "button",
+                "theme": "primary",
+                "value": ".testok",
+                "click": "return-val",
+                "text": {"type": "plain-text", "content": format_lang("testsys.button_label")},
+            }]},
+        ],
+    }]
     logger.info("发送测试卡片: chat=%d is_group=%s", chat_id, is_group)
     if is_group:
         await send_raw_group(card, chat_id)

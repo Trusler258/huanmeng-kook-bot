@@ -455,9 +455,9 @@ async def send_raw_group(raw_obj: dict, group_id) -> bool:
         channel = await _get_channel(group_id, is_group=True)
         if channel is None:
             return False
-        # raw_obj 可能是卡片消息（markdown+keyboard 或 card JSON）
+        # raw_obj 可能是卡片消息（card 数组 / 单 dict），统一序列化为 JSON 字符串
         import json as _json
-        content = _json.dumps(raw_obj) if isinstance(raw_obj, dict) else str(raw_obj)
+        content = _json.dumps(raw_obj, ensure_ascii=False) if isinstance(raw_obj, (dict, list)) else str(raw_obj)
         from khl import MessageTypes
         await _bot.client.send(channel, content, type=MessageTypes.CARD)
         return True
@@ -475,7 +475,7 @@ async def send_raw_user(raw_obj: dict, user_id) -> bool:
         if channel is None:
             return False
         import json as _json
-        content = _json.dumps(raw_obj) if isinstance(raw_obj, dict) else str(raw_obj)
+        content = _json.dumps(raw_obj, ensure_ascii=False) if isinstance(raw_obj, (dict, list)) else str(raw_obj)
         from khl import MessageTypes
         await _bot.client.send(channel, content, type=MessageTypes.CARD)
         return True

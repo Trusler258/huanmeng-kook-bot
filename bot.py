@@ -131,6 +131,34 @@ class HuanmengBot:
             except Exception as e:
                 error("消息处理异常: %s", e, exc_info=True)
 
+        # KOOK 卡片按钮点击回调（message_btn_click 系统事件）
+        # 按钮 value 即指令字符串（.notifyset <cid> / .testok 等），
+        # 点击后按普通指令执行并回复到原频道
+        from khl import EventTypes
+
+        @self.khl_bot.on_event(EventTypes.MESSAGE_BTN_CLICK)
+        async def on_btn_click(bot, event):
+            try:
+                body = event.body or {}
+                value = str(body.get("value", "")).strip()
+                user_id = str(body.get("user_id", ""))
+                target_id = str(body.get("target_id", ""))
+                if not value:
+                    return
+                from core.config import get_config
+                from modules.commands import handle_command
+                from services.sender import send_by_chat_type
+                cfg = get_config()
+                is_group = bool(target_id)
+                chat_id = int(target_id) if target_id.isdigit() else 0
+                uid = int(user_id) if user_id.isdigit() else 0
+                info("卡片按钮点击 value=%s user=%s target=%s", value[:40], user_id, target_id)
+                result = await handle_command(value, uid, chat_id, "", is_group, cfg.bot_qq)
+                if result:
+                    await send_by_chat_type(str(result), chat_id, is_group, user_id if not is_group else None)
+            except Exception as e:
+                error("卡片按钮回调异常: %s", e, exc_info=True)
+
     async def run(self):
         """主循环：启动 khl.py Bot + 后台任务"""
         self._running = True

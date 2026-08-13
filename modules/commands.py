@@ -615,27 +615,8 @@ async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_qq):
     """发送测试卡片消息"""
     logger.info("指令 .testsys 触发 user=%d group=%d", user_id, group_id or 0)
-    
-    markdown_content = format_lang("testsys.card_markdown")
-    button = {
-        "id": "btn_test",
-        "render_data": {
-            "label": format_lang("testsys.button_label"),
-            "visited_label": format_lang("testsys.button_visited"),
-            "style": 1,
-        },
-        "action": {
-            "type": 2,
-            "permission": {"type": 2},
-            "data": ".testok",
-            "enter": True,
-            "unsupport_tips": format_lang("testsys.unsupport_tip", default="当前版本不支持此按钮"),
-        },
-    }
-    keyboard = {"rows": [{"buttons": [button]}]}
-    card = {"type": "markdown", "data": {"markdown": {"content": markdown_content}, "keyboard": keyboard}}
-    
-    # 返回特殊标记，由分发器负责实际发送
+
+    # 返回特殊标记，由分发器调用 _send_test_card 负责实际发送
     return "__SYS_TEST_CARD__"
 
 
@@ -670,21 +651,25 @@ async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_qq):
         mark = "✓" if int(cid) in targets else "○"
         markdown_content += f"{mark} `{name}`（{cid}）\n"
 
-    buttons = []
+    # KOOK 按钮: 放在 action-group 模块里，click=return-val，点击后通过
+    # message_btn_click 事件把 value(指令字符串) 回传给 bot
+    kook_buttons = []
     for cid, ch in channels:
         name = (getattr(ch, 'name', None) or getattr(ch, 'channel_name', None) or str(cid))[:20]
-        buttons.append({
-            "id": f"btn_notify_{cid}",
-            "render_data": {"label": name, "visited_label": f"已选 {name}", "style": 1},
-            "action": {
-                "type": 2, "permission": {"type": 2},
-                "data": f".notifyset {cid}",
-                "enter": True,
-                "unsupport_tips": "当前版本不支持此按钮",
-            },
+        kook_buttons.append({
+            "type": "button",
+            "theme": "primary",
+            "value": f".notifyset {cid}",
+            "click": "return-val",
+            "text": {"type": "plain-text", "content": name},
         })
-    keyboard = {"rows": [{"buttons": buttons}]}
-    card = {"type": "markdown", "data": {"markdown": {"content": markdown_content}, "keyboard": keyboard}}
+    # 每个 action-group 最多 4 个按钮，频道多时分多组
+    groups = [kook_buttons[i:i + 4] for i in range(0, len(kook_buttons), 4)]
+    action_groups = [{"type": "action-group", "elements": g} for g in groups]
+
+    modules = [{"type": "section", "text": {"type": "kmarkdown", "content": markdown_content}}]
+    modules.extend(action_groups)
+    card = [{"type": "card", "theme": "secondary", "size": "lg", "modules": modules}]
 
     if is_group:
         await send_raw_group(card, group_id)
