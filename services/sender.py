@@ -163,6 +163,8 @@ _IMG_URL_RE = re.compile(r'\[img:(https?://[^\]]+)\]')
 _IMG_FILE_RE = re.compile(r'\[img:file:([^\]]+)\]')
 # 卡片标记: [CARD]KOOK Card JSON[/CARD]
 _CARD_RE = re.compile(r'\[CARD\](.*?)\[/CARD\]', re.DOTALL)
+# CQ 文件标记: [CQ:file,file=file:///本地路径,name=文件名]（对齐 QQ onebot 发文件）
+_CQ_FILE_RE = re.compile(r'\[CQ:file,file=file:///([^\],>]+),name=([^\]]+)\]')
 # 倒计时占位符: __COUNTDOWN__:秒数
 _COUNTDOWN_RE = re.compile(r'"__COUNTDOWN__:(\d+)"')
 
@@ -232,6 +234,26 @@ async def _send_to_channel(channel, message: str) -> bool:
                     format_lang("bot.card_fallback", bot_name=get_config().bot_name),
                     type=MessageTypes.KMD
                 )
+            return True
+
+        # 检测 CQ 文件标记 [CQ:file,file=file:///path,name=xxx]（对齐 QQ onebot，KOOK 走 asset 上传 + FILE 类型）
+        cq_file_match = _CQ_FILE_RE.search(message)
+        if cq_file_match:
+            file_path = cq_file_match.group(1).strip()
+            text = message[:cq_file_match.start()].strip()
+            if text:
+                await _bot.client.send(channel, text, type=MessageTypes.KMD)
+            if file_path and Path(file_path).exists():
+                asset_url = await _bot.client.create_asset(file_path)
+                _cq_ext = Path(file_path).suffix.lower()
+                _cq_img = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".jfif"}
+                if _cq_ext in _cq_img:
+                    await _bot.client.send(channel, asset_url, type=MessageTypes.IMG)
+                else:
+                    await _bot.client.send(channel, asset_url, type=MessageTypes.FILE)
+                logger.info("CQ:file 已发送: %s", file_path)
+            else:
+                logger.warning("CQ:file 路径不存在: %s", file_path)
             return True
 
         # 检测本地文件图片
@@ -368,7 +390,12 @@ async def send_file(file_path: str, chat_id, is_group: bool) -> bool:
         if channel is None:
             return False
         asset_url = await _bot.client.create_asset(str(path))
-        await _bot.client.send(channel, asset_url, type=MessageTypes.IMG)
+        # 图片后缀用 IMG(type=2)，其余文件用 FILE(type=4) —— 之前一律 IMG 导致非图片文件发不出来
+        _img_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".jfif"}
+        if path.suffix.lower() in _img_ext:
+            await _bot.client.send(channel, asset_url, type=MessageTypes.IMG)
+        else:
+            await _bot.client.send(channel, asset_url, type=MessageTypes.FILE)
         logger.info("文件已发送: %s", path.name)
         return True
     except Exception as e:
@@ -376,16 +403,15 @@ async def send_file(file_path: str, chat_id, is_group: bool) -> bool:
         return False
 
 
-def _log_bot_sent(chat_id, content: str):
-    """记录 bot 发送的消息到 msglog"""
+def _log_msglog(chat_id, user_id, msg_type: str, content: str):
+    """通用：写一条消息到 msglog（bot 与用户消息共用）"""
     try:
         from time import time as _time
-        cfg = get_config()
         entry = {
             "msg_id": 0,
             "time": int(_time()),
-            "user_id": cfg.bot_qq,
-            "type": "bot",
+            "user_id": user_id,
+            "type": msg_type,
             "content": content,
             "recalled": False,
         }
@@ -395,6 +421,20 @@ def _log_bot_sent(chat_id, content: str):
         import json as _json
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("_log_msglog 失败: %s", e)
+
+
+def log_user_message(chat_id, user_id, content: str):
+    """记录用户消息到 msglog，供长时记忆回溯用户历史对话"""
+    _log_msglog(chat_id, user_id, "group", content)
+
+
+def _log_bot_sent(chat_id, content: str):
+    """记录 bot 发送的消息到 msglog"""
+    try:
+        cfg = get_config()
+        _log_msglog(chat_id, cfg.bot_qq, "bot", content)
     except Exception as e:
         logger.warning("_log_bot_sent 失败: %s", e)
 

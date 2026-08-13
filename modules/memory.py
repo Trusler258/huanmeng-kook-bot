@@ -223,7 +223,7 @@ def extract_keywords(text: str) -> set[str]:
     return base
 
 
-def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 5) -> str:
+def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 10) -> str:
     all_memories = load_memories(chat_id)
     if not all_memories:
         return ""
@@ -245,8 +245,8 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
         return ""
 
     result = format_lang("memory.recall_header") + "\n" + "\n".join(top)
-    if len(result) > 800:
-        result = result[:800] + "\n..."  # 截断上限从 400 提升到 800
+    if len(result) > 2000:
+        result = result[:2000] + "\n..."  # 注入量上限从 800 提升到 2000，让更多历史记忆进上下文
     return result
 
 
@@ -325,9 +325,31 @@ def search_long_memory(chat_id: int, keyword: str, limit: int = 5) -> str:
 _MSGLOG_DIR = MEMORY_DIR / "msglog"
 
 
-def search_msglog(chat_id: int, query: str, limit: int = 8, max_scan: int = 500) -> str:
+def _read_tail_lines(path, n: int) -> list[str]:
+    """高效读取文件末尾 n 行（用 seek 从尾部倒读，避免大文件全量读入内存）"""
+    lines: list[str] = []
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            block = 8192
+            pos = size
+            collected = b""
+            while pos > 0 and collected.count(b"\n") < n:
+                read_size = min(block, pos)
+                pos -= read_size
+                f.seek(pos)
+                collected = f.read(read_size) + collected
+            text = collected.decode("utf-8", errors="ignore")
+            lines = text.splitlines()
+    except Exception:
+        return []
+    return lines[-n:]
+
+
+def search_msglog(chat_id: int, query: str, limit: int = 10, max_scan: int = 5000) -> str:
     """
-    从 msglog JSONL 中搜索与 query 相关的近期聊天记录。
+    从 msglog JSONL 中搜索与 query 相关的聊天记录（可回溯到几周/一个月前）。
 
     Args:
         chat_id: 群号/私聊 ID
@@ -344,7 +366,7 @@ def search_msglog(chat_id: int, query: str, limit: int = 8, max_scan: int = 500)
 
     try:
         import json
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_tail_lines(path, max_scan)
         if not lines:
             return ""
 

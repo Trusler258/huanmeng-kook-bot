@@ -307,6 +307,14 @@ class EventDispatcher:
         # ── @ 替换：KMarkdown (met)id(met) → @昵称 ──
         content = self._replace_mentions(content, cfg)
 
+        # ── 用户消息写入 msglog（供长时记忆回溯用户历史对话）── chat_id_int 与 bot/search 保持一致
+        try:
+            if content and content.strip():
+                from services.sender import log_user_message
+                log_user_message(chat_id_int, user_id_str, content)
+        except Exception:
+            pass
+
         # ── 缓存频道对象（供 sender 使用）──
         if hasattr(msg, 'ctx') and hasattr(msg.ctx, 'channel'):
             from services.sender import cache_channel

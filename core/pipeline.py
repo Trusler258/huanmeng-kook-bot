@@ -1052,7 +1052,8 @@ def get_msglog_context(current_msg, context, chat_id):
             if len(content) > 6:
                 query_parts.append(content)
         query = " ".join(query_parts[-3:])
-        return search_msglog(chat_id, query, limit=6, max_scan=300)
+        # 回溯范围从 300 条扩大到 5000 条，覆盖几周/一个月前的相关对话
+        return search_msglog(chat_id, query, limit=8, max_scan=5000)
     except Exception:
         return ""
 
