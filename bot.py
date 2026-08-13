@@ -144,7 +144,8 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_pc_status_server())
         _asyncio.ensure_future(self._bg_tts_server())
         _asyncio.ensure_future(self._bg_holiday())
-        info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日")
+        _asyncio.ensure_future(self._bg_notify_loop())
+        info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日+通知(性能/GitHub)")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
         try:
@@ -272,6 +273,11 @@ class HuanmengBot:
         """后台任务：每日节假日自动刷新"""
         from modules.holiday import start_holiday_service
         await start_holiday_service()
+
+    async def _bg_notify_loop(self):
+        """后台任务：性能降级检测 + GitHub 更新检测（KOOK Card 卡片通知）"""
+        from services.notify_system import notify_loop
+        await notify_loop()
 
     async def _bg_wdsj_collector(self):
         """后台任务：每 4 小时采集战绩（0/4/8/12/16/20 点的第1分钟）"""

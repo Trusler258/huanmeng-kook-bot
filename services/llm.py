@@ -443,14 +443,30 @@ async def call_llm(
         preview = text[:50] + ("..." if len(text) > 50 else "")
         logger.info("LLM [%s] 返回 %d字符 耗时%.1fs → \"%s\"",
                    model_cfg.name[:20], len(text), elapsed, preview.replace("\n", "\\n"))
+        # 性能监控埋点（记录成功耗时）
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(elapsed, success=True)
+        except Exception:
+            pass
         return text
     except asyncio.TimeoutError:
         elapsed = loop.time() - start_time
         logger.error("LLM [%s] 调用超时 (%.1fs/%.1fs)", model_cfg.name[:20], elapsed, timeout)
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(elapsed, success=False)
+        except Exception:
+            pass
         return ""
     except Exception as e:
         elapsed = loop.time() - start_time
         logger.error("LLM [%s] 调用失败 (%.1fs): %s", model_cfg.name[:20], elapsed, e)
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(elapsed, success=False)
+        except Exception:
+            pass
         return ""
 
 
@@ -477,6 +493,7 @@ async def call_llm_with_tools(
 
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
+    start_time = loop.time()
 
     # 工具/strict 模式 & thinking 关闭（仅 DeepSeek）
     _td = _thinking_disabled_body(model_cfg)
@@ -540,13 +557,29 @@ async def call_llm_with_tools(
                        model_cfg.name[:20],
                        [(t["name"], str(t["arguments"])[:60]) for t in tc_list])
 
+        # 性能监控埋点（记录成功耗时）
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(loop.time() - start_time, success=True)
+        except Exception:
+            pass
         return ToolCallResult(content=content.strip(), tool_calls=tc_list)
 
     except asyncio.TimeoutError:
         logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(loop.time() - start_time, success=False)
+        except Exception:
+            pass
         return ToolCallResult(content="", tool_calls=[])
     except Exception as e:
         logger.error("LLM FC [%s] 失败: %s", model_cfg.name[:20], e)
+        try:
+            from services.notify_system import record_llm_call
+            record_llm_call(loop.time() - start_time, success=False)
+        except Exception:
+            pass
         return ToolCallResult(content="", tool_calls=[])
 
 

@@ -645,6 +645,93 @@ async def cmd_testok(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "test ok"
 
 
+# ════════════════════════════════════════════════════════════
+#  通知系统指令（性能降级 / GitHub 更新提示）
+# ════════════════════════════════════════════════════════════
+
+async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.notify — 配置通知目标频道（卡片按钮选择，仅管理员）"""
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return "权限不足喵~"
+
+    from services.sender import _channel_cache
+    channels = list(_channel_cache.items())
+    if not channels:
+        return "当前没有已缓存的频道。请先让机器人进入至少一个群聊，再执行 .notify"
+
+    from services.notify_system import get_target_channels
+    targets = get_target_channels()
+
+    markdown_content = "**KOOK BOT · 通知目标频道**\n点击按钮选择通知发送目标：\n\n"
+    for cid, ch in channels:
+        name = getattr(ch, 'name', None) or getattr(ch, 'channel_name', None) or str(cid)
+        mark = "✓" if int(cid) in targets else "○"
+        markdown_content += f"{mark} `{name}`（{cid}）\n"
+
+    buttons = []
+    for cid, ch in channels:
+        name = (getattr(ch, 'name', None) or getattr(ch, 'channel_name', None) or str(cid))[:20]
+        buttons.append({
+            "id": f"btn_notify_{cid}",
+            "render_data": {"label": name, "visited_label": f"已选 {name}", "style": 1},
+            "action": {
+                "type": 2, "permission": {"type": 2},
+                "data": f".notifyset {cid}",
+                "enter": True,
+                "unsupport_tips": "当前版本不支持此按钮",
+            },
+        })
+    keyboard = {"rows": [{"buttons": buttons}]}
+    card = {"type": "markdown", "data": {"markdown": {"content": markdown_content}, "keyboard": keyboard}}
+
+    if is_group:
+        await send_raw_group(card, group_id)
+    else:
+        await send_raw_user(card, user_id)
+    return None
+
+
+async def cmd_notifyset(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.notifyset <channel_id> — 添加通知目标频道（由卡片按钮点击触发）"""
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return None  # 非管理员静默
+
+    if not args:
+        return None
+    try:
+        cid = int(args[0])
+    except (ValueError, TypeError):
+        return "频道 ID 无效喵~"
+
+    from services.notify_system import add_target_channel
+    if add_target_channel(cid):
+        return f"已添加通知目标频道：{cid}\n现在回复 .notifycheck 可立即测试；性能降级/GitHub更新将推送至该频道"
+    return f"频道 {cid} 已在通知列表中"
+
+
+async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.notifycheck — 手动触发一次 GitHub 更新检测（用于验证配置）"""
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return "权限不足喵~"
+
+    from services.notify_system import check_github_update, get_target_channels, load_cfg
+    targets = get_target_channels()
+    if not targets:
+        return "尚未配置通知目标频道，先执行 .notify 选择频道"
+    await check_github_update()
+    ncfg = load_cfg()
+    return (f"通知目标频道：{targets}\n"
+            f"更新检查间隔：{ncfg.get('update_interval_s', 1800)}s\n"
+            f"上次已通知 SHA：{str(ncfg.get('last_notified_sha', ''))[:7] or '无'}\n"
+            f"（无新提交则不会重复推送）")
+
+
 async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     """.jsonraw <对话内容> → 输出 LLM 原始 JSON"""
     text = " ".join(args) if args else "喵"
@@ -3019,6 +3106,9 @@ COMMAND_MAP: dict[str, callable] = {
     "box":        cmd_box,
     "testsys":    cmd_testsys,
     "testok":     cmd_testok,
+    "notify":     cmd_notify,
+    "notifyset":  cmd_notifyset,
+    "notifycheck": cmd_notifycheck,
     "jsonraw":    cmd_jsonraw,
     "md":         cmd_md,
     "draw":       cmd_draw,
