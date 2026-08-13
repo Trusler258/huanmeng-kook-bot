@@ -169,6 +169,22 @@ class EventDispatcher:
                     merged.append(u)
             image_urls = merged
 
+        # ══ P1 新增：提取 KOOK 服务器自定义表情（图片型表情包）──
+        #    KMarkdown 格式：(emj)别名(emj)[guildId/emojiId]
+        #    绑定 binding：表情图片 URL 标准格式 https://img.kookapp.cn/emojis/{guildId}/{emojiId}.png
+        #    与 QQ 端一致：把图片型表情当作图片一并识别描述
+        emote_urls = EventDispatcher._extract_emote_urls(content)
+        if emote_urls:
+            logger.info("🧩 消息内解析到 %d 个服务器表情", len(emote_urls))
+            _seen_em = set(image_urls)
+            for u in emote_urls:
+                if u and u not in _seen_em:
+                    _seen_em.add(u)
+                    image_urls.append(u)
+        # 表情标记替换为占位符，避免污染 LLM 上下文（对齐 QQ 的 [表情]）
+        if isinstance(content, str) and "(emj)" in content:
+            content = re.sub(r'\(emj\).*?\(emj\)\[[^\]]+\]', '[表情]', content)
+
         msg_type = "图文" if (image_urls and content.strip() and not _looks_like_card) else (
             "图片" if image_urls else "文字"
         )
@@ -417,6 +433,31 @@ class EventDispatcher:
             _walk(parsed)
         else:
             _walk(card_payload)
+        return urls
+
+    @staticmethod
+    def _extract_emote_urls(content) -> list[str]:
+        """
+        从 KMarkdown 文本里提取 KOOK 服务器自定义表情（图片型表情包）的图片 URL。
+        KMarkdown 格式: (emj)别名(emj)[guildId/emojiId]
+        表情图片 URL 标准格式: https://img.kookapp.cn/emojis/{guildId}/{emojiId}.png
+        返回去重后的表情图片 URL 列表。
+        """
+        urls: list[str] = []
+        if not content or not isinstance(content, str) or "(emj)" not in content:
+            return urls
+        try:
+            for m in re.finditer(r'\(emj\)(.*?)\(emj\)\[([^\]/]+)/([^\]]+)\]', content):
+                if not m:
+                    continue
+                gid, eid = m.group(2).strip(), m.group(3).strip()
+                if not gid or not eid:
+                    continue
+                url = f"https://img.kookapp.cn/emojis/{gid}/{eid}.png"
+                if url not in urls:
+                    urls.append(url)
+        except Exception as e:
+            logger.warning("提取服务器表情 URL 失败: %s", e)
         return urls
 
     @staticmethod

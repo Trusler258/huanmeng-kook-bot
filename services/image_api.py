@@ -149,7 +149,9 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
     # ── Step 1: 下载图片（异步）──
     logger.info("[chat=%d] 开始下载图片: %s...", chat_id, image_url[:60])
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        # 带浏览器 UA，兼容 img.kookapp.cn / img.kaiheila.cn 等 KOOK CDN 的防盗链校验
+        _headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=_headers) as client:
             resp = await client.get(image_url)
             if resp.status_code != 200:
                 raise Exception(f"HTTP {resp.status_code}")
