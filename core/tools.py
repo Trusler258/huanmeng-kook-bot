@@ -653,6 +653,37 @@ def _extract_stats(player: str, stat: str, raw: str) -> str:
     return " | ".join(lines) if lines else "无数据"
 
 
+# ── Phase 6 Part5：单工具超时（秒）─────────────────────────
+# 按工具特性配置化默认值；仍可被调用方显式传入 timeout 覆盖。
+# 说明：网络型工具严格限时；write_code/agent_think 内部已有自己的 LLM/子循环限时，
+#       但整体仍设上限，避免外部搜索/抓取把整个请求拖死。
+DEFAULT_TOOL_TIMEOUT: float = 15.0
+TOOL_TIMEOUTS: dict[str, float] = {
+    "weather":    10.0,
+    "search_web": 15.0,
+    "earthquake": 10.0,
+    "read_url":   20.0,
+    "write_code": 120.0,
+    "calc":        8.0,
+    "agent_think": 90.0,
+    "whois":      12.0,
+    "wdsj":       15.0,
+    "wdsj_query": 15.0,
+    "wzq":         8.0,
+    "draw_card":   8.0,
+    "chess":       8.0,
+    "pgr":        15.0,
+    "system_status": 8.0,
+}
+
+
+def _tool_timeout(tool_name: str, explicit: float | None) -> float:
+    """解析工具超时：显式参数 > 工具默认 > 全局默认。"""
+    if explicit is not None and explicit > 0:
+        return explicit
+    return TOOL_TIMEOUTS.get(tool_name, DEFAULT_TOOL_TIMEOUT)
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -662,25 +693,38 @@ async def execute_tool(
     is_group: bool,
     bot_qq: int,
     original_msg: str = "",  # 用户原始消息，用于 write_code 不受 FC 截断
+    timeout: float | None = None,  # Phase 6：单工具超时（秒），None 走默认
 ) -> str | None:
     """
     执行单个工具调用，返回自然语言结果文本。
     返回 None 表示没有数据。
 
-    Phase 6 包装：记录工具调用耗时与状态（OK/FAILED/TIMEOUT/CANCELLED）到 trace，
-    且不吞掉 asyncio.CancelledError（保证取消能正确传播）。
+    Phase 6 包装：
+    - 记录工具调用耗时与状态（OK/FAILED/TIMEOUT/CANCELLED）到 trace。
+    - 用 asyncio.wait_for 施加单工具超时，超时返回结构化失败文本（不无限等待）。
+    - 不吞掉 asyncio.CancelledError（保证取消能正确传播）。
     """
     import time as _time
     from core.trace import record_tool_call
     start = _time.perf_counter()
+    limit = _tool_timeout(tool_name, timeout)
     try:
-        result = await _execute_impl(
-            tool_name, arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
+        result = await asyncio.wait_for(
+            _execute_impl(
+                tool_name, arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
+            ),
+            timeout=limit,
         )
         record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
                          "OK" if result is not None else "OK",
                          start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
         return result
+    except asyncio.TimeoutError:
+        elapsed = (_time.perf_counter() - start) * 1000.0
+        record_tool_call(tool_name, elapsed, "TIMEOUT",
+                         start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
+        logger.warning("工具执行超时 %s: %.1fs/%.1fs", tool_name, elapsed / 1000.0, limit)
+        return f"工具执行超时（{limit:.0f}s），请稍后重试。"
     except asyncio.CancelledError:
         record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
                          "CANCELLED", start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)

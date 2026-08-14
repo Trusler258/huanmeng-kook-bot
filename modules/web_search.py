@@ -464,15 +464,24 @@ def agent_search(query: str, limit: int = 5, deep_fetch: bool = False) -> str:
     return s.search(query, limit=limit, deep_fetch=deep_fetch)
 
 
-async def ds_native_search(query: str) -> str | None:
-    """DeepSeek Responses API 原生搜索 — 服务端搜 + 合成，零本地开销"""
-    import os, json, asyncio
-    import urllib.request
+# ── Phase 6 Part6：DeepSeek 原生搜索超时 / 重试 / 阶段耗时 ──
+# 原实现单次 urlopen timeout=45s，导致一次搜索最长可挂 45s+
+# （几十秒甚至 1 分钟的元凶之一）。现：
+#   - 单次 HTTP timeout 收紧到 DS_SEARCH_TIMEOUT（默认 12s）
+#   - 重试上限 DS_SEARCH_MAX_RETRIES（这里 retry=1，合计 2 次尝试），退避 1s
+#   - 通过 core.trace 记录 search_http / search_retry / search_parse 阶段耗时
+import os
+import json
+import time as _time
+import asyncio
+import urllib.request
 
-    api_key = os.getenv("DEEPSEEK_KEY", "")
-    if not api_key:
-        raise RuntimeError("DEEPSEEK_KEY 未配置")
+DS_SEARCH_TIMEOUT: float = float(os.getenv("DS_SEARCH_TIMEOUT", "12"))
+DS_SEARCH_MAX_RETRIES: int = int(os.getenv("DS_SEARCH_MAX_RETRIES", "1"))  # retry 次数上限
 
+
+def _ds_call(query: str, api_key: str) -> str | None:
+    """同步执行一次 DeepSeek Responses 原生搜索 HTTP 调用。"""
     payload = json.dumps({
         "model": "deepseek-v4-flash",
         "instructions": "你是一个搜索助手，请根据搜索结果简洁回答用户问题，列出关键信息。",
@@ -489,20 +498,65 @@ async def ds_native_search(query: str) -> str | None:
         },
     )
 
+    with urllib.request.urlopen(req, timeout=DS_SEARCH_TIMEOUT) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    text = data.get("output_text", "")
+    if not text:
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text":
+                        text = part.get("text", "")
+        if text:
+            return text.strip() or None
+    return text.strip() or None
+
+
+async def ds_native_search(query: str) -> str | None:
+    """DeepSeek Responses API 原生搜索 — 服务端搜 + 合成，零本地开销。
+
+    Phase 6：单次 HTTP 限时 + 有限重试（退避）+ 阶段耗时 trace。
+    """
+    from core.trace import record
+
+    api_key = os.getenv("DEEPSEEK_KEY", "")
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_KEY 未配置")
+
     loop = asyncio.get_running_loop()
+    t0 = _time.perf_counter()
+    last_err: Exception | None = None
 
-    def _call():
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        text = data.get("output_text", "")
-        if not text:
-            for item in data.get("output", []):
-                if item.get("type") == "message":
-                    for part in item.get("content", []):
-                        if part.get("type") == "output_text":
-                            text = part.get("text", "")
+    attempts = DS_SEARCH_MAX_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        http_start = _time.perf_counter()
+        try:
+            text = await loop.run_in_executor(None, _ds_call, query, api_key)
+            http_ms = (_time.perf_counter() - http_start) * 1000.0
+            record("search_http", http_ms)
             if text:
-                return text.strip() or None
-        return text.strip() or None
+                parse_start = _time.perf_counter()
+                # 解析已在 _ds_call 内完成，这里仅打点
+                record("search_parse", (_time.perf_counter() - parse_start) * 1000.0)
+                record("search_total", (_time.perf_counter() - t0) * 1000.0)
+                logger.info("DeepSeek 原生搜索成功: attempt=%d 耗时%.1fms", attempt, http_ms)
+                return text
+            # 返回空文本 → 视为可重试，短暂退避
+            if attempt < attempts:
+                await asyncio.sleep(1.0)
+                record("search_retry", 1000.0)
+            continue
+        except Exception as e:
+            last_err = e
+            http_ms = (_time.perf_counter() - http_start) * 1000.0
+            record("search_http", http_ms)
+            logger.warning("DeepSeek 原生搜索失败 attempt=%d/%d: %.1fms err=%s",
+                           attempt, attempts, http_ms, e)
+            if attempt < attempts:
+                await asyncio.sleep(1.0)
+                record("search_retry", 1000.0)
 
-    return await loop.run_in_executor(None, _call)
+    record("search_total", (_time.perf_counter() - t0) * 1000.0)
+    if last_err is not None:
+        raise RuntimeError(f"DeepSeek 原生搜索失败（{attempts}次尝试）: {last_err}")
+    return None

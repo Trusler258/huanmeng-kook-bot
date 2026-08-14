@@ -45,13 +45,17 @@ async def perform_search(
     # ── Step 2: DeepSeek Responses API 原生搜索（优先）──
     logger.info("执行 DeepSeek 原生搜索: '%s...' (user=%s)", query[:40], sender_name)
     result_text = None
+    _search_start = asyncio.get_event_loop().time()
     try:
         from modules.web_search import ds_native_search
-        result_text = await asyncio.wait_for(ds_native_search(query), timeout=45.0)
+        # Phase 6: 外层 wait_for 上限收紧到 DS 自身最坏情况（2次尝试×12s + 1s退避）
+        result_text = await asyncio.wait_for(ds_native_search(query), timeout=30.0)
     except asyncio.TimeoutError:
         logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
     except Exception as e:
         logger.warning("DeepSeek 原生搜索异常: %s，回退 Agent 搜索", e)
+    from core.trace import record as _trace_record
+    _trace_record("search_total", (asyncio.get_event_loop().time() - _search_start) * 1000.0)
 
     # ── Step 3: Agent 搜索（回退）──
     if result_text is None:
