@@ -62,7 +62,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     ctx.append_to_context(chat_id, f"[系统] {system_msg}")
     logger.info("🐾 戳一戳回复流程启动: from=%s chat=%d", sender_name, chat_id)
 
-    related_memories = get_top_memories(system_msg, ctx.get_context(chat_id), chat_id=chat_id)
+    related_memories = await get_top_memories(system_msg, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
     fav_info = f"当前{sender_name}对你的好感度：{fav_val}/100"
 
@@ -319,7 +319,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     full_msg = f"[{role_tag}] {sender_name}发了: {msg_content}"
     from core.trace import span as _trace_span
     with _trace_span("memory"):
-        related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
+        related_memories = await get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
 
     arch_context = ""

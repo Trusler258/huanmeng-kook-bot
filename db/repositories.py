@@ -104,6 +104,21 @@ class MemoryRepository(BaseRepository):
         rows = await fts_search_memories(db._engine, query, limit)
         return rows
 
+    async def search(self, query: str, limit: int = 20,
+                     conversation_id: int | None = None,
+                     user_id: int | None = None,
+                     since_ms: int | None = None) -> list[dict]:
+        """FTS5 关键词检索记忆，支持 conversation/user/time 过滤，短词自动回退 LIKE。
+
+        reuse 现有 fts_search_memories DAL；返回 dict 行（含 id/content/created_at 等）。
+        """
+        from .fts import fts_search_memories
+        from .database import db
+        return await fts_search_memories(
+            db._engine, query, limit,
+            conversation_id=conversation_id, user_id=user_id, since_ms=since_ms,
+        )
+
 
 # ── memory_links ────────────────────────────────────────────
 class MemoryLinkRepository(BaseRepository):

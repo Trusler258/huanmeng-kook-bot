@@ -117,21 +117,53 @@ async def fts_search_messages(engine: AsyncEngine, query: str, limit: int = 20) 
         return [dict(r._mapping) for r in rows]
 
 
-async def fts_search_memories(engine: AsyncEngine, query: str, limit: int = 20) -> list[dict]:
-    """在 memories_fts 中检索记忆；短词自动回退 LIKE。"""
+def _memory_filters(conversation_id: int | None, user_id: int | None,
+                    since_ms: int | None, prefix: str = "") -> tuple[str, dict]:
+    """构造 memories 过滤子句与参数；全部为可选，返回 (where_sql, params)。
+
+    prefix 用于 FTS 路径（表带别名 m.），LIKE 路径传空（裸表）。
+    """
+    clauses: list[str] = []
+    params: dict = {}
+    if conversation_id:
+        clauses.append(f"{prefix}conversation_id = :conv")
+        params["conv"] = conversation_id
+    if user_id:
+        clauses.append(f"{prefix}user_id = :uid")
+        params["uid"] = user_id
+    if since_ms:
+        clauses.append(f"{prefix}created_at >= :since")
+        params["since"] = since_ms
+    where_sql = (" AND " + " AND ".join(clauses)) if clauses else ""
+    return where_sql, params
+
+
+async def fts_search_memories(engine: AsyncEngine, query: str, limit: int = 20,
+                              conversation_id: int | None = None,
+                              user_id: int | None = None,
+                              since_ms: int | None = None) -> list[dict]:
+    """在 memories_fts 中检索记忆；短词自动回退 LIKE。
+
+    支持 conversation/user/time(since_ms) 过滤。conversation_id 为空时按
+    memories 表语义视为不限定（0 表示全局记忆，不参与过滤）。
+    """
     match_expr = _match_expr(query)
     async with engine.connect() as conn:
         if match_expr:
+            where_sql, params = _memory_filters(conversation_id, user_id, since_ms, prefix="m.")
             sql = text(
                 "SELECT m.id, m.content, m.memory_type, m.importance, m.created_at "
                 "FROM memories_fts f JOIN memories m ON m.id = f.rowid "
-                "WHERE memories_fts MATCH :q ORDER BY rank LIMIT :lim"
+                "WHERE memories_fts MATCH :q" + where_sql + " ORDER BY rank LIMIT :lim"
             )
-            rows = await conn.execute(sql, {"q": match_expr, "lim": limit})
+            q = dict(params, q=match_expr, lim=limit)
+            rows = await conn.execute(sql, q)
         else:
+            where_sql, params = _memory_filters(conversation_id, user_id, since_ms)
             sql = text(
                 "SELECT id, content, memory_type, importance, created_at FROM memories "
-                "WHERE content LIKE :like ORDER BY id DESC LIMIT :lim"
+                "WHERE content LIKE :like" + where_sql + " ORDER BY id DESC LIMIT :lim"
             )
-            rows = await conn.execute(sql, {"like": f"%{_plain(query)}%", "lim": limit})
+            q = dict(params, like=f"%{_plain(query)}%", lim=limit)
+            rows = await conn.execute(sql, q)
         return [dict(r._mapping) for r in rows]

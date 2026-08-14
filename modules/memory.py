@@ -227,18 +227,46 @@ def extract_keywords(text: str) -> set[str]:
     return base
 
 
-def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = MEMORY_TOP_K) -> str:
-    _t0 = time.perf_counter()
+async def _sqlite_search_memories(query: str, chat_id: int, max_cnt: int,
+                                  user_id: int = 0, since_ms: int = 0) -> list[str] | None:
+    """从 SQLite/FTS5 检索记忆（Phase 6.5 主检索入口）。
+
+    支持 conversation/user/time 过滤；FTS5 短词自动回退 LIKE（见 db.fts）。
+    DB 未初始化 / 异常 / 无数据时返回 None，由调用方回退文件 legacy。
+    """
+    try:
+        from db.database import db
+        if not db.initialized:
+            return None
+        from db.repositories import MemoryRepository
+        async with db.session()() as s:
+            repo = MemoryRepository(s)
+            rows = await repo.search(
+                query, limit=max_cnt,
+                conversation_id=(chat_id if chat_id else None),
+                user_id=(user_id or None),
+                since_ms=(since_ms or None),
+            )
+        if not rows:
+            return None
+        return [r["content"] for r in rows]
+    except Exception as e:
+        logger.warning("SQLite 记忆检索不可用，回退文件: %s", e)
+        return None
+
+
+def _legacy_file_top_memories(current_msg: str, context_lines: list[str],
+                              chat_id: int, max_cnt: int) -> list[str]:
+    """文件 legacy 检索（memory_*.md，仅作 fallback）：关键词打分排序。"""
     all_memories = load_memories(chat_id)
     if not all_memories:
-        return ""
-
+        return []
     # Phase 6 Part3：只扫描最近 MEMORY_SCAN_CAP 条，避免超大记忆文件全量打分
     if len(all_memories) > MEMORY_SCAN_CAP:
         all_memories = all_memories[-MEMORY_SCAN_CAP:]
 
     keywords = extract_keywords(current_msg)
-    for line in context_lines[-5:]:
+    for line in (context_lines or [])[-5:]:
         keywords.update(extract_keywords(line))
 
     scored: list[tuple[int, str]] = []
@@ -247,24 +275,58 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
         score = len(keywords & mem_keywords) if keywords else 0
         if score > 0:
             scored.append((score, mem))
-
     scored.sort(key=lambda x: x[0], reverse=True)
-    top = [mem for _, mem in scored[:max_cnt]]
+    return [mem for _, mem in scored[:max_cnt]]
+
+
+def _record_memory_trace(t0: float, hits: int, source: str, status: str) -> None:
+    """记录记忆检索耗时 / 命中数 / 来源到 trace 与日志。"""
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    try:
+        from core.trace import record
+        record("memory", elapsed_ms)
+        logger.debug("记忆检索: source=%s status=%s 命中注入=%d 耗时=%.1fms",
+                     source, status, hits, elapsed_ms)
+    except Exception:
+        pass
+
+
+async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int,
+                           max_cnt: int = MEMORY_TOP_K, *, user_id: int = 0,
+                           since_ms: int = 0) -> str:
+    """记忆检索（Phase 6.5）：SQLite/FTS5 为主源，memory_*.md 仅作 legacy/fallback。
+
+    结果受 MEMORY_TOKEN_BUDGET（Context Builder budget）限制；
+    记录 source / 命中数 / 耗时。禁止删除旧数据。
+    """
+    _t0 = time.perf_counter()
+
+    # 组装检索文本：当前消息 + 最近上下文
+    query_parts = [current_msg] + [l for l in (context_lines or [])[-5:] if l]
+    query_text = " ".join(query_parts)
+
+    # ── 主源：SQLite / FTS5 ──
+    source = "file"
+    top: list[str] = []
+    sqlite_hits = await _sqlite_search_memories(query_text, chat_id, max_cnt,
+                                                user_id=user_id, since_ms=since_ms)
+    if sqlite_hits is not None:
+        source = "sqlite"
+        top = sqlite_hits
+
+    # ── fallback：DB 不可用 / 异常 / 无数据时读文件 ──
     if not top:
+        top = _legacy_file_top_memories(current_msg, context_lines, chat_id, max_cnt)
+
+    if not top:
+        _record_memory_trace(_t0, 0, source, "miss")
         return ""
 
     result = format_lang("memory.recall_header") + "\n" + "\n".join(top)
     if len(result) > MEMORY_TOKEN_BUDGET:
         result = result[:MEMORY_TOKEN_BUDGET] + "\n..."
 
-    # Phase 6 Part3：记录记忆检索耗时与结果数量到 trace
-    try:
-        from core.trace import record
-        record("memory", (time.perf_counter() - _t0) * 1000.0)
-        logger.debug("记忆检索: chat=%d 扫描=%d 命中注入=%d 耗时=%.1fms",
-                     chat_id, len(all_memories), len(top), (time.perf_counter() - _t0) * 1000.0)
-    except Exception:
-        pass
+    _record_memory_trace(_t0, len(top), source, "hit")
     return result
 
 

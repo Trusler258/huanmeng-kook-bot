@@ -155,7 +155,7 @@ async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
     extra_parts = []
     try:
         from modules.memory import get_top_memories
-        mem = get_top_memories(text, history, chat_id=chat_id)
+        mem = await get_top_memories(text, history, chat_id=chat_id)
         if mem:
             extra_parts.append(f"【记忆】{mem}")
     except Exception:

@@ -478,6 +478,54 @@ import urllib.request
 
 DS_SEARCH_TIMEOUT: float = float(os.getenv("DS_SEARCH_TIMEOUT", "12"))
 DS_SEARCH_MAX_RETRIES: int = int(os.getenv("DS_SEARCH_MAX_RETRIES", "1"))  # retry 次数上限
+# Phase 6.5：SQLite search_cache 短 TTL 缓存（query+参数）。TTL 配置化，默认 300s。
+SEARCH_CACHE_TTL: int = int(os.getenv("SEARCH_CACHE_TTL", "300"))
+SEARCH_CACHE_ENABLED: bool = os.getenv("SEARCH_CACHE_ENABLED", "1") == "1"
+
+
+async def _cache_get(query: str) -> str | None:
+    """命中且未过期返回缓存文本；否则 None。缓存异常绝不影响搜索。"""
+    from core.trace import record
+    _t0 = _time.perf_counter()
+    try:
+        from db.database import db
+        if not db.initialized:
+            return None
+        from db.repositories import SearchCacheRepository
+        async with db.session()() as s:
+            entry = await SearchCacheRepository(s).get(query, engine="deepseek")
+        if entry is None:
+            record("search_cache_miss", (_time.perf_counter() - _t0) * 1000.0)
+            return None
+        now_ms = int(_time.time() * 1000)
+        if entry.expires_at and now_ms > entry.expires_at:
+            record("search_cache_miss", (_time.perf_counter() - _t0) * 1000.0)
+            return None
+        result = entry.result
+        text = result.get("text") if isinstance(result, dict) else (result if isinstance(result, str) else None)
+        if not text:
+            record("search_cache_miss", (_time.perf_counter() - _t0) * 1000.0)
+            return None
+        record("search_cache_hit", (_time.perf_counter() - _t0) * 1000.0)
+        return text
+    except Exception as e:
+        logger.warning("读取搜索缓存失败（忽略，继续搜索）: %s", e)
+        return None
+
+
+async def _cache_put(query: str, text: str) -> None:
+    """写入搜索缓存；失败仅记日志，不影响结果返回。"""
+    try:
+        from db.database import db
+        if not db.initialized:
+            return
+        from db.repositories import SearchCacheRepository
+        async with db.session()() as s:
+            await SearchCacheRepository(s).put(
+                query, {"text": text}, engine="deepseek", ttl_seconds=SEARCH_CACHE_TTL)
+            await s.commit()
+    except Exception as e:
+        logger.warning("写入搜索缓存失败（忽略）: %s", e)
 
 
 def _ds_call(query: str, api_key: str) -> str | None:
@@ -523,6 +571,13 @@ async def ds_native_search(query: str) -> str | None:
     if not api_key:
         raise RuntimeError("DEEPSEEK_KEY 未配置")
 
+    # Phase 6.5：SQLite search_cache 短 TTL 缓存。命中直接返回，miss 正常搜索并写缓存。
+    if SEARCH_CACHE_ENABLED:
+        cached = await _cache_get(query)
+        if cached:
+            logger.info("DeepSeek 原生搜索缓存命中: '%s...'", query[:40])
+            return cached
+
     loop = asyncio.get_running_loop()
     t0 = _time.perf_counter()
     last_err: Exception | None = None
@@ -540,6 +595,8 @@ async def ds_native_search(query: str) -> str | None:
                 record("search_parse", (_time.perf_counter() - parse_start) * 1000.0)
                 record("search_total", (_time.perf_counter() - t0) * 1000.0)
                 logger.info("DeepSeek 原生搜索成功: attempt=%d 耗时%.1fms", attempt, http_ms)
+                if SEARCH_CACHE_ENABLED:
+                    await _cache_put(query, text)
                 return text
             # 返回空文本 → 视为可重试，短暂退避
             if attempt < attempts:
