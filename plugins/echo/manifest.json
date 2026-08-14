@@ -1,0 +1,13 @@
+{
+  "name": "echo",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "示例插件：注册 .pecho 命令，回显文本",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {
+    "prefix": "[plugin-echo] "
+  }
+}

@@ -31,6 +31,7 @@ class CapabilityRegistry:
 
     def __init__(self) -> None:
         self._caps: dict[str, Capability] = {}
+        self._handlers: dict[str, object] = {}
         self._loaded = False
 
     # ── 发现 ──────────────────────────────────────────────
@@ -145,6 +146,18 @@ class CapabilityRegistry:
         self._caps[cap.id] = cap
         self._loaded = True
         logger.info("CapabilityRegistry 注册能力: %s (%s)", cap.id, cap.category)
+
+    def unregister(self, cap_id: str) -> None:
+        """移除一个动态注册的能力（Plugin 卸载时调用）。core 发现的能力不删。"""
+        if cap_id.startswith("plugin."):
+            self._caps.pop(cap_id, None)
+
+    def bind_handler(self, cap_id: str, handler) -> None:
+        """为 command 能力绑定实际处理器（异步函数）。"""
+        self._handlers[cap_id] = handler
+
+    def get_handler(self, cap_id: str):
+        return self._handlers.get(cap_id)
 
     def reload(self) -> None:
         self._loaded = False

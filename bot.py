@@ -116,6 +116,15 @@ class HuanmengBot:
         self._register_handlers()
         info("消息处理器已注册（TEXT/KMD）")
 
+        # 12. 启动 Plugin Runtime（非阻塞，单插件失败不影响 Core）
+        try:
+            from core.plugin import get_plugin_manager
+            mgr = get_plugin_manager()
+            ok_names = await mgr.load_all()
+            info("Plugin Runtime 就绪: 加载 %d 个插件 %s", len(ok_names), ok_names)
+        except Exception as e:
+            warning("Plugin Runtime 初始化降级: %s", e)
+
         info("=" * 50)
         info("✅ 所有组件初始化完成，准备连接 KOOK...")
         info("=" * 50)
@@ -210,6 +219,14 @@ class HuanmengBot:
     async def shutdown(self):
         """优雅关闭所有资源"""
         info("🛑 正在关闭...")
+
+        # 关闭 Plugin Runtime（卸载所有插件，清理定时器/事件/能力注册）
+        try:
+            from core.plugin import get_plugin_manager
+            await get_plugin_manager().shutdown_all()
+            info("Plugin Runtime 已关闭")
+        except Exception as e:
+            warning("Plugin Runtime 关闭降级: %s", e)
 
         # 关闭发送器
         await close_sender()
