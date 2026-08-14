@@ -297,6 +297,17 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if not should_reply:
         return
 
+    # ------Phase 6 Part2: 轻量意图分类（非 AI）------
+    # 走完整 Agent 路径前先记录意图；普通聊天可据此跳过多余 search 判断。
+    try:
+        from core.router import resolve_intent, needs_search_heuristic
+        intent = resolve_intent(msg_content, is_group=is_group, is_mentioned=is_mentioned, role_tag=role_tag)
+        _fast_search = intent in ("search", "realtime") or needs_search_heuristic(msg_content)
+    except Exception:
+        intent = ""
+        _fast_search = True  # router 出错 → 走完整 pipeline（含搜索判断），不丢消息
+    logger.debug("请求意图: intent=%s fast_search=%s msg='%s'", intent, _fast_search, msg_content[:30])
+
     # ------自忽略机制------
     from services.self_ignore import is_ignored, ignore_user, remaining_seconds
     if is_group and is_ignored(user_id):
@@ -528,16 +539,21 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             logger.warning("代码生成管道失败: %s，回退正常生成", e)
 
     # ------自动搜索（用户说"搜索/查/搜"等关键词时，先搜再答）------
-    try:
-        with _trace_span("search"):
-            search_result = await auto_search_if_needed(
-                msg_content, sender_name, user_id, chat_id, is_group
-            )
-        if search_result:
-            extra_info_parts.append(f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
-            logger.info("自动搜索结果已注入 (%d字)", len(search_result))
-    except Exception as _se:
-        logger.warning("自动搜索失败: %s", _se)
+    # Phase 6 Part2 Fast Path：普通聊天（无搜索意图）跳过自动搜索判断，
+    # 避免触发额外的模型判断 LLM 调用（这是简单聊天 5~10s 延迟的来源之一）。
+    if _fast_search:
+        try:
+            with _trace_span("search"):
+                search_result = await auto_search_if_needed(
+                    msg_content, sender_name, user_id, chat_id, is_group
+                )
+            if search_result:
+                extra_info_parts.append(f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
+                logger.info("自动搜索结果已注入 (%d字)", len(search_result))
+        except Exception as _se:
+            logger.warning("自动搜索失败: %s", _se)
+    else:
+        logger.debug("Fast Path: 普通聊天跳过自动搜索 (intent=%s)", intent)
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)

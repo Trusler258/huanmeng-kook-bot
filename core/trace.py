@@ -65,6 +65,9 @@ class RequestContext:
     # 是否群聊
     is_group: bool = False
 
+    # Phase 6 Part2：请求意图分类（chat/command/tool/search/plugin/system）
+    intent: str = ""
+
     # 请求开始时间（单调时钟）
     start_monotonic: float = field(default_factory=time.perf_counter)
 
