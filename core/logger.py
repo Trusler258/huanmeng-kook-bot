@@ -262,11 +262,12 @@ def critical(msg: str = "", *args, **kwargs):
     get_logger().critical(msg, *args, **kwargs)
 
 
-# ── Trace 汇总（Huanmeng 2.0 Phase 1）──────────────────────
+# ── Trace 汇总（Huanmeng 2.0 Phase 1 / Phase 6 增强）────────
 def log_trace_summary():
     """在请求边界输出一次请求的阶段耗时汇总，便于按 trace_id 还原"为什么慢"。
 
     读取当前 RequestContext 的各阶段样本，INFO 级别输出。
+    Phase 6 增强：额外输出 llm_call_count / tool_call 明细 / slow_request 分类。
     """
     try:
         from core.trace import current
@@ -279,11 +280,23 @@ def log_trace_summary():
         parts = []
         for phase, s in sorted(summary.items()):
             parts.append(f"{phase}={s['total_ms']}ms(x{s['count']})")
-        get_logger().info(
-            "[TRACE %s] total=%sms | %s",
-            ctx.trace_id,
-            ctx.total_ms(),
-            ", ".join(parts),
-        )
+        # Phase 6：慢请求分类 + LLM 调用数 + 工具明细
+        severity = ctx.severity()
+        tool_desc = ""
+        if ctx.tool_calls:
+            tool_desc = " | tools=" + ",".join(
+                f"{t['tool_name']}:{t['status']}:{t['duration_ms']}ms" for t in ctx.tool_calls
+            )
+        base = f"[TRACE {ctx.trace_id}] total={ctx.total_ms()}ms severity={severity}" \
+               f" llm_calls={ctx.llm_call_count}{tool_desc} | {', '.join(parts)}"
+        get_logger().info(base)
+        if severity == "very_slow_request":
+            get_logger().warning(
+                "[VERY_SLOW %s] total=%sms 需重点排查 | %s", ctx.trace_id, ctx.total_ms(), ", ".join(parts)
+            )
+        elif severity == "slow_request":
+            get_logger().warning(
+                "[SLOW %s] total=%sms | %s", ctx.trace_id, ctx.total_ms(), ", ".join(parts)
+            )
     except Exception:
         pass

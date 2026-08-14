@@ -74,6 +74,17 @@ class RequestContext:
     # 关键阶段打点顺序，便于还原时间线
     events: list[tuple[str, float]] = field(default_factory=list)
 
+    # ── Phase 6 增强：工具调用明细 + LLM 调用计数 ──
+    # 每个元素: {"tool_name", "start_ms", "end_ms", "duration_ms", "status"}
+    #   status ∈ OK / FAILED / TIMEOUT / CANCELLED
+    tool_calls: list[dict] = field(default_factory=list)
+    # 本次请求内部发出的 LLM 调用（含 judge / 主生成 / 工具后总结 / 搜索判断等）
+    llm_call_count: int = 0
+
+    # 慢请求阈值（毫秒），用于分类
+    SLOW_MS: float = 3000.0
+    VERY_SLOW_MS: float = 10000.0
+
     # ── 日志注入辅助 ──
     def set_task(self, task_id: str):
         self.task_id = task_id
@@ -112,6 +123,36 @@ class RequestContext:
 
     def total_ms(self) -> float:
         return round((time.perf_counter() - self.start_monotonic) * 1000.0, 2)
+
+    # ── Phase 6：工具调用 / LLM 计数 / 慢请求 ──
+    def record_tool_call(self, tool_name: str, duration_ms: float, status: str,
+                         start_ms: float | None = None, end_ms: float | None = None) -> None:
+        """记录一次工具调用的耗时与结果状态。
+
+        status ∈ OK / FAILED / TIMEOUT / CANCELLED，不记录入参/结果等敏感内容。
+        """
+        self.tool_calls.append({
+            "tool_name": tool_name,
+            "start_ms": round(start_ms, 2) if start_ms is not None else None,
+            "end_ms": round(end_ms, 2) if end_ms is not None else None,
+            "duration_ms": round(duration_ms, 2),
+            "status": status,
+        })
+        self._phases.setdefault("tool", []).append(duration_ms)
+        self.events.append(("tool_call", duration_ms))
+
+    def record_llm(self) -> None:
+        """记录一次 LLM 调用发起（用于统计本次请求的 llm_call_count）。"""
+        self.llm_call_count += 1
+
+    def severity(self) -> str:
+        """按总耗时分类：normal / slow_request / very_slow_request。"""
+        total = self.total_ms()
+        if total >= self.VERY_SLOW_MS:
+            return "very_slow_request"
+        if total >= self.SLOW_MS:
+            return "slow_request"
+        return "normal"
 
 
 class Span:
@@ -190,6 +231,33 @@ def record(phase: str, elapsed_ms: float):
     ctx = _current_ctx.get()
     if ctx is not None:
         ctx.record(phase, elapsed_ms)
+
+
+def record_tool_call(tool_name: str, duration_ms: float, status: str,
+                     start_ms: float | None = None, end_ms: float | None = None):
+    """便捷：记录一次工具调用耗时与状态（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_tool_call(tool_name, duration_ms, status, start_ms, end_ms)
+
+
+def record_llm():
+    """便捷：记录一次 LLM 调用发起（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_llm()
+
+
+def get_llm_call_count() -> int:
+    """返回当前请求的 LLM 调用次数（无上下文返回 0）。"""
+    ctx = _current_ctx.get()
+    return ctx.llm_call_count if ctx is not None else 0
+
+
+def get_tool_calls() -> list[dict]:
+    """返回当前请求的工具调用明细（无上下文返回空列表）。"""
+    ctx = _current_ctx.get()
+    return list(ctx.tool_calls) if ctx is not None else []
 
 
 class _NoopSpan:

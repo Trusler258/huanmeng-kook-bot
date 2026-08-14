@@ -380,6 +380,10 @@ async def call_llm(
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
     
+    # Phase 6：记录本次 LLM 调用（供 trace 统计 llm_call_count）
+    from core.trace import record_llm
+    record_llm()
+    
     logger.info("调用LLM [%s] url=%s tokens=%s temp=%.1f timeout=%.1fs",
                  model_cfg.name[:20], model_cfg.url.split('/')[-2] if '/' in model_cfg.url else model_cfg.url[:20],
                  str(max_tokens), temperature, timeout)
@@ -494,6 +498,10 @@ async def call_llm_with_tools(
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
     start_time = loop.time()
+
+    # Phase 6：记录本次 LLM 调用（供 trace 统计 llm_call_count）
+    from core.trace import record_llm
+    record_llm()
 
     # 工具/strict 模式 & thinking 关闭（仅 DeepSeek）
     _td = _thinking_disabled_body(model_cfg)

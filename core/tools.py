@@ -666,7 +666,43 @@ async def execute_tool(
     """
     执行单个工具调用，返回自然语言结果文本。
     返回 None 表示没有数据。
+
+    Phase 6 包装：记录工具调用耗时与状态（OK/FAILED/TIMEOUT/CANCELLED）到 trace，
+    且不吞掉 asyncio.CancelledError（保证取消能正确传播）。
     """
+    import time as _time
+    from core.trace import record_tool_call
+    start = _time.perf_counter()
+    try:
+        result = await _execute_impl(
+            tool_name, arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
+        )
+        record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
+                         "OK" if result is not None else "OK",
+                         start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
+        return result
+    except asyncio.CancelledError:
+        record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
+                         "CANCELLED", start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
+        raise  # 关键：不吞掉取消，让上层正确传播
+    except Exception as e:
+        record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
+                         "FAILED", start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
+        logger.error("工具执行失败 %s: %s", tool_name, e)
+        return f"工具执行出错: {e}"
+
+
+async def _execute_impl(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_id: int,
+    group_id: int,
+    sender_name: str,
+    is_group: bool,
+    bot_qq: int,
+    original_msg: str = "",
+) -> str | None:
+    """工具执行的实际逻辑（execute_tool 的拆分配包）。"""
     cmd_name = _TOOL_CMD_MAP.get(tool_name)
 
     # 自有实现（不走 COMMAND_MAP）
