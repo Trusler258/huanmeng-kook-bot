@@ -23,6 +23,8 @@ from core.agent.config import (
     TOOL_TIMEOUT,
     TOTAL_TASK_TIMEOUT,
 )
+from core.agent.budget import AgentBudget, LoopDetector
+from core.agent.verifier import AgentVerifier
 from core.agent.evaluator import ResultEvaluator
 from core.agent.planner import Plan, PlanStep
 from core.agent.skill_registry import get_skill_registry
@@ -31,6 +33,17 @@ from core.trace import record, record_llm, set_plan_summary
 from core.tool_runtime import OK
 
 logger = get_logger("agent.executor")
+
+# 结果中视为"已含答案/完成"的标记（供 Verifier 判定 goal_satisfied）
+_DONE_MARKERS = ("完成", "已发送", "已生成", "如下", "结果", "资料", "数据", "总结",
+                 "答案", "结论", "信息")
+
+
+def _has_answer_marker(text: str) -> bool:
+    if not text:
+        return False
+    low = text.lower()
+    return any(m in low for m in _DONE_MARKERS)
 
 
 @dataclass
@@ -57,19 +70,28 @@ class AgentResult:
 
 
 class AgentExecutor:
-    """按 Plan 执行 Skill/Tool 的执行引擎。"""
+    """按 Plan 执行 Skill/Tool 的执行引擎（Phase 12：集成 AgentBudget + Verifier + LoopDetector）。"""
 
     def __init__(self, evaluator: Optional[ResultEvaluator] = None,
-                 skill_registry=None):
+                 skill_registry=None, verifier: Optional[AgentVerifier] = None):
         self._eval = evaluator or ResultEvaluator()
+        self._verifier = verifier or AgentVerifier()
         self._skills = skill_registry or get_skill_registry()
 
-    async def execute(self, plan: Plan, ctx: AgentContext) -> AgentResult:
+    async def execute(self, plan: Plan, ctx: AgentContext,
+                      budget: Optional[AgentBudget] = None) -> AgentResult:
         """执行整个 Plan，返回 AgentResult。异常最终转成结构化失败/超时/取消。"""
         from core.trace import span as _span
         start = time.perf_counter()
         plan.status = "RUNNING"
         plan.current_step = 0
+
+        # Phase 12：创建预算（复用默认或外部注入）与循环检测器
+        budget = budget or AgentBudget(
+            max_steps=MAX_PLAN_STEPS,
+            deadline_ms=time.monotonic() * 1000.0 + TOTAL_TASK_TIMEOUT * 1000.0,
+        )
+        detector = LoopDetector()
 
         accumulated: list[str] = []
         replans = 0
@@ -78,7 +100,7 @@ class AgentExecutor:
         try:
             async def _run():
                 return await self._run_loop(plan, ctx, accumulated, start,
-                                            replans, retry_left)
+                                            replans, retry_left, budget, detector)
             result = await asyncio.wait_for(_run(), timeout=TOTAL_TASK_TIMEOUT)
             await self._finalize(plan, result, accumulated, start, ctx)
             return result
@@ -106,49 +128,67 @@ class AgentExecutor:
                                llm_calls=0, tool_calls=self._tool_call_snapshot(plan))
 
     # ── 主循环 ──
-    async def _run_loop(self, plan, ctx, accumulated, start, replans, retry_left):
+    async def _run_loop(self, plan, ctx, accumulated, start, replans, retry_left,
+                        budget: AgentBudget, detector: LoopDetector):
         from core.trace import span as _span
-        for step in plan.steps[:MAX_PLAN_STEPS]:
+        for step in plan.steps[:budget.max_steps]:
+            # 预算 / 截止时间检查：超时即停止
+            if budget.hit_deadline():
+                logger.info("Agent 达到 deadline，停止执行")
+                break
             plan.current_step = step.index
             step.status = "RUNNING"
             with _span("plan_step"):
-                step_ms = await self._await_tool(step, ctx, accumulated)
+                step_ms = await self._await_tool(step, ctx, accumulated, budget, detector)
 
             # 记录执行耗时
             record("execution", step_ms)
 
-            # 评估结果
-            with _span("evaluation"):
-                ev = self._eval.evaluate(
-                    step.result, plan.goal, step.index, len(plan.steps),
-                    accumulated="\n".join(accumulated),
-                )
+            # 评估结果（Phase 12 用 Verifier 判定）
+            vr = self._verifier.verify_step(
+                step.result, step.index, len(plan.steps),
+                has_answer_marker=_has_answer_marker(step.result),
+            )
 
-            step.status = "OK" if ev.verdict in ("ok", "done") else \
-                          ("FAILED" if ev.verdict == "fail" else "OK")
+            step.status = "OK" if vr.verdict in ("ok", "done", "continue") else \
+                          ("FAILED" if vr.verdict == "fail" else "OK")
 
-            if ev.verdict in ("done", "ok", "continue"):
+            # 目标已满足 → 立即停止，不再调用后续 Tool
+            if vr.goal_satisfied or vr.verdict == "done":
+                logger.info("Agent 目标已满足，停止执行: %s", step.action)
+                break
+
+            if vr.verdict in ("ok", "continue"):
+                # 无进展检测：结果为空且无新信息 → no_progress
+                if not step.result:
+                    if detector.on_progress(False):
+                        logger.info("Agent 检测到 no_progress，停止: %s", step.action)
+                        break
+                else:
+                    detector.on_progress(True)
                 continue
-            if ev.verdict == "fail":
+
+            if vr.verdict == "fail":
                 # 有限重试
                 if retry_left > 0:
                     retry_left -= 1
                     logger.warning("Agent 步骤失败，重试一次: %s", step.action)
                     with _span("plan_step"):
-                        step_ms = await self._await_tool(step, ctx, accumulated)
+                        step_ms = await self._await_tool(step, ctx, accumulated, budget, detector)
                     record("execution", step_ms)
-                    ev = self._eval.evaluate(step.result, plan.goal, step.index,
-                                             len(plan.steps),
-                                             accumulated="\n".join(accumulated))
-                    if ev.verdict not in ("fail",):
+                    vr = self._verifier.verify_step(
+                        step.result, step.index, len(plan.steps),
+                        has_answer_marker=_has_answer_marker(step.result),
+                    )
+                    if vr.verdict not in ("fail",):
                         step.status = "OK"
                         continue
                 # 重试耗尽 → 询问是否重规划
-                if ev.wants_replan and replans < MAX_REPLANNING:
+                if vr.wants_replan and replans < MAX_REPLANNING:
                     replans += 1
                     plan.status = "REPLAN"
                     remaining = [s.action for s in plan.steps[step.index + 1:]]
-                    should = await self._eval.decide_replan(
+                    should = await self._verifier.decide_replan(
                         plan.goal, step.action, remaining,
                         accumulated="\n".join(accumulated),
                     )
@@ -166,7 +206,25 @@ class AgentExecutor:
 
     # 工具步必须在 async 上下文 await
     async def _exec_tool_async(self, step: PlanStep, ctx: AgentContext,
-                               accumulated: list[str]) -> None:
+                               accumulated: list[str],
+                               budget: AgentBudget,
+                               detector: LoopDetector) -> None:
+        # 预算检查：工具调用次数 / 搜索次数 / 截止时间
+        if not budget.can_call_tool():
+            step.result = "工具调用预算或截止时间已达上限，停止调用工具"
+            return
+        if step.tool == "search_web":
+            if not budget.can_search():
+                step.result = "搜索预算已达上限，停止搜索"
+                budget.use_tool()
+                return
+            budget.use_search()
+        # 重复动作检测：连续相同 tool+params → 停止
+        if detector.on_tool_call(step.tool or "", step.params or {}):
+            step.result = "检测到重复调用相同工具，已停止"
+            budget.use_tool()
+            return
+        budget.use_tool()
         # Phase 8：Agent 不得直接执行工具，统一走 ToolRuntime（权限/超时/重试/预算/Trace）
         from core.tool_runtime import ToolRequest, get_tool_runtime
         from core.trace import get_trace_id
@@ -194,11 +252,15 @@ class AgentExecutor:
 
     # ── 供测试/同步调用的工具执行入口（实际走 async）──
     async def _await_tool(self, step: PlanStep, ctx: AgentContext,
-                          accumulated: list[str]) -> float:
+                          accumulated: list[str],
+                          budget: Optional[AgentBudget] = None,
+                          detector: Optional[LoopDetector] = None) -> float:
         from core.trace import span as _span
+        budget = budget or AgentBudget()
+        detector = detector or LoopDetector()
         if step.tool:
             t0 = time.perf_counter()
-            await self._exec_tool_async(step, ctx, accumulated)
+            await self._exec_tool_async(step, ctx, accumulated, budget, detector)
             return (time.perf_counter() - t0) * 1000.0
         if step.skill:
             t0 = time.perf_counter()

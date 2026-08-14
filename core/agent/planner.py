@@ -51,6 +51,9 @@ class Plan:
     required_skills: list[str] = field(default_factory=list)
     required_tools: list[str] = field(default_factory=list)
     status: str = "PLANNED"     # PLANNED / RUNNING / COMPLETED / FAILED / REPLAN
+    # Phase 12：步骤依赖与成功条件（Verifier 用）
+    dependencies: dict = field(default_factory=dict)   # {step_index: [前置step_index]}
+    success_conditions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -60,6 +63,8 @@ class Plan:
             "required_skills": self.required_skills,
             "required_tools": self.required_tools,
             "status": self.status,
+            "dependencies": self.dependencies,
+            "success_conditions": self.success_conditions,
         }
 
 
