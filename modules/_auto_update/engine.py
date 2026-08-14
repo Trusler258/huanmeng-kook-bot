@@ -64,7 +64,8 @@ def _is_protected(rel_path: str, protect: set[str]) -> bool:
 
 def _skip_prefix(rel_path: str) -> bool:
     """总是跳过的路径前缀"""
-    return rel_path.startswith(("logs/", ".git/", "data/", "__pycache__/"))
+    # config/ 为部署配置，包含 token/密钥/角色等，禁止被自动更新覆盖
+    return rel_path.startswith(("logs/", ".git/", "data/", "__pycache__/", "config/"))
 
 
 async def _fetch_compare(base_sha: str, head_sha: str) -> list[dict] | None:

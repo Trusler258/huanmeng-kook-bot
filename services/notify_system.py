@@ -101,17 +101,25 @@ def record_llm_call(elapsed_sec: float, success: bool = True) -> None:
 # ── 卡片渲染 ────────────────────────────────────────────────
 # KOOK Card 结构: [{"type":"card","theme":"secondary","color":"#RRGGBB","size":"lg","modules":[...]}]
 
-def _card(color: str, modules: list) -> str:
-    """渲染一张 KOOK Card 的 JSON 字符串（自动补 [CARD] 标记）"""
-    import json as _json
-    obj = [{
+def _card_obj(color: str, modules: list) -> list:
+    """构造一张 KOOK Card 对象（list of card dict），供 send_raw_group/user 发送。
+
+    原生卡片消息（type=10）才支持 action-group 交互按钮；
+    [CARD] 标记字符串渲染的卡片是静态的，不放按钮。
+    """
+    return [{
         "type": "card",
         "theme": "secondary",
         "color": color,
         "size": "lg",
         "modules": modules,
     }]
-    return f"[CARD]{_json.dumps(obj, ensure_ascii=False)}[/CARD]"
+
+
+def _card(color: str, modules: list) -> str:
+    """渲染一张 KOOK Card 的 [CARD] 标记字符串（静态卡片用，无交互按钮）"""
+    import json as _json
+    return f"[CARD]{_json.dumps(_card_obj(color, modules), ensure_ascii=False)}[/CARD]"
 
 
 def _header(text: str) -> dict:
@@ -175,11 +183,15 @@ def _render_perf_recovered(avg_ms: float, window_n: int) -> str:
 # ── GitHub 更新卡片 ─────────────────────────────────────────
 
 def _action_button(text: str, value: str, theme: str = "primary") -> dict:
-    """KOOK action-group 按钮：click=return-val，value 作为指令回传"""
+    """KOOK action-group 按钮：click=return-val，value 作为指令回传。
+
+    注意：KOOK 按钮必须带 value_type，否则不渲染。
+    """
     return {
         "type": "button",
         "theme": theme,
         "value": value,
+        "value_type": "string",
         "click": "return-val",
         "text": {"type": "plain-text", "content": text},
     }
@@ -203,9 +215,17 @@ def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[st
         if len(commits) > 6:
             modules.append(_context(f"… 共 {len(commits)} 个提交"))
     modules.append(_divider())
-    modules.append(_context("回复 .update 拉取并应用更新 · .up 查看完整更新日志"))
+    # 操作按钮：先查看更新，再确认应用（确认仅 admin 点击才生效）
+    modules.append({
+        "type": "action-group",
+        "elements": [
+            _action_button("查看更新", ".update check", theme="primary"),
+            _action_button("确认更新", ".update", theme="danger"),
+        ],
+    })
+    modules.append(_context("确认更新仅 admin 可触发生效"))
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
-    return _card(color, modules)
+    return _card_obj(color, modules)
 
 
 def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
@@ -247,23 +267,89 @@ def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
         ],
     })
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
-    return _card(color, modules)
+    return _card_obj(color, modules)
+
+
+def render_update_check_card(text: str) -> str:
+    """把 .update check 的纯文本结果渲染成 KOOK 卡片。
+
+    解析规则：
+      - 摘要行（风险等级/依赖阻断说明等）→ context
+      - 缩进的文件差异行（`[LOW] xx.py  +1 -2`）→ 文件差异列表
+      - `更新日志:` 之后的提交行 → 更新日志列表
+    卡片底部提供「应用更新」按钮（仅 admin 点击才生效）。
+    """
+    color = "#f0ad4e"
+    modules = [_header("KOOK BOT · 更新检查")]
+    lines = text.splitlines()
+
+    if text.strip().startswith("已是最新"):
+        modules.append(_context("当前已是最新版本，无需更新。"))
+        modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
+        return _card(color, modules)
+
+    summary: list[str] = []
+    file_lines: list[str] = []
+    log_lines: list[str] = []
+    in_log = False
+    for ln in lines:
+        if ln.startswith("更新日志:"):
+            in_log = True
+            continue
+        if in_log:
+            if ln.strip():
+                log_lines.append(ln.strip())
+            continue
+        if ln.strip().startswith("  ") and "[" in ln and "+" in ln:
+            file_lines.append(ln.strip())
+        elif ln.strip():
+            summary.append(ln.strip())
+
+    if summary:
+        modules.append(_context("\n".join(summary)))
+    if file_lines:
+        modules.append(_divider())
+        modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**文件差异**"}})
+        for fl in file_lines[:20]:
+            modules.append(_context(f"`{fl}`"))
+    if log_lines:
+        modules.append(_divider())
+        modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**更新日志**"}})
+        for lg in log_lines[:10]:
+            modules.append(_context(f"`{lg}`"))
+
+    # 有可用更新才给「应用更新」按钮（admin 点击才生效）
+    if file_lines:
+        modules.append(_divider())
+        modules.append({
+            "type": "action-group",
+            "elements": [_action_button("应用更新", ".update", theme="danger")],
+        })
+    modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
+    return _card_obj(color, modules)
 
 
 # ── 发送 ────────────────────────────────────────────────────
 
-async def _send_to_targets(content: str) -> None:
-    """把消息发到所有配置的目标频道（字频道 ID）"""
+async def _send_to_targets(content) -> None:
+    """把消息发到所有配置的目标频道（字频道 ID）。
+
+    content 可以是 [CARD] 字符串（静态卡片）或 card 对象列表（交互卡片，走原生 type=10）。
+    """
     cfg = load_cfg()
     targets = cfg.get("target_channels", [])
     if not targets:
         logger.info("notify: 未配置目标频道，跳过发送")
         return
-    from services.sender import send_group_msg
+    from services.sender import send_group_msg, send_raw_group
+    is_raw = isinstance(content, (dict, list))
     sent = 0
     for cid in targets:
         try:
-            await send_group_msg(content, int(cid))
+            if is_raw:
+                await send_raw_group(content, int(cid))
+            else:
+                await send_group_msg(content, int(cid))
             sent += 1
         except Exception as e:
             logger.warning("notify 发送失败 channel=%s: %s", cid, e)

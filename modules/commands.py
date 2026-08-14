@@ -626,6 +626,16 @@ async def cmd_testok(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "test ok"
 
 
+async def cmd_testup(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.test-up — 返回 update_test_note.md 的内容（测试用）"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    note = root / "update_test_note.md"
+    if note.exists():
+        return note.read_text(encoding="utf-8").strip()
+    return "update_test_note.md 不存在"
+
+
 # ════════════════════════════════════════════════════════════
 #  通知系统指令（性能降级 / GitHub 更新提示）
 # ════════════════════════════════════════════════════════════
@@ -3091,6 +3101,7 @@ COMMAND_MAP: dict[str, callable] = {
     "box":        cmd_box,
     "testsys":    cmd_testsys,
     "testok":     cmd_testok,
+    "test-up":    cmd_testup,
     "notify":     cmd_notify,
     "notifyset":  cmd_notifyset,
     "notifycheck": cmd_notifycheck,
