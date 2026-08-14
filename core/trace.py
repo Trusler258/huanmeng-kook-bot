@@ -84,6 +84,12 @@ class RequestContext:
     # 本次请求内部发出的 LLM 调用（含 judge / 主生成 / 工具后总结 / 搜索判断等）
     llm_call_count: int = 0
 
+    # ── Phase 7 增强：Agent 规划摘要 + Skill 使用 ──
+    # 记录"为什么规划、执行了什么、调用了几次 LLM"等 trace_summary 信息。
+    plan_summary: dict = field(default_factory=dict)
+    # 每个元素: {"name", "selected": bool, "loaded": bool}
+    skills_used: list[dict] = field(default_factory=list)
+
     # 慢请求阈值（毫秒），用于分类
     SLOW_MS: float = 3000.0
     VERY_SLOW_MS: float = 10000.0
@@ -147,6 +153,34 @@ class RequestContext:
     def record_llm(self) -> None:
         """记录一次 LLM 调用发起（用于统计本次请求的 llm_call_count）。"""
         self.llm_call_count += 1
+
+    # ── Phase 7：Agent 规划 / Skill 使用记录 ──
+    def set_plan_summary(self, **kwargs) -> None:
+        """记录 Agent 规划摘要（planned/reason/steps/tools/skills/replans 等）。"""
+        self.plan_summary.update({k: v for k, v in kwargs.items()})
+
+    def record_skill(self, name: str, selected: bool = False, loaded: bool = False) -> None:
+        """记录一次 Skill 的选中/加载（用于 trace_summary 审计）。"""
+        self.skills_used.append({"name": name, "selected": bool(selected), "loaded": bool(loaded)})
+
+    def trace_summary(self) -> dict:
+        """输出本次请求的完整摘要：阶段耗时 / 工具调用 / LLM 次数 / 规划 / Skill。
+
+        供 trace_summary 审计与日志使用，回答"为什么规划、执行了什么、耗时多少、
+        调用了几次 LLM"。
+        """
+        return {
+            "trace_id": self.trace_id,
+            "intent": self.intent,
+            "conversation_id": self.conversation_id,
+            "user_id": self.user_id,
+            "total_ms": self.total_ms(),
+            "llm_call_count": self.llm_call_count,
+            "tool_calls": list(self.tool_calls),
+            "skills": list(self.skills_used),
+            "plan": dict(self.plan_summary),
+            "phases": self.summary(),
+        }
 
     def severity(self) -> str:
         """按总耗时分类：normal / slow_request / very_slow_request。"""
@@ -261,6 +295,26 @@ def get_tool_calls() -> list[dict]:
     """返回当前请求的工具调用明细（无上下文返回空列表）。"""
     ctx = _current_ctx.get()
     return list(ctx.tool_calls) if ctx is not None else []
+
+
+def set_plan_summary(**kwargs) -> None:
+    """记录 Agent 规划摘要（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.set_plan_summary(**kwargs)
+
+
+def record_skill(name: str, selected: bool = False, loaded: bool = False) -> None:
+    """记录一次 Skill 选中/加载（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_skill(name, selected, loaded)
+
+
+def trace_summary() -> dict:
+    """返回当前请求的完整 trace_summary（无上下文返回空 dict）。"""
+    ctx = _current_ctx.get()
+    return ctx.trace_summary() if ctx is not None else {}
 
 
 class _NoopSpan:
