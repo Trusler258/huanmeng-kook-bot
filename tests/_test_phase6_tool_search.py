@@ -6,8 +6,9 @@ Phase 6 Part5/Part6 测试：
 """
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.trace import new_request, get_tool_calls
 

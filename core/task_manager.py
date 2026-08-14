@@ -134,6 +134,20 @@ class TaskManager:
                     kind, tid, conversation_id, goal)
         return task
 
+    def _emit_done(self, task: Task) -> None:
+        """任务结束（完成/取消/失败）时广播 EVENT_TASK_COMPLETED。"""
+        try:
+            from core.eventbus import get_event_bus, EVENT_TASK_COMPLETED
+            get_event_bus().emit(EVENT_TASK_COMPLETED, {
+                "task_id": task.task_id,
+                "kind": task.kind,
+                "conversation_id": task.conversation_id,
+                "state": task.state.value,
+                "error": task.error,
+            })
+        except Exception as e:  # 事件总线异常不影响任务收尾
+            logger.warning("[任务] 事件广播失败 task=%s: %s", task.task_id, e)
+
     # ── 提交后台执行（不阻塞调用方 / Conversation Worker）──
     def submit(self, task: Task, coro_fn: Callable[[Task], Awaitable[object]],
                timeout: Optional[float] = None) -> asyncio.Task:

@@ -1,6 +1,10 @@
 """Phase 6 Part1 自测：Trace 增强（tool_call / llm_call_count / slow 分类）"""
 import asyncio
+import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.trace import (
     new_request, current, record, span, record_llm, record_tool_call,

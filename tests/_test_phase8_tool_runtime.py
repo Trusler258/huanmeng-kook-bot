@@ -21,7 +21,7 @@ from unittest.mock import patch
 _TMPDIR = Path(tempfile.mkdtemp(prefix="hm_p8_"))
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMPDIR / 'test.db'}"
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.trace import new_request
 from core.tool_runtime import (

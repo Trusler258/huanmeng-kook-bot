@@ -24,7 +24,7 @@ from unittest.mock import patch
 _TMPDIR = Path(tempfile.mkdtemp(prefix="hm_p7_"))
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMPDIR / 'test.db'}"
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ── 注入假 services.llm，避免 openai 依赖导致导入失败 ──────
 # planner/executor/evaluator 在函数内 `from services.llm import call_llm`，

@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.plugin.manifest import validate_manifest, RUNTIME_PYTHON, RUNTIME_LUA
 from core.plugin.loader import discover_plugins, load_module, locate_plugin_classes

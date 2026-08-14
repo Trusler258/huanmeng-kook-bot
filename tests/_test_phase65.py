@@ -16,7 +16,7 @@ from pathlib import Path
 _TMPDIR = Path(tempfile.mkdtemp(prefix="hm_p65_"))
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMPDIR / 'test.db'}"
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.trace import new_request, record_llm, get_llm_call_count, get_tool_calls
 from core.router import resolve_intent, needs_search_heuristic
@@ -24,7 +24,7 @@ from core.router import resolve_intent, needs_search_heuristic
 from modules.memory import get_top_memories, _legacy_file_top_memories
 import modules.web_search as ws
 
-_MEM_DIR = Path(__file__).resolve().parent / "data"
+_MEM_DIR = Path(__file__).resolve().parent.parent / "data"
 _MEM_CHAT = 99991
 _mem_file = _MEM_DIR / f"memory_{_MEM_CHAT}.md"
 

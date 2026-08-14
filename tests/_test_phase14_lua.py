@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.plugin.lua import LuaSandbox, _run_in_thread
 from core.plugin.manifest import validate_manifest

@@ -3,7 +3,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.context_builder import (
     ContextProfile, truncate, discover_skills, load_skill,
     assemble_sections, reload_skill_discovery, DEFAULT_BUDGETS,
