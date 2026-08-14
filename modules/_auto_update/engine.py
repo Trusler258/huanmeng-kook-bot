@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import os
 import httpx
 from pathlib import Path
 
@@ -22,8 +23,9 @@ from modules._auto_update.state import load_state, save_state, get_file_blob, se
 
 logger = get_logger("auto_update")
 
-GITHUB_REPO = ""  # 格式: "你的GitHub用户名/你的仓库名"，留空则禁用自动更新功能
-GITHUB_BRANCH = "main"
+# 格式: "你的GitHub用户名/你的仓库名"，可用环境变量 GITHUB_REPO 覆盖（服务器无需改代码）
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "Trusler258/huanmeng-kook-bot").strip()
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "master").strip()
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}" if GITHUB_REPO else ""
 CACHE_DIR = ".update_cache"
 

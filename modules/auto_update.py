@@ -48,10 +48,36 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
     })
 
     if check_only:
-        return result
+        # 结果过长时 KOOK 单条消息会发送失败并触发 fallback，需分包发送
+        MAX_CHUNK = 1700
+        if len(result) <= MAX_CHUNK:
+            return result
+        from services.sender import send_by_chat_type
+        for chunk in _split_chunks(result, MAX_CHUNK):
+            await send_by_chat_type(chunk, group_id, is_group, user_id=user_id)
+        return None
     if result and ("已更新" in result or "已安全更新" in result) and "个文件" in result:
         result += "\n\n建议重启 bot 使更新生效"
     return result
+
+
+def _split_chunks(text: str, max_len: int) -> list[str]:
+    """按行聚合切分长文本，尽量不切断单行，保证每块不超过 max_len。"""
+    chunks: list[str] = []
+    cur = ""
+    for line in text.splitlines(keepends=True):
+        if len(cur) + len(line) > max_len and cur:
+            chunks.append(cur)
+            cur = ""
+        if len(line) > max_len:
+            # 单行超长，硬切
+            for i in range(0, len(line), max_len):
+                chunks.append(line[i:i + max_len])
+            continue
+        cur += line
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
 
 
 async def _test_connectivity() -> str:
