@@ -193,14 +193,15 @@ def _find_context_match(
     result: list[str], hint_pos: int, hunk: PatchHunk
 ) -> int:
     """
-    在 result 中滑动查找与 hunk 上下文匹配的位置。
+    在 result 中滑动查找与 hunk 旧内容匹配的位置。
     返回匹配的起始行号 (0-indexed)，失败返回 -1。
 
-    优先匹配 hint_pos 附近（大多数情况补丁位置正确）。
+    旧内容 = 上下文行 + 删除行（按原始顺序），这样即使 hunk 中间有 +/− 变更，
+    上下文被分割也能正确匹配（真实 GitHub diff 常见）。
     """
-    ctx = hunk.ctx_lines
+    ctx = _old_block(hunk)
     if not ctx:
-        return hint_pos  # 无上下文 = 盲替换
+        return hint_pos  # 无旧内容 = 盲替换
 
     plen = len(result)
     clen = len(ctx)
@@ -216,6 +217,18 @@ def _find_context_match(
 
     # 第二轮: 全文件
     return _scan_range(result, ctx, 0, plen - clen + 1)
+
+
+def _old_block(hunk: PatchHunk) -> list[str]:
+    """按原始顺序重建 hunk 的旧内容（上下文行 + 删除行）。"""
+    block: list[str] = []
+    for line in hunk.raw_lines:
+        if line.startswith(" "):
+            block.append(line[1:])
+        elif line.startswith("-"):
+            block.append(line[1:])
+        # '+' 行是新增，不属于旧内容；'\' 行忽略
+    return block
 
 
 def _scan_range(

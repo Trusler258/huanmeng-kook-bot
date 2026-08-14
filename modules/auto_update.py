@@ -1,7 +1,7 @@
 """
-自动更新模块 v2 — Git Patch 行级增量合并
+自动更新模块 v2 — Git Patch 行级增量合并（Phase 16 升级为安全代码级更新）
 
-.update       手动触发增量更新
+.update       手动触发增量更新（走安全流水线：Fetch→Diff→分析→评估→快照→应用→Health→回滚）
 .update check 只检查不下载
 .update force 强制全量对比（跳过 SHA 缓存）
 .upd          同上（短别名）
@@ -13,6 +13,7 @@ from __future__ import annotations
 import httpx
 
 from modules._auto_update.engine import check_and_update, GITHUB_API, GITHUB_REPO, GITHUB_BRANCH
+from modules._auto_update.safe_update import safe_check_and_update
 
 
 async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -32,11 +33,23 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     check_only = args and args[0].lower() == "check"
     force = args and args[0].lower() == "force"
-    result = await check_and_update(check_only=check_only, force=force)
+
+    # Phase 16：默认走安全代码级更新流水线（含 Snapshot/Test/Health/Rollback）
+    from core.eventbus import get_event_bus, EVENT_UPDATE_STARTED, EVENT_UPDATE_COMPLETED
+    get_event_bus().emit(EVENT_UPDATE_STARTED, {
+        "user_id": user_id, "check_only": check_only, "force": force,
+    })
+
+    result = await safe_check_and_update(check_only=check_only, force=force)
+
+    get_event_bus().emit(EVENT_UPDATE_COMPLETED, {
+        "user_id": user_id, "check_only": check_only, "force": force,
+        "result": result[:200],
+    })
 
     if check_only:
         return result
-    if result and "已更新" in result and "个文件" in result:
+    if result and ("已更新" in result or "已安全更新" in result) and "个文件" in result:
         result += "\n\n建议重启 bot 使更新生效"
     return result
 
