@@ -95,9 +95,14 @@ class ToolRuntime:
     async def _exec_once(self, req: ToolRequest) -> ToolResult:
         from core.tools import execute_tool
         from core.trace import get_trace_id
+        from core.eventbus import get_event_bus, EVENT_TOOL_CALLED, EVENT_TOOL_COMPLETED
         start = time.perf_counter()
         start_ms = start * 1000.0
         trace_id = req.trace_id or get_trace_id()
+        get_event_bus().emit(EVENT_TOOL_CALLED, {
+            "tool": req.tool_name, "trace_id": trace_id,
+            "tool_call_id": req.tool_call_id, "attempt": req.attempt,
+        })
         try:
             content = await execute_tool(
                 req.tool_name, req.arguments,
@@ -109,6 +114,11 @@ class ToolRuntime:
             end_ms = time.perf_counter() * 1000.0
             status = OK if content is not None else OK
             self._trace(req, status, start_ms, end_ms, trace_id, req.attempt)
+            get_event_bus().emit(EVENT_TOOL_COMPLETED, {
+                "tool": req.tool_name, "trace_id": trace_id,
+                "tool_call_id": req.tool_call_id, "status": status,
+                "duration_ms": round(end_ms - start_ms, 2),
+            })
             return self._mk(req, status, content=content or "",
                             start_ms=start_ms, end_ms=end_ms,
                             duration_ms=end_ms - start_ms,
@@ -120,6 +130,11 @@ class ToolRuntime:
         except asyncio.TimeoutError:
             end_ms = time.perf_counter() * 1000.0
             self._trace(req, TIMEOUT, start_ms, end_ms, trace_id, req.attempt)
+            get_event_bus().emit(EVENT_TOOL_COMPLETED, {
+                "tool": req.tool_name, "trace_id": trace_id,
+                "tool_call_id": req.tool_call_id, "status": TIMEOUT,
+                "duration_ms": round(end_ms - start_ms, 2),
+            })
             return self._mk(req, TIMEOUT, error="工具超时",
                             start_ms=start_ms, end_ms=end_ms,
                             duration_ms=end_ms - start_ms, trace_id=trace_id,
@@ -127,6 +142,11 @@ class ToolRuntime:
         except Exception as e:
             end_ms = time.perf_counter() * 1000.0
             self._trace(req, FAILED, start_ms, end_ms, trace_id, req.attempt, error=str(e))
+            get_event_bus().emit(EVENT_TOOL_COMPLETED, {
+                "tool": req.tool_name, "trace_id": trace_id,
+                "tool_call_id": req.tool_call_id, "status": FAILED,
+                "duration_ms": round(end_ms - start_ms, 2), "error": str(e),
+            })
             return self._mk(req, FAILED, error=str(e),
                             start_ms=start_ms, end_ms=end_ms,
                             duration_ms=end_ms - start_ms, trace_id=trace_id,

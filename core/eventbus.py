@@ -130,6 +130,21 @@ class EventBus:
                 logger.warning("EventBus 同步订阅者 %s 处理 %s 异常: %s",
                                getattr(h, "__name__", h), key, e)
 
+    def emit(self, event_name: str, data: Optional[dict] = None) -> None:
+        """fire-and-forget 发布：调度到当前事件循环后台执行，调用方不阻塞。
+
+        若当前无运行中的事件循环，则退化为同步发布（仅触发同步订阅者）。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.publish_sync(event_name, data)
+            return
+        try:
+            loop.create_task(self.publish(event_name, data))
+        except RuntimeError:
+            self.publish_sync(event_name, data)
+
     # ── 生命周期 / 可观测 ───────────────────────────────
     def clear(self) -> None:
         self._handlers.clear()

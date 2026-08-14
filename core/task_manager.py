@@ -126,6 +126,10 @@ class TaskManager:
                     trace_id=trace_id)
         self._tasks[tid] = task
         self._persist(task)
+        from core.eventbus import get_event_bus, EVENT_TASK_CREATED
+        get_event_bus().emit(EVENT_TASK_CREATED, {
+            "task_id": tid, "kind": kind, "conversation_id": conversation_id,
+        })
         logger.info("[任务] 创建 %s task=%s conv=%s goal=%r",
                     kind, tid, conversation_id, goal)
         return task
@@ -161,15 +165,18 @@ class TaskManager:
                     task.set_state(TaskState.COMPLETED)
                     task.result = _as_dict(result)
                     self._persist(task)
+                    self._emit_done(task)
                     logger.info("[任务] 完成 task=%s kind=%s", task.task_id, task.kind)
             except asyncio.CancelledError:
                 task.set_state(TaskState.CANCELLED)
                 self._persist(task)
+                self._emit_done(task)
                 raise
             except Exception as e:
                 task.set_state(TaskState.FAILED)
                 task.error = str(e)
                 self._persist(task)
+                self._emit_done(task)
                 logger.error("[任务] 失败 task=%s kind=%s: %s",
                              task.task_id, task.kind, e)
 

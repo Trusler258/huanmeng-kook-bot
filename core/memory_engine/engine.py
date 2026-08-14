@@ -66,13 +66,31 @@ class MemoryEngine:
             ])
             if not records:
                 return
+            from core.eventbus import get_event_bus, EVENT_MEMORY_CREATED, EVENT_MEMORY_UPDATED
+            bus = get_event_bus()
+            saved = 0
             async with db.session()() as s:
                 for rec in records:
                     final = await self.pipeline.deduplicate(s, rec)
                     if final is not None:
-                        await self.pipeline.save(s, rec)
-            logger.info("异步记忆提炼完成 chat=%d: 候选%d 保存%d",
-                        chat_id, len(records), len(records))
+                        # 新增记忆
+                        new_id = await self.pipeline.save(s, rec)
+                        if new_id:
+                            saved += 1
+                            bus.emit(EVENT_MEMORY_CREATED, {
+                                "memory_id": new_id, "user_id": rec.user_id,
+                                "conversation_id": rec.conversation_id,
+                                "type": rec.type, "importance": rec.importance,
+                            })
+                    else:
+                        # 去重时发生合并，更新已有记忆
+                        bus.emit(EVENT_MEMORY_UPDATED, {
+                            "user_id": rec.user_id,
+                            "conversation_id": rec.conversation_id,
+                            "type": rec.type, "content": rec.content[:80],
+                        })
+            logger.info("异步记忆提炼完成 chat=%d: 候选%d 新增%d",
+                        chat_id, len(records), saved)
         except Exception as e:
             logger.warning("异步记忆提炼失败 chat=%d: %s", chat_id, e)
 
