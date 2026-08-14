@@ -33,12 +33,12 @@ def _extract_commits(body: dict) -> list[str]:
         first = msg[0].strip() if msg else ""
         author = (c.get("author") or {}).get("name", "") if isinstance(c.get("author"), dict) else ""
         if first:
-            out.append(f"{first[:60]}" + (f"（{author}）" if author else ""))
+            out.append(f"{first[:200]}" + (f"（{author}）" if author else ""))
     if not out:
         # 兼容只有 sha 的简化通知
         msg = (body.get("message") or "").strip().splitlines()
         if msg:
-            out.append(msg[0].strip()[:60])
+            out.append(msg[0].strip()[:200])
     return out
 
 

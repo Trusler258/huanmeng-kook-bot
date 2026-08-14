@@ -68,6 +68,13 @@ class EventDispatcher:
                 keep = list(self._seen_ids.keys())[-(self._seen_max // 2):]
                 self._seen_ids = {k: None for k in keep}
 
+        # ── Phase1 Trace：建立请求上下文（后续 conversation/user 就绪后 patch）──
+        try:
+            from core.trace import new_request
+            new_request(message_id=msg_id, channel_id=str(getattr(getattr(msg, 'ctx', None), 'channel', None).id if getattr(getattr(msg, 'ctx', None), 'channel', None) else ""))
+        except Exception:
+            pass
+
         # ── 提取基本字段 ──
         # khl.py 有两类消息: PublicMessage(频道/群聊) 和 PrivateMessage(私聊)
         from khl.message import PublicMessage, PrivateMessage
@@ -321,22 +328,28 @@ class EventDispatcher:
             cache_channel(chat_id, msg.ctx.channel)
 
         # ── 调用消息处理管道 ──
+        try:
+            from core.trace import patch_request, span
+            patch_request(conversation_id=chat_id_int, user_id=user_id_int, is_group=is_group)
+        except Exception:
+            pass
         from core.queues import enqueue_message
-        await enqueue_message(
-            msg_type=msg_type,
-            msg_content=content,
-            chat_id=chat_id_int,
-            sender_name=sender_name,
-            user_id=user_id_int,
-            is_group=is_group,
-            bot_qq=bot_id,
-            raw_event=msg,
-            raw_message=content,
-            quoted_msg=quoted_text,
-            is_mentioned=is_mentioned,
-            image_urls=image_urls,
-            quoted_image_urls=quoted_image_urls,
-        )
+        with span("dispatcher"):
+            await enqueue_message(
+                msg_type=msg_type,
+                msg_content=content,
+                chat_id=chat_id_int,
+                sender_name=sender_name,
+                user_id=user_id_int,
+                is_group=is_group,
+                bot_qq=bot_id,
+                raw_event=msg,
+                raw_message=content,
+                quoted_msg=quoted_text,
+                is_mentioned=is_mentioned,
+                image_urls=image_urls,
+                quoted_image_urls=quoted_image_urls,
+            )
 
     @staticmethod
     def _extract_image_urls(attachments) -> list[str]:

@@ -884,16 +884,18 @@ def _parse_reply(
         return [], 0, [], "", "", None, "", None, None, "user", {}, None
 
     try:
-        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
-        raw = re.sub(r'\s*```$', '', raw)
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            raw = raw[start:end + 1]
-        raw = re.sub(r'//[^\n]*', '', raw)
-        data = json.loads(raw)
-        data = _normalize_reply_json(data)
-        replies = data.get("replies", [])
+        from core.trace import span as _trace_span
+        with _trace_span("json_parse"):
+            raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
+            raw = re.sub(r'\s*```$', '', raw)
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                raw = raw[start:end + 1]
+            raw = re.sub(r'//[^\n]*', '', raw)
+            data = json.loads(raw)
+            data = _normalize_reply_json(data)
+            replies = data.get("replies", [])
         if not isinstance(replies, list) or not replies:
             raw_cleaned, fav_change = _extract_fav_change(raw)
             replies = _clean_sentences(raw_cleaned)

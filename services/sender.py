@@ -368,13 +368,15 @@ async def send_sentences(
     logger.info("开始分批发送 %d 条句子 → chat=%s is_group=%s",
                len(sentences), chat_id, is_group)
 
-    for i, sentence in enumerate(sentences):
-        if i > 0:
-            delay = random.uniform(min_interval, max_interval)
-            logger.debug("句间等待 %.2fs (#%d/%d)", delay, i + 1, len(sentences))
-            await asyncio.sleep(delay)
-        await send_by_chat_type(sentence, chat_id, is_group, user_id)
-        logger.debug("已发送第 %d/%d 条: %s...", i + 1, len(sentences), sentence[:30])
+    from core.trace import span
+    with span("kook_send"):
+        for i, sentence in enumerate(sentences):
+            if i > 0:
+                delay = random.uniform(min_interval, max_interval)
+                logger.debug("句间等待 %.2fs (#%d/%d)", delay, i + 1, len(sentences))
+                await asyncio.sleep(delay)
+            await send_by_chat_type(sentence, chat_id, is_group, user_id)
+            logger.debug("已发送第 %d/%d 条: %s...", i + 1, len(sentences), sentence[:30])
 
     logger.info("分批发送完成: 共 %d 条 → chat=%s", len(sentences), chat_id)
 
@@ -421,6 +423,12 @@ def _log_msglog(chat_id, user_id, msg_type: str, content: str):
         import json as _json
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        # Phase1 Trace：记录消息落盘耗时
+        try:
+            from core.trace import record
+            record("message_store", 1.0)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("_log_msglog 失败: %s", e)
 

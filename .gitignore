@@ -30,3 +30,6 @@ data/memories/
 # 临时文件
 tmp/
 temp/
+
+# 运行时日志
+logs/

@@ -286,11 +286,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     elif is_group and re.search(r"@\S+", msg_content):
         logger.debug("@他人消息 [群%d] → SKIP", chat_id)
     else:
-        should_reply = await should_respond(
-            msg_content, msg_type, sender_name, chat_id,
-            ctx.get_context(chat_id), cfg.bot_name, bot_qq,
-            reply_threshold_override=custom_threshold,
-        )
+        from core.trace import span as _trace_span
+        with _trace_span("judge"):
+            should_reply = await should_respond(
+                msg_content, msg_type, sender_name, chat_id,
+                ctx.get_context(chat_id), cfg.bot_name, bot_qq,
+                reply_threshold_override=custom_threshold,
+            )
 
     if not should_reply:
         return
@@ -304,7 +306,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------记忆检索+好感度+上下文组装------
     full_msg = f"[{role_tag}] {sender_name}发了: {msg_content}"
-    related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
+    from core.trace import span as _trace_span
+    with _trace_span("memory"):
+        related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
 
     arch_context = ""
@@ -344,7 +348,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     if not related_memories or len(related_memories) < 300:
         try:
-            msglog_context = get_msglog_context(msg_content, ctx.get_context(chat_id), chat_id)
+            with _trace_span("message_retrieval"):
+                msglog_context = get_msglog_context(msg_content, ctx.get_context(chat_id), chat_id)
             if msglog_context:
                 extra_info_parts.append(msglog_context)
         except Exception:
@@ -524,9 +529,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------自动搜索（用户说"搜索/查/搜"等关键词时，先搜再答）------
     try:
-        search_result = await auto_search_if_needed(
-            msg_content, sender_name, user_id, chat_id, is_group
-        )
+        with _trace_span("search"):
+            search_result = await auto_search_if_needed(
+                msg_content, sender_name, user_id, chat_id, is_group
+            )
         if search_result:
             extra_info_parts.append(f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
             logger.info("自动搜索结果已注入 (%d字)", len(search_result))
@@ -535,13 +541,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
-    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
-        msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
-        bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
-        is_group=is_group, extra_info=extra_info_for_llm,
-        max_tokens=None,
-        user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
-    )
+    with _trace_span("llm"):
+        sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
+            msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
+            bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
+            is_group=is_group, extra_info=extra_info_for_llm,
+            max_tokens=None,
+            user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
+        )
 
     if not sentences:
         error_lines = [

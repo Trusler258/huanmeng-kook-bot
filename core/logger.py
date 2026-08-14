@@ -92,6 +92,22 @@ def _get_log_dir() -> Path:
 
 
 # ── 自定义 Formatter（支持颜色 + 时间戳 + 调用位置）───────
+class _TraceFilter(logging.Filter):
+    """把当前请求的 trace_id 附加到 LogRecord，供 Formatter 输出。
+
+    通过 contextvars 读取 core.trace 的当前 RequestContext，
+    因此 trace_id 能跨 asyncio 子任务自动传播。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from core.trace import get_trace_id
+            record.trace_id = get_trace_id()
+        except Exception:
+            record.trace_id = "-"
+        return True
+
+
 class _ColorFormatter(logging.Formatter):
     """256 色控制台 Formatter — 时间淡灰 / 级别分色 / 消息智能着色"""
 
@@ -99,9 +115,10 @@ class _ColorFormatter(logging.Formatter):
         lv_color, lv_style, lv_text = _LEVEL_COLORS.get(record.levelno, (WHITE, "", WHITE))
         ts = f"{A_TIME}{time.strftime('%H:%M:%S', time.localtime(record.created))}.{f'{record.created % 1:.3f}'[2:]}{RESET}"
         level = f"{lv_style}{lv_color}{record.levelname:<8}{RESET}"
+        tid = getattr(record, "trace_id", "-")
         src = f"{A_SOURCE}({record.module}:{record.funcName}:{record.lineno}){RESET}"
         msg = _color_msg(record.getMessage())
-        return f"[{ts}] {level} {src} {msg}"
+        return f"[{ts}] {level} {src} [{tid}] {msg}"
 
 
 class _FileFormatter(logging.Formatter):
@@ -111,9 +128,10 @@ class _FileFormatter(logging.Formatter):
         lv_color, lv_style, lv_text = _LEVEL_COLORS.get(record.levelno, (WHITE, "", WHITE))
         ts = f"{A_TIME}{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(record.created))}.{f'{record.created % 1:.3f}'[2:]}{RESET}"
         level = f"{lv_style}{lv_color}[{record.levelname:<8}]{RESET}"
+        tid = getattr(record, "trace_id", "-")
         src = f"{A_SOURCE}({record.module}:{record.funcName}:{record.lineno}){RESET}"
         msg = _color_msg(record.getMessage())
-        return f"[{ts}] {level} {src} {msg}"
+        return f"[{ts}] {level} {src} [{tid}] {msg}"
 
 
 # ── 公共 API ────────────────────────────────────────────────
@@ -144,6 +162,7 @@ def init_logger(debug_mode: bool = False, log_to_file: bool = True) -> logging.L
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG if debug_mode else logging.INFO)
     console_handler.setFormatter(_ColorFormatter())
+    console_handler.addFilter(_TraceFilter())
     _logger.addHandler(console_handler)
 
     # ---- 文件 Handler（可选）----
@@ -158,6 +177,7 @@ def init_logger(debug_mode: bool = False, log_to_file: bool = True) -> logging.L
         )
         file_handler.setLevel(logging.DEBUG)  # 文件始终记录所有级别
         file_handler.setFormatter(_FileFormatter())
+        file_handler.addFilter(_TraceFilter())
         _logger.addHandler(file_handler)
 
     # ---- WebSocket 实时控制台 Handler ----
@@ -169,12 +189,26 @@ def init_logger(debug_mode: bool = False, log_to_file: bool = True) -> logging.L
         ws_fmt = logging.Formatter("[%(asctime)s] %(message)s")
         ws_fmt.default_msec_format = "%s.%03d"
         ws_handler.setFormatter(ws_fmt)
+        ws_handler.addFilter(_TraceFilter())
         _logger.addHandler(ws_handler)
     except Exception:
         pass  # 首次初始化时 log_server 可能尚未导入
 
     _logger.info("Logger 初始化完成 | debug=%s | 文件日志=%s", debug_mode, log_to_file)
+    _quiet_third_party()
     return _logger
+
+
+def _quiet_third_party():
+    """静默第三方/框架库的 DEBUG/INFO，避免刷屏（Phase 1 统一日志级别）。
+
+    仅保留 huanmeng 自身日志的 INFO；第三方库默认提到 WARNING。
+    """
+    for name in ("httpx", "httpcore", "openai", "urllib3", "asyncio",
+                 "khl", "aiohttp", "websockets", "playwright", "asyncio"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        lg.propagate = False
 
 
 def get_logger(name: str = "") -> logging.Logger:
@@ -226,3 +260,30 @@ def debug(msg: str = "", *args, **kwargs):
 
 def critical(msg: str = "", *args, **kwargs):
     get_logger().critical(msg, *args, **kwargs)
+
+
+# ── Trace 汇总（Huanmeng 2.0 Phase 1）──────────────────────
+def log_trace_summary():
+    """在请求边界输出一次请求的阶段耗时汇总，便于按 trace_id 还原"为什么慢"。
+
+    读取当前 RequestContext 的各阶段样本，INFO 级别输出。
+    """
+    try:
+        from core.trace import current
+        ctx = current()
+        if ctx is None:
+            return
+        summary = ctx.summary()
+        if not summary:
+            return
+        parts = []
+        for phase, s in sorted(summary.items()):
+            parts.append(f"{phase}={s['total_ms']}ms(x{s['count']})")
+        get_logger().info(
+            "[TRACE %s] total=%sms | %s",
+            ctx.trace_id,
+            ctx.total_ms(),
+            ", ".join(parts),
+        )
+    except Exception:
+        pass

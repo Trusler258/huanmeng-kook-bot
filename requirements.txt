@@ -27,3 +27,8 @@ playwright>=1.40.0
 
 # === 可选：系统资源监控（.info 指令） ===
 # psutil>=5.9.0
+
+# === Huanmeng 2.0 数据层（SQLite + SQLAlchemy + Alembic + FTS5） ===
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+aiosqlite>=0.20.0

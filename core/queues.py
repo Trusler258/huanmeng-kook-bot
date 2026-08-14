@@ -7,6 +7,7 @@ per-group 异步消息队列 + 渲染队列
 from __future__ import annotations
 
 import asyncio
+import time
 from core.logger import get_logger
 
 logger = get_logger("queues")
@@ -38,10 +39,19 @@ async def _group_worker(chat_id: int, queue: asyncio.Queue):
     while True:
         try:
             kwargs = await queue.get()
+            # Phase1 Trace：记录排队等待耗时
             try:
-                await process_message(**kwargs)
+                from core.trace import record, span
+                enqueued = kwargs.pop("_enqueued_at", None)
+                if enqueued is not None:
+                    record("queue_wait", (time.perf_counter() - enqueued) * 1000.0)
+                with span("process"):
+                    await process_message(**kwargs)
+                from core.logger import log_trace_summary
+                log_trace_summary()
             except Exception as e:
-                logger.error("[队列] 群%d 处理异常: %s", chat_id, e)
+                import traceback
+                logger.error("[队列] 群%d 处理异常: %s\n%s", chat_id, e, traceback.format_exc())
             queue.task_done()
         except asyncio.CancelledError:
             break
@@ -50,6 +60,7 @@ async def _group_worker(chat_id: int, queue: asyncio.Queue):
 async def enqueue_message(**kwargs):
     """将消息投入对应群的队列，不阻塞调用方"""
     chat_id = kwargs.get("chat_id", 0)
+    kwargs["_enqueued_at"] = time.perf_counter()  # Phase1 Trace：排队时刻
     q = _get_or_create_queue(chat_id)
     await q.put(kwargs)
     logger.debug("[队列] 群%d 消息已入队 (队长度=%d)", chat_id, q.qsize())
@@ -62,14 +73,14 @@ async def _render_worker(queue: asyncio.Queue):
     while True:
         try:
             future, render_fn, args, kwargs = await queue.get()
-            async with _render_semaphore:
-                try:
-                    result = await render_fn(*args, **kwargs)
-                    future.set_result(result)
-                except Exception as e:
-                    future.set_exception(e)
         except asyncio.CancelledError:
             break
+        try:
+            async with _render_semaphore:
+                result = await render_fn(*args, **kwargs)
+                future.set_result(result)
+        except Exception as e:
+            future.set_exception(e)
         finally:
             queue.task_done()
 
