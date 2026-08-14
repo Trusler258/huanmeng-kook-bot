@@ -22,7 +22,7 @@ class ResponsePolicyConfig:
     """ResponsePolicy 配置。"""
     max_sentences: int = 10          # 分段发送的最大句子数
     max_total_delay: float = 3.0     # 整批句间延迟总和上限（秒），避免拖沓
-    delay_policy: str = "random"     # "random" | "none"
+    delay_policy: str = "none"       # "random" | "none"（默认 none=零延迟）
     min_interval: float = 0.5        # random 模式下的最小句间等待（秒）
     max_interval: float = 1.5        # random 模式下的最大句间等待（秒）
 

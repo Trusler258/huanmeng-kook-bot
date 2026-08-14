@@ -30,7 +30,7 @@ from services.delivery.message_formatter import OutgoingMessage, parse
 from services.delivery.card_formatter import replace_countdown, validate_and_repair_card_json
 from services.delivery.attachment_service import AttachmentService
 from services.delivery.message_store import MessageStore
-from services.delivery.response_policy import ResponsePolicy, ResponsePolicyConfig
+from services.delivery.response_policy import ResponsePolicy
 
 logger = get_logger("sender.delivery")
 
@@ -43,6 +43,7 @@ class DeliveryResult:
     error: str = ""
     attempts: int = 0
     delivered: bool = True  # 是否已向频道投递（False 表示频道不可达等未发送场景）
+    fallback_used: bool = False  # 是否已通过降级（如 Card→KMD）成功送达；为 True 时上层不得再次 fallback
 
     def __bool__(self):
         return self.ok
@@ -71,19 +72,29 @@ class ResponseDelivery:
                 ok, card_json, detail = validate_and_repair_card_json(card_json)
                 if not ok:
                     logger.error("卡片 JSON 校验失败 (无法修复): %s | 原始: %s", detail, seg.content[:500])
-                    await transport.send_kmarkdown(
-                        channel,
-                        format_lang("bot.card_fallback", bot_name=get_config().bot_name))
-                    return DeliveryResult(True, "card_fallback", detail, 1)
+                    try:
+                        await transport.send_kmarkdown(
+                            channel,
+                            format_lang("bot.card_fallback", bot_name=get_config().bot_name))
+                        # fallback KMD 已成功送达 → 视为已交付，上层不得再次 fallback
+                        return DeliveryResult(True, "card_fallback", detail, 1, fallback_used=True)
+                    except Exception as fe:
+                        # 卡片与原 fallback 均失败 → 交由上层发最终 fallback_reply
+                        return DeliveryResult(False, "card", f"{detail} / {fe}", 1, fallback_used=False)
                 try:
                     await transport.send_card(channel, card_json)
                     return DeliveryResult(True, "card", attempts=1)
                 except Exception as ce:
                     logger.error("卡片发送失败 (JSON已校验通过但仍被KOOK拒绝): %s | JSON=%s", ce, card_json[:500])
-                    await transport.send_kmarkdown(
-                        channel,
-                        format_lang("bot.card_fallback", bot_name=get_config().bot_name))
-                    return DeliveryResult(False, "card", str(ce), 2)
+                    try:
+                        await transport.send_kmarkdown(
+                            channel,
+                            format_lang("bot.card_fallback", bot_name=get_config().bot_name))
+                        # fallback KMD 已成功送达 → 视为已交付，上层不得再次 fallback
+                        return DeliveryResult(True, "card_fallback", str(ce), 2, fallback_used=True)
+                    except Exception as fe:
+                        # 卡片与原 fallback 均失败 → 交由上层发最终 fallback_reply
+                        return DeliveryResult(False, "card", f"{ce} / {fe}", 2, fallback_used=False)
 
             elif seg.kind == "img_url":
                 url = seg.content
@@ -164,10 +175,14 @@ class ResponseDelivery:
         result = await self.send_to(message, group_id, is_group=True)
         if not result.delivered:
             return False
-        if not result.ok:
-            cfg = get_config()
-            fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-            await self.send_to(fallback, group_id, is_group=True)
+        if not result.ok and not result.fallback_used:
+            # 内容完全未交付（含降级均失败）→ 发送最终 fallback_reply（仅一次）
+            try:
+                cfg = get_config()
+                fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
+                await self.send_to(fallback, group_id, is_group=True)
+            except Exception as e:
+                logger.error("最终 fallback_reply 发送失败: %s", e)
         if result.ok:
             self._log_bot_sent(group_id, message)
         return result.ok
@@ -176,10 +191,14 @@ class ResponseDelivery:
         result = await self.send_to(message, user_id, is_group=False)
         if not result.delivered:
             return False
-        if not result.ok:
-            cfg = get_config()
-            fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-            await self.send_to(fallback, user_id, is_group=False)
+        if not result.ok and not result.fallback_used:
+            # 内容完全未交付（含降级均失败）→ 发送最终 fallback_reply（仅一次）
+            try:
+                cfg = get_config()
+                fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
+                await self.send_to(fallback, user_id, is_group=False)
+            except Exception as e:
+                logger.error("最终 fallback_reply 发送失败: %s", e)
         if result.ok:
             self._log_bot_sent(user_id, message)
         return result.ok
@@ -199,13 +218,17 @@ class ResponseDelivery:
         min_interval: float = 0.5,
         max_interval: float = 1.5,
     ):
-        """逐条发送句子列表，句间延迟由 ResponsePolicy 管理（不隐藏在内部）。"""
-        logger.info("开始分批发送 %d 条句子 → chat=%s is_group=%s",
-                    len(sentences), chat_id, is_group)
+        """逐条发送句子列表，句间延迟由注入的 ResponsePolicy 管理（策略唯一来源）。
+
+        注意：ResponsePolicy 是发送策略的唯一来源；min_interval / max_interval
+        仅保留以兼容 1.x 签名，实际不再覆盖 self.policy 的配置。
+        普通聊天默认 policy 为 delay_policy="none"（零延迟）。
+        """
+        logger.debug("开始分批发送 %d 条句子 → chat=%s is_group=%s",
+                     len(sentences), chat_id, is_group)
 
         from core.trace import span
-        policy = ResponsePolicy(ResponsePolicyConfig(
-            min_interval=min_interval, max_interval=max_interval))
+        policy = self.policy
         sentences = policy.cap_sentences(sentences)
         delays = policy.compute_delays(len(sentences))
 
@@ -217,7 +240,7 @@ class ResponseDelivery:
                 await self.send_by_chat_type(sentence, chat_id, is_group, user_id)
                 logger.debug("已发送第 %d/%d 条: %s...", i + 1, len(sentences), sentence[:30])
 
-        logger.info("分批发送完成: 共 %d 条 → chat=%s", len(sentences), chat_id)
+        logger.debug("分批发送完成: 共 %d 条 → chat=%s", len(sentences), chat_id)
 
     async def send_file(self, file_path: str, chat_id, is_group: bool) -> bool:
         path = Path(file_path)

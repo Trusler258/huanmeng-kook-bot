@@ -47,7 +47,8 @@ class MessageStore:
             except asyncio.CancelledError:
                 break
             try:
-                self._write(entry)
+                # 同步文件 IO 放到线程池，避免阻塞 event loop
+                await asyncio.to_thread(self._write, entry)
             except Exception as e:
                 logger.warning("msglog 落盘失败 chat=%s: %s", entry.get("chat_id", "?"), e)
             finally:

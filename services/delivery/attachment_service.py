@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -60,16 +61,28 @@ class AttachmentService:
                     raise IOError(f"下载外部图片失败: HTTP {resp.status}")
                 data = await resp.read()
                 suffix = os.path.splitext(url.split('?')[0])[-1] or '.png'
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix=suffix, delete=False, dir=str(_TMP_DIR))
+                # 同步磁盘写入放到线程池，避免阻塞 event loop
+                tmp_name = await asyncio.to_thread(self._write_temp, data, suffix)
                 try:
-                    tmp.write(data)
-                    tmp.close()
-                    return await self._transport.create_asset(tmp.name)
+                    return await self._transport.create_asset(tmp_name)
                 finally:
-                    if not tmp.closed:
-                        tmp.close()
-                    try:
-                        os.unlink(tmp.name)
-                    except OSError:
-                        pass
+                    await asyncio.to_thread(self._remove_temp, tmp_name)
+
+    @staticmethod
+    def _write_temp(data: bytes, suffix: str) -> str:
+        """同步写入临时文件，返回路径（在线程池中执行）。"""
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, dir=str(_TMP_DIR))
+        try:
+            tmp.write(data)
+        finally:
+            tmp.close()
+        return tmp.name
+
+    @staticmethod
+    def _remove_temp(path: str):
+        """同步删除临时文件（在线程池中执行）。"""
+        try:
+            os.unlink(path)
+        except OSError:
+            pass

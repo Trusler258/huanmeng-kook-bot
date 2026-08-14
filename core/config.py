@@ -332,6 +332,8 @@ def load_bot_config() -> BotConfig:
     admin_id_str = ""
     friend_qqs: list[int] = []
     qq_name_map: dict[str, str] = {}
+    op_qqs: list[int] = []          # OP（次级管理员），roles.toml 缺失时默认空
+    group_owners: dict[int, list[int]] = {}  # 频道 OP 指派，roles.toml 缺失时默认空
     if roles_path.exists():
         with open(roles_path, "r", encoding="utf-8") as f:
             roles_toml = toml.load(f)
