@@ -308,6 +308,21 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         _fast_search = True  # router 出错 → 走完整 pipeline（含搜索判断），不丢消息
     logger.debug("请求意图: intent=%s fast_search=%s msg='%s'", intent, _fast_search, msg_content[:30])
 
+    # ------Phase 7 Agent 薄适配层------
+    # 复杂任务走 Agent Planner+Executor（返回 True 表示已处理并回复，直接结束）；
+    # 简单聊天 / 简单 command / 规划失败 → 返回 False，继续原 Fast Path，不改原逻辑。
+    if intent != "command":
+        try:
+            from core.agent.gateway import try_handle_with_agent
+            if await try_handle_with_agent(
+                msg_content, user_id=user_id, chat_id=chat_id,
+                sender_name=sender_name, is_group=is_group, bot_qq=bot_qq,
+                intent=intent,
+            ):
+                return
+        except Exception as _ae:
+            logger.warning("Agent 适配层异常，回退原 pipeline: %s", _ae)
+
     # ------自忽略机制------
     from services.self_ignore import is_ignored, ignore_user, remaining_seconds
     if is_group and is_ignored(user_id):
