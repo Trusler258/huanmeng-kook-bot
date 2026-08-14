@@ -348,29 +348,37 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         except Exception:
             pass
 
-    extra_info_parts = []
     from datetime import datetime
     now = datetime.now()
     now_str = now.strftime("%Y年%m月%d日 %H:%M:%S") + f".{now.microsecond // 1000:03d}"
     weekdays = "日一二三四五六"
     now_str += f" 周{weekdays[int(now.strftime('%w'))]}"
-    extra_info_parts.append(f"当前时间：{now_str}")
+    # Phase 9：上下文按类型分桶，交给 Context Engine 仲裁优先级与预算
+    extra_buckets: dict[str, list[str]] = {
+        "system": [], "task": [], "memory": [], "search": [], "conversation": [],
+    }
+
+    def _bx(kind: str, text: str) -> None:
+        if text and kind in extra_buckets:
+            extra_buckets[kind].append(text)
+
+    _bx("system", f"当前时间：{now_str}")
 
     # 节假日信息
     try:
         from modules.holiday import get_today_holiday_text
         holiday_text = get_today_holiday_text()
         if holiday_text:
-            extra_info_parts.append(holiday_text)
+            _bx("system", holiday_text)
     except Exception:
         pass
 
     from modules.preset import get_preset
     active_preset = get_preset(chat_id)
     if active_preset:
-        extra_info_parts.append(f"【系统注入指令 — 你必须严格遵守，优先级高于人设】\n{active_preset}")
+        _bx("task", f"【系统注入指令 — 你必须严格遵守，优先级高于人设】\n{active_preset}")
     if related_memories:
-        extra_info_parts.append(related_memories)
+        _bx("memory", related_memories)
 
     # Phase 6 Part4：msglog 回溯结果按 conversation 预算截断，防止把上下文挤爆
     if not related_memories or len(related_memories) < 300:
@@ -378,10 +386,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             with _trace_span("message_retrieval"):
                 msglog_context = get_msglog_context(msg_content, ctx.get_context(chat_id), chat_id)
             if msglog_context:
-                from core.context_builder import truncate as _budget_truncate
-                from core.context_builder import DEFAULT_BUDGETS
-                msglog_context = _budget_truncate(msglog_context, DEFAULT_BUDGETS["conversation"])
-                extra_info_parts.append(msglog_context)
+                _bx("memory", msglog_context)
         except Exception:
             pass
 
@@ -396,19 +401,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 img_lines = ["【本群最近图片描述（如果还没识别完则为空，不知道就直说不知道）】"]
                 for img in recent_imgs:
                     img_lines.append(f"- {img.get('desc', '?')[:100]} (来自 {img.get('author', '?')})")
-                extra_info_parts.append("\n".join(img_lines))
+                _bx("memory", "\n".join(img_lines))
     except Exception:
         pass
 
-    extra_info_parts.append(f"当前{sender_name}对你的好感度：{fav_val}/100")
+    _bx("system", f"当前{sender_name}对你的好感度：{fav_val}/100")
 
     if is_group:
         at_list = _build_at_list(ctx.get_context(chat_id), cfg)
         if at_list:
-            extra_info_parts.append(at_list)
+            _bx("conversation", at_list)
 
     if arch_context:
-        extra_info_parts.append(arch_context)
+        _bx("system", arch_context)
 
     if is_group:
         group_ops = cfg.group_owners.get(chat_id, [])
@@ -416,7 +421,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             op_names = [cfg.get_display_name(q, chat_id) for q in group_ops]
             op_list = "、".join(f"{n}({q})" for n, q in zip(op_names, group_ops))
             master_name = cfg.get_display_name(cfg.admin_qq)
-            extra_info_parts.append(
+            _bx("system",
                 f"【主人提示】你的真正主人是{master_name}，"
                 f"同时{op_list}也在这个群拥有主人权限。对他们要用对主人一样的语气和态度。"
             )
@@ -425,25 +430,37 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         from modules.op import get_mode, get_sleep_prompt_rule, get_narrative_prompt_rule
         mode = get_mode()
         if mode == "sleeping":
-            extra_info_parts.append(get_sleep_prompt_rule(chat_id))
+            _bx("task", get_sleep_prompt_rule(chat_id))
         elif mode == "narrative":
-            extra_info_parts.append(get_narrative_prompt_rule())
+            _bx("task", get_narrative_prompt_rule())
     except ImportError:
         pass
-
-    extra_info = "\n".join(extra_info_parts)
 
     # ── 用户画像注入 ──
     try:
         from core.user_profile import build_profile_text
         profile_text = build_profile_text(user_id)
         if profile_text:
-            extra_info += f"\n\n【发言者画像】\n{profile_text}"
+            _bx("system", f"\n\n【发言者画像】\n{profile_text}")
     except ImportError:
         pass
 
+    # Phase 9：把分桶的额外上下文交给 Context Engine 仲裁
+    # （Retrieve→Rank→Compress→Budget→Inject），产出带预算的 extra_info，
+    # 并记录各类 Token 消耗到 trace。
+    from core.context_builder import build_context_from_parts
+    from core.trace import record_context_tokens as _record_ctx_tokens
+    buckets_joined = {k: "\n\n".join(v) for k, v in extra_buckets.items() if v}
+    built_extra = build_context_from_parts(buckets_joined, with_headers=False)
+    extra_info = built_extra.text
+    if built_extra.dropped:
+        logger.debug("extra_info 按预算丢弃 %d 项: %s",
+                     len(built_extra.dropped), built_extra.dropped[:5])
+    _record_ctx_tokens(built_extra.stats.to_dict())
     if extra_info:
-        logger.info("额外信息: 记忆=%d字 搜索=%d字", len(related_memories), 0)
+        logger.info("额外信息: %d字 (memory=%d search=%d)",
+                    len(extra_info), built_extra.stats.memory_tokens,
+                    built_extra.stats.search_tokens)
 
     # ------错误报告处理------
     if error_report:
@@ -497,6 +514,66 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     logger.debug("私聊使用 [private_persona] 基底")
         except ImportError:
             pass
+
+    # ── Phase 9：System Context（Stable + Dynamic Capability）──
+    # 把 system prompt 拆为 Stable（人格/格式/语气/好感度/玩模式）与
+    # Dynamic Capability（指令列表 + 选中的 Skill），交给 Context Engine 仲裁。
+    # 仅当检测到与消息相关的 Skill 时才加载其正文（Fast Path 简单聊天不触发）。
+    from services.llm import build_system_sections as _build_sys_sections
+    from core.context_builder import classify_system_sections as _classify_sections
+    from core.context_builder import build_context_from_parts as _build_ctx
+    from core.trace import record_skill as _record_skill
+    import json as _json
+
+    _custom_persona = None
+    _personality = system_prompt_for_llm
+    if system_prompt_for_llm.startswith("PERSONA:::"):
+        _pparts = system_prompt_for_llm.split(":::", 2)
+        if len(_pparts) == 3:
+            try:
+                _custom_persona = _json.loads(_pparts[1])
+            except Exception:
+                _custom_persona = None
+            _personality = _pparts[2]
+
+    # ── Phase 10：Capability 按需解析 ─────────────────────────
+    # 用 CapabilityRouter 选出「当前请求相关」的能力，只注入相关的指令列表、
+    # 加载命中的 Skill 正文，并把命中的 Tool Schema 交给 FC（不再全量塞给模型）。
+    # 普通聊天（intent=chat/空）或 router 失败时回退到最小核心能力，避免上下文膨胀。
+    from core.capability.loader import get_capability_loader as _get_cap_loader
+    _cap_loader = _get_cap_loader()
+    try:
+        _cap_resolved = _cap_loader.resolve(msg_content, intent, is_group=is_group)
+        _caps = _cap_resolved["caps"]
+        skill_text = _cap_resolved["skill_text"]
+        fc_schemas = _cap_resolved["fc_schemas"]
+        for _c in _cap_resolved["caps"]:
+            if _c.category == "skill":
+                _record_skill(_c.name, selected=True, loaded=True)
+    except Exception as _ce:
+        logger.warning("Capability 解析失败，回退核心能力: %s", _ce)
+        _caps = []
+        skill_text = ""
+        fc_schemas = []
+
+    sys_sections = _build_sys_sections(cfg.bot_name, _personality, is_group, _custom_persona,
+                                       capabilities=_caps)
+    stable_sec, dynamic_sec = _classify_sections(sys_sections)
+
+    # 动态能力：按路由选中的指令列表 + 命中的 Skill（预算内，可丢弃）
+    cmd_list = dynamic_sec.get("cmd_list", "")
+
+    _stable_part = "\n\n".join(v for v in stable_sec.values() if v)
+    _essential = "\n\n".join(p for p in (_stable_part, cmd_list, dynamic_sec.get("command_tools", "")) if p)
+    _sys_parts = {"system": _essential}
+    if skill_text:
+        _sys_parts["skill"] = skill_text
+    sys_built = _build_ctx(_sys_parts, with_headers=False)
+    system_text_override = sys_built.text
+    logger.info("system_context: %d字 caps=%d tools=%d (system=%d skill=%d)",
+                len(system_text_override), len(_caps), len(fc_schemas),
+                sys_built.stats.system_tokens, sys_built.stats.skill_tokens)
+    _record_ctx_tokens(sys_built.stats.to_dict())
 
     # 工具预选/执行代理已删除：inject_tool_system / try_tool_select / get_tool_status
     # 三个函数在 core/tools.py 中不存在，ImportError 被静默吞掉，整段是死代码。
@@ -567,11 +644,20 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     msg_content, sender_name, user_id, chat_id, is_group
                 )
             if search_result:
-                from core.context_builder import truncate as _budget_truncate
-                from core.context_builder import DEFAULT_BUDGETS
-                search_result = _budget_truncate(search_result, DEFAULT_BUDGETS["tool_result"])
-                extra_info_parts.append(f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
-                logger.info("自动搜索结果已注入 (%d字)", len(search_result))
+                # Phase 9：搜索结果注入 search 桶并按预算重建 extra_info
+                # （search 优先级最低、可丢弃；错误报告隔离时跳过注入）
+                if error_report:
+                    logger.debug("错误报告隔离，跳过搜索结果注入")
+                else:
+                    _bx("search", f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
+                    _rebuilt = build_context_from_parts(
+                        {k: "\n\n".join(v) for k, v in extra_buckets.items() if v},
+                        with_headers=False,
+                    )
+                    extra_info = _rebuilt.text
+                    _record_ctx_tokens(_rebuilt.stats.to_dict())
+                    extra_info_for_llm = extra_info
+                    logger.info("自动搜索结果已注入 (%d字)", len(search_result))
         except Exception as _se:
             logger.warning("自动搜索失败: %s", _se)
     else:
@@ -586,6 +672,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             is_group=is_group, extra_info=extra_info_for_llm,
             max_tokens=None,
             user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
+            system_text_override=system_text_override,
+            tools_override=fc_schemas,
         )
 
     if not sentences:

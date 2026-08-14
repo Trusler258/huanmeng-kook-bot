@@ -90,6 +90,19 @@ class RequestContext:
     # 每个元素: {"name", "selected": bool, "loaded": bool}
     skills_used: list[dict] = field(default_factory=list)
 
+    # ── Phase 9 增强：上下文 Token 消耗（system/history/memory/skill/tool/search/task）──
+    # 由 core.context_builder.ContextEngine 产出后写入，供 trace_summary 审计上下文占用。
+    context_tokens: dict = field(default_factory=dict)
+
+    def record_context_tokens(self, stats: dict) -> None:
+        """记录本次请求各类上下文的 Token 消耗（key 形如 system_tokens / history_tokens…）。"""
+        if not stats:
+            return
+        for k, v in stats.items():
+            if isinstance(v, int):
+                self.context_tokens[k] = v
+        self.context_tokens["has_context_tokens"] = True
+
     # 慢请求阈值（毫秒），用于分类
     SLOW_MS: float = 3000.0
     VERY_SLOW_MS: float = 10000.0
@@ -190,6 +203,7 @@ class RequestContext:
             "tool_calls": list(self.tool_calls),
             "skills": list(self.skills_used),
             "plan": dict(self.plan_summary),
+            "context_tokens": dict(self.context_tokens),
             "phases": self.summary(),
         }
 
@@ -325,6 +339,13 @@ def record_skill(name: str, selected: bool = False, loaded: bool = False) -> Non
     ctx = _current_ctx.get()
     if ctx is not None:
         ctx.record_skill(name, selected, loaded)
+
+
+def record_context_tokens(stats: dict) -> None:
+    """记录本次请求各类上下文的 Token 消耗（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_context_tokens(stats)
 
 
 def trace_summary() -> dict:

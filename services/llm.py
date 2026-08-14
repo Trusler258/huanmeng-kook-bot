@@ -160,11 +160,18 @@ def reload_skill_cache():
     _skill_loaded = False
 
 
-def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_persona: dict | None = None) -> str:
-    """根据群聊/私聊组装 system prompt
+def build_system_sections(bot_name: str, personality: str, is_group: bool,
+                          custom_persona: dict | None = None,
+                          capabilities: Optional[list] = None) -> dict[str, str]:
+    """组装 system prompt 的各语义节（Phase 9：供 Context Engine 分类 Stable/Dynamic）。
 
-    custom_persona dict {core, side, identity} 非空时：用三段构造 header（全替换人设），
-    禁用 face_lib/private_tone/play_mode（表情/语气/玩模式），保留功能段（format/command/fav/anti_repeat）。
+    返回 {节名: 内容}，节名 ∈ {header, format_rules, command_tools, cmd_list,
+    face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode}。
+    保留原 _build_system_text 的拼接逻辑，仅拆成 dict 便于分类与预算。
+
+    Phase 10：capabilities 非空时，cmd_list 只列出「当前请求相关」的指令能力
+    （CapabilityRouter 选中），不再每次注入全部 COMMAND_MAP，避免上下文膨胀。
+    capabilities 为空（默认）时保持旧行为：全量指令列表。
     """
     sec = _load_skill_sections()
 
@@ -197,14 +204,41 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
     face_lib = sec.get("face_lib", "") if not custom_persona else ""
     private_tone = sec.get("private_tone", "") if (not is_group and not custom_persona) else ""
 
-    # 动态注入 COMMAND_MAP 全部指令
-    cmd_list = _build_dynamic_command_list()
+    # 动态注入 COMMAND_MAP 全部指令（Phase 10：capabilities 非空时只注入相关指令）
+    if capabilities:
+        from core.capability.loader import build_command_usage
+        cmd_list = build_command_usage(list(capabilities))
+    else:
+        cmd_list = _build_dynamic_command_list()
 
-    return "\n\n".join(
-        p for p in [header, format_rules, command_tools, cmd_list,
-                     face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode]
-        if p
-    )
+    return {
+        "header": header,
+        "format_rules": format_rules,
+        "command_tools": command_tools,
+        "cmd_list": cmd_list,
+        "face_lib": face_lib,
+        "private_tone": private_tone,
+        "anti_repeat": anti_repeat,
+        "fav_format": fav_format,
+        "fav_tiers": fav_tiers,
+        "play_mode": play_mode,
+    }
+
+
+def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_persona: dict | None = None) -> str:
+    """根据群聊/私聊组装 system prompt
+
+    custom_persona dict {core, side, identity} 非空时：用三段构造 header（全替换人设），
+    禁用 face_lib/private_tone/play_mode（表情/语气/玩模式），保留功能段（format/command/fav/anti_repeat）。
+    """
+    sections = build_system_sections(bot_name, personality, is_group, custom_persona)
+
+    # 稳定的注入顺序（Stable 在前，Dynamic Capability 在后）
+    order = [
+        "header", "format_rules", "command_tools", "cmd_list",
+        "face_lib", "private_tone", "anti_repeat", "fav_format", "fav_tiers", "play_mode",
+    ]
+    return "\n\n".join(p for p in (sections[k] for k in order) if p)
 
 
 def _build_dynamic_command_list() -> str:
@@ -512,9 +546,11 @@ async def call_llm_with_tools(
         "model": model_cfg.model if hasattr(model_cfg, 'model') else model_cfg.name,
         "temperature": temperature,
         "messages": messages,
-        "tools": _strict_tools,
-        "tool_choice": "auto",
     }
+    # Phase 10：tools 为空（能力按需路由未命中工具）时不发 tools，避免 provider 拒绝
+    if tools:
+        req_params["tools"] = tools
+        req_params["tool_choice"] = "auto"
     if max_tokens is not None:
         req_params["max_tokens"] = max_tokens
     if _td:
@@ -539,7 +575,8 @@ async def call_llm_with_tools(
             # strict/Beta 失败 → 回退普通客户端 + 原始 tools（去掉 strict）
             if _use_strict:
                 logger.warning("LLM FC strict 模式失败，回退普通调用: %s", se)
-                req_params["tools"] = tools
+                if tools:
+                    req_params["tools"] = tools
                 completion = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
                     timeout=timeout,
@@ -705,15 +742,22 @@ async def generate_multi_reply_with_tools(
     user_id: int = 0,
     group_id: int = 0,
     bot_qq: int = 0,
+    system_text_override: str | None = None,
+    tools_override: Optional[list] = None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
     如果 LLM 选择调用工具，执行后把结果喂回去，再生成最终回复。
-    """
-    from core.tools import get_tool_schemas
 
-    tools = get_tool_schemas()
-    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
+    Phase 10：tools_override 非空时，只把「当前请求相关」的工具 Schema 给模型，
+    不再每次注入全部工具（CapabilityLoader 按需加载）。
+    """
+    if tools_override is not None:
+        tools = tools_override
+    else:
+        from core.tools import get_tool_schemas
+        tools = get_tool_schemas()
+    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, system_text_override)
 
     # 长消息（题目/长文/网页阅读）→ 扩大输出 token
     has_long_context = len(current_msg) > 2000
@@ -1019,8 +1063,14 @@ def _build_messages(
     system_prompt: str,
     is_group: bool,
     extra_info: str,
+    system_text_override: str | None = None,
 ) -> list[dict]:
-    """构建 messages 列表（与 generate_multi_reply 相同的格式）"""
+    """构建 messages 列表（与 generate_multi_reply 相同的格式）
+
+    system_text_override 非空时：直接用该文本作为 system 消息内容（Phase 9
+    Context Engine 已按 Stable/Dynamic + 预算组装好的 system 上下文），跳过
+    内部 _build_system_text 重建，避免重复注入。
+    """
     # 拆 PERSONA:::{json}:::{原system} 标记（与 generate_multi_reply 一致）
     _custom_persona = None
     _personality = system_prompt
@@ -1032,7 +1082,10 @@ def _build_messages(
             except Exception:
                 _custom_persona = None
             _personality = parts[2]
-    msgs = [{"role": "system", "content": _build_system_text(bot_name, _personality, is_group, custom_persona=_custom_persona)}]
+    if system_text_override is not None:
+        msgs = [{"role": "system", "content": system_text_override}]
+    else:
+        msgs = [{"role": "system", "content": _build_system_text(bot_name, _personality, is_group, custom_persona=_custom_persona)}]
     # 按 bot_name: 前缀判断角色（与 _build_history_messages 一致）
     # 群聊中多个用户连续发言时，奇偶索引会把第 2/4/6 条 user 消息错误标为 assistant，
     # 导致 LLM 看到混乱的对话历史，返回空内容或非 JSON 输出
