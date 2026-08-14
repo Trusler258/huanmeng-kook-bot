@@ -173,7 +173,8 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_tts_server())
         _asyncio.ensure_future(self._bg_holiday())
         _asyncio.ensure_future(self._bg_notify_loop())
-        info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日+通知(性能/GitHub)")
+        _asyncio.ensure_future(self._bg_update_webhook())
+        info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日+通知(性能/GitHub)+更新Webhook:62004")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
         try:
@@ -306,6 +307,11 @@ class HuanmengBot:
         """后台任务：性能降级检测 + GitHub 更新检测（KOOK Card 卡片通知）"""
         from services.notify_system import notify_loop
         await notify_loop()
+
+    async def _bg_update_webhook(self):
+        """后台任务：GitHub 更新 Webhook（端口 62004，push 后立即触发更新检测）"""
+        from services.update_webhook import start_update_webhook
+        await start_update_webhook()
 
     async def _bg_wdsj_collector(self):
         """后台任务：每 4 小时采集战绩（0/4/8/12/16/20 点的第1分钟）"""

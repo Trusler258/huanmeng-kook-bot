@@ -1,0 +1,23 @@
+name: Notify KOOK Bot on Push
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger bot update check
+        env:
+          WEBHOOK_URL: "http://01240820.xyz:62004/github-update"
+          WEBHOOK_KEY: "huanmeng_update_2026"
+          PAYLOAD: ${{ toJson(github.event) }}
+        run: |
+          echo "$PAYLOAD" | jq -c '{sha: .after, ref: .ref, repo: .repository.full_name, commits: [.commits[]? | {message: .message, author: .author.name}]}' | \
+            curl -sS -X POST \
+              -H "X-Bot-Key: $WEBHOOK_KEY" \
+              -H "Content-Type: application/json" \
+              -d @- \
+              --max-time 15 \
+              "$WEBHOOK_URL" || echo "webhook notify failed (non-fatal)"

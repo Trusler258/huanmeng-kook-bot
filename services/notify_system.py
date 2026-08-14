@@ -174,10 +174,12 @@ def _render_perf_recovered(avg_ms: float, window_n: int) -> str:
 
 # ── GitHub 更新卡片 ─────────────────────────────────────────
 
-def _render_update_card(local_sha: str, remote_sha: str, commits: list[str]) -> str:
+def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[str]) -> str:
     color = "#f0ad4e"  # 黄
     modules = [_header("KOOK BOT · 检测到新版本")]
-    rows = [("本地版本", local_sha[:7]), ("远程版本", remote_sha[:7])]
+    rows = [("远程版本", remote_sha[:7])]
+    if local_sha:
+        rows.append(("本地版本", local_sha[:7]))
     if commits:
         rows.append(("新增提交", f"{len(commits)} 个"))
     modules.append(_section(rows))
@@ -320,6 +322,29 @@ async def check_github_update() -> None:
     cfg["last_notified_sha"] = remote
     save_cfg(cfg)
     logger.info("更新通知已发: local=%s remote=%s", local[:7], remote[:7])
+
+
+async def notify_github_update(remote_sha: str, commits: list[str] | None = None) -> bool:
+    """GitHub Action webhook 触发的即时更新通知（推送即发，无需轮询）
+    remote_sha: 远程新版本 SHA；commits: 新增提交的一行摘要列表
+    去重：last_notified_sha 相同则不重复推送。
+    返回 True=已发送，False=跳过/失败
+    """
+    cfg = load_cfg()
+    if not cfg.get("update_enabled", True) or not cfg.get("target_channels"):
+        return False
+    if not remote_sha:
+        return False
+    if cfg.get("last_notified_sha") == remote_sha:
+        return False  # 已通知过这个版本
+
+    card = _render_update_card(None, remote_sha, commits or [])
+    await _send_to_targets(card)
+
+    cfg["last_notified_sha"] = remote_sha
+    save_cfg(cfg)
+    logger.info("更新通知已发(webhook): remote=%s commits=%d", remote_sha[:7], len(commits or []))
+    return True
 
 
 # ── 指令支持 ────────────────────────────────────────────────
