@@ -135,18 +135,29 @@ class RequestContext:
 
     # ── Phase 6：工具调用 / LLM 计数 / 慢请求 ──
     def record_tool_call(self, tool_name: str, duration_ms: float, status: str,
-                         start_ms: float | None = None, end_ms: float | None = None) -> None:
+                         start_ms: float | None = None, end_ms: float | None = None,
+                         tool_call_id: str | None = None,
+                         retry_count: int = 0,
+                         error: str | None = None) -> None:
         """记录一次工具调用的耗时与结果状态。
 
-        status ∈ OK / FAILED / TIMEOUT / CANCELLED，不记录入参/结果等敏感内容。
+        status ∈ OK / FAILED / TIMEOUT / CANCELLED / DENIED，不记录入参/结果等敏感内容。
+        Phase 8：额外记录 tool_call_id / retry_count / error，便于与 Model Tool Request 对齐。
         """
-        self.tool_calls.append({
+        entry = {
             "tool_name": tool_name,
             "start_ms": round(start_ms, 2) if start_ms is not None else None,
             "end_ms": round(end_ms, 2) if end_ms is not None else None,
             "duration_ms": round(duration_ms, 2),
             "status": status,
-        })
+        }
+        if tool_call_id:
+            entry["tool_call_id"] = tool_call_id
+        if retry_count:
+            entry["retry_count"] = retry_count
+        if error:
+            entry["error"] = str(error)[:200]
+        self.tool_calls.append(entry)
         self._phases.setdefault("tool", []).append(duration_ms)
         self.events.append(("tool_call", duration_ms))
 
@@ -271,11 +282,16 @@ def record(phase: str, elapsed_ms: float):
 
 
 def record_tool_call(tool_name: str, duration_ms: float, status: str,
-                     start_ms: float | None = None, end_ms: float | None = None):
+                     start_ms: float | None = None, end_ms: float | None = None,
+                     tool_call_id: str | None = None,
+                     retry_count: int = 0,
+                     error: str | None = None):
     """便捷：记录一次工具调用耗时与状态（无上下文时安全忽略）。"""
     ctx = _current_ctx.get()
     if ctx is not None:
-        ctx.record_tool_call(tool_name, duration_ms, status, start_ms, end_ms)
+        ctx.record_tool_call(tool_name, duration_ms, status, start_ms, end_ms,
+                             tool_call_id=tool_call_id, retry_count=retry_count,
+                             error=error)
 
 
 def record_llm():

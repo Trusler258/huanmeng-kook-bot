@@ -710,7 +710,7 @@ async def generate_multi_reply_with_tools(
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
     如果 LLM 选择调用工具，执行后把结果喂回去，再生成最终回复。
     """
-    from core.tools import get_tool_schemas, execute_tool
+    from core.tools import get_tool_schemas
 
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
@@ -793,15 +793,20 @@ async def generate_multi_reply_with_tools(
             ],
         })
 
-        # 并行执行本轮所有工具
+        # 并行执行本轮所有工具（Phase 8：统一走 ToolRuntime，解耦 Model Tool Request 与执行）
+        from core.tool_runtime import ToolRequest, get_tool_runtime
+        from core.trace import get_trace_id
+
         async def run_one(tc):
-            r = await execute_tool(
-                tc["name"], tc["arguments"],
+            req = ToolRequest.from_tool_call(
+                tc, trace_id=get_trace_id(),
                 user_id=user_id, group_id=group_id,
+                chat_id=group_id if is_group else user_id,
                 sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
                 original_msg=current_msg,
             )
-            return tc, r or ""
+            res = await get_tool_runtime().execute(req)
+            return tc, res.to_context()
 
         tool_results = await asyncio.gather(*(run_one(tc) for tc in result.tool_calls))
         for tc, tool_text in tool_results:

@@ -28,6 +28,7 @@ from core.agent.planner import Plan, PlanStep
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import record, record_llm, set_plan_summary
+from core.tool_runtime import OK
 
 logger = get_logger("agent.executor")
 
@@ -166,16 +167,23 @@ class AgentExecutor:
     # 工具步必须在 async 上下文 await
     async def _exec_tool_async(self, step: PlanStep, ctx: AgentContext,
                                accumulated: list[str]) -> None:
-        from core.tools import execute_tool
+        # Phase 8：Agent 不得直接执行工具，统一走 ToolRuntime（权限/超时/重试/预算/Trace）
+        from core.tool_runtime import ToolRequest, get_tool_runtime
+        from core.trace import get_trace_id
+        req = ToolRequest(
+            tool_name=step.tool or "",
+            arguments=step.params or {},
+            trace_id=get_trace_id(),
+            user_id=ctx.user_id, group_id=ctx.group_id, chat_id=ctx.chat_id,
+            sender_name=ctx.sender_name, is_group=ctx.is_group,
+            bot_qq=ctx.bot_qq, original_msg=ctx.original_msg,
+            timeout=TOOL_TIMEOUT,
+        )
         try:
-            result = await execute_tool(
-                step.tool, step.params, user_id=ctx.user_id,
-                group_id=ctx.group_id, sender_name=ctx.sender_name,
-                is_group=ctx.is_group, bot_qq=ctx.bot_qq,
-                original_msg=ctx.original_msg,
-                timeout=TOOL_TIMEOUT,
-            )
-            step.result = result or ""
+            res = await get_tool_runtime().execute(req)
+            step.result = res.to_context()
+            if res.status != OK:
+                step.status = "FAILED"
         except asyncio.CancelledError:
             step.status = "CANCELLED"
             raise
