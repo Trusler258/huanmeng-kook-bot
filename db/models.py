@@ -92,10 +92,15 @@ class Memory(Base):
     conversation_id = Column(BigInteger, default=0)
     user_id = Column(BigInteger, default=0)
     content = Column(Text, nullable=False)
-    memory_type = Column(String(32), default="fact")          # fact/preference/event/persona
+    summary = Column(Text, default="")                       # 记忆摘要
+    memory_type = Column(String(32), default="fact")          # user_fact/preference/event/...
     importance = Column(Float, default=0.5)
     confidence = Column(Float, default=1.0)
     source = Column(String(32), default="user")              # user/bot/system
+    source_message_id = Column(String(64), default="")        # 来源消息
+    status = Column(String(16), default="active")             # active/pending/merged/superseded/archived
+    vector_id = Column(String(64), default="")                # 预留：语义向量 id
+    last_accessed_at = Column(BigInteger, default=0)          # 最近访问
     created_at = Column(BigInteger, nullable=False)
     updated_at = Column(BigInteger, nullable=False)
     meta = Column("metadata", JSONText, default=dict)
@@ -107,6 +112,7 @@ class Memory(Base):
         Index("idx_memories_confidence", "confidence"),
         Index("idx_memories_memory_type", "memory_type"),
         Index("idx_memories_updated_at", "updated_at"),
+        Index("idx_memories_status", "status"),
         Index("idx_memories_user_importance", "user_id", "importance"),
     )
 

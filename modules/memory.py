@@ -298,6 +298,9 @@ async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: 
 
     结果受 MEMORY_TOKEN_BUDGET（Context Builder budget）限制；
     记录 source / 命中数 / 耗时。禁止删除旧数据。
+
+    Phase 11：优先走 MemoryEngine 的 Filter→Candidate→Score→Rerank→Budget 流程；
+    失败/无数据时回退旧 SQLite 与文件 legacy。
     """
     _t0 = time.perf_counter()
 
@@ -305,14 +308,28 @@ async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: 
     query_parts = [current_msg] + [l for l in (context_lines or [])[-5:] if l]
     query_text = " ".join(query_parts)
 
-    # ── 主源：SQLite / FTS5 ──
+    # ── 主源：MemoryEngine（Filter/Candidate/Score/Rerank/Budget）──
     source = "file"
     top: list[str] = []
-    sqlite_hits = await _sqlite_search_memories(query_text, chat_id, max_cnt,
-                                                user_id=user_id, since_ms=since_ms)
-    if sqlite_hits is not None:
-        source = "sqlite"
-        top = sqlite_hits
+    try:
+        from core.memory_engine import get_memory_engine
+        engine_hits = await get_memory_engine().retrieve(
+            query_text, chat_id=chat_id, user_id=user_id or None,
+            since_ms=since_ms or None, budget=MEMORY_TOKEN_BUDGET,
+        )
+        if engine_hits:
+            source = "memory_engine"
+            top = engine_hits.split("\n")[1:]  # 去掉标题行
+    except Exception as e:
+        logger.warning("MemoryEngine 检索不可用，回退: %s", e)
+
+    # ── fallback：旧 SQLite / FTS5 ──
+    if not top:
+        sqlite_hits = await _sqlite_search_memories(query_text, chat_id, max_cnt,
+                                                    user_id=user_id, since_ms=since_ms)
+        if sqlite_hits is not None:
+            source = "sqlite"
+            top = sqlite_hits
 
     # ── fallback：DB 不可用 / 异常 / 无数据时读文件 ──
     if not top:

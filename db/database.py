@@ -87,7 +87,31 @@ class DatabaseManager:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         await ensure_fts(self._engine)
+        await self._upgrade_memories_schema()
         logger.info("数据库表结构已就绪（含 FTS5）")
+
+    async def _upgrade_memories_schema(self) -> None:
+        """为既有 memories 表补齐 Phase 11 新增列（幂等：列已存在则跳过）。"""
+        additions = {
+            "summary": "TEXT DEFAULT ''",
+            "source_message_id": "VARCHAR(64) DEFAULT ''",
+            "status": "VARCHAR(16) DEFAULT 'active'",
+            "vector_id": "VARCHAR(64) DEFAULT ''",
+            "last_accessed_at": "BIGINT DEFAULT 0",
+        }
+        try:
+            async with self._engine.begin() as conn:
+                cols = {
+                    r[1] for r in (await conn.execute(
+                        text("PRAGMA table_info(memories)"))).fetchall()
+                }
+                for name, ddl in additions.items():
+                    if name not in cols:
+                        await conn.execute(text(
+                            f"ALTER TABLE memories ADD COLUMN {name} {ddl}"))
+                        logger.info("升级 memories 表: 新增列 %s", name)
+        except Exception as e:
+            logger.warning("升级 memories 表失败（可忽略，新库已含这些列）: %s", e)
 
     def session(self) -> async_sessionmaker:
         """返回会话工厂（供 async with 使用），未初始化时抛异常。"""

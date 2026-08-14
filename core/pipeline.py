@@ -237,6 +237,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     from modules.stm import add_entry as stm_add
     stm_add(chat_id, role_tag, f"{sender_name}: {msg_content}", sender_name)
 
+    # Phase 11：记录到工作记忆，溢出时异步提炼为长期记忆（不阻塞响应）
+    try:
+        from core.memory_engine import get_memory_engine
+        get_memory_engine().observe(
+            chat_id, msg_content, author=sender_name, user_id=user_id,
+            tag="bot" if msg_type == "bot" else "user",
+        )
+    except Exception:
+        pass
+
     # ------指令拦截------
     # KOOK 统一前缀: . 触发指令（管理员权限在各 handler 内部用 cfg.is_admin 校验）
     import re as _re

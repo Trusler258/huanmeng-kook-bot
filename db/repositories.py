@@ -81,12 +81,17 @@ class MemoryRepository(BaseRepository):
     async def add(self, content: str, user_id: int = 0, conversation_id: int = 0,
                   memory_type: str = "fact", importance: float = 0.5,
                   confidence: float = 1.0, source: str = "user",
+                  summary: str = "", status: str = "active",
+                  source_message_id: str = "", vector_id: str = "",
                   metadata: Optional[dict] = None) -> Memory:
         now = _now_ms()
         return await self.create(
             content=content, user_id=user_id, conversation_id=conversation_id,
             memory_type=memory_type, importance=importance, confidence=confidence,
-            source=source, created_at=now, updated_at=now, meta=metadata or {},
+            source=source, summary=summary, status=status,
+            source_message_id=source_message_id, vector_id=vector_id,
+            created_at=now, updated_at=now, last_accessed_at=now,
+            meta=metadata or {},
         )
 
     async def top_for_user(self, user_id: int, limit: int = 10) -> list[Memory]:
