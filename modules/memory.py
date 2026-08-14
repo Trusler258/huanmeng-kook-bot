@@ -25,6 +25,10 @@ _MSGLOG_DIR = MEMORY_DIR / "msglog"
 MAX_MEMORY_LINES = 999999  # 永久保存
 MEMORY_COOLDOWN_SECONDS = 600
 BATCH_GAP_SECONDS = 60
+# Phase 6 Part3：单次记忆检索的最大扫描行数与注入上限（收敛检索成本，避免全量扫描）
+MEMORY_SCAN_CAP = 3000   # 只扫描最近 N 条记忆做关键词打分
+MEMORY_TOP_K = 10        # 命中后最多注入条数
+MEMORY_TOKEN_BUDGET = 2000  # 记忆注入字符上限
 
 _last_memory_attempt: dict[int, float] = {}
 _overflow_buffers: dict[int, list[dict]] = {}
@@ -223,10 +227,15 @@ def extract_keywords(text: str) -> set[str]:
     return base
 
 
-def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 10) -> str:
+def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = MEMORY_TOP_K) -> str:
+    _t0 = time.perf_counter()
     all_memories = load_memories(chat_id)
     if not all_memories:
         return ""
+
+    # Phase 6 Part3：只扫描最近 MEMORY_SCAN_CAP 条，避免超大记忆文件全量打分
+    if len(all_memories) > MEMORY_SCAN_CAP:
+        all_memories = all_memories[-MEMORY_SCAN_CAP:]
 
     keywords = extract_keywords(current_msg)
     for line in context_lines[-5:]:
@@ -245,8 +254,17 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
         return ""
 
     result = format_lang("memory.recall_header") + "\n" + "\n".join(top)
-    if len(result) > 2000:
-        result = result[:2000] + "\n..."  # 注入量上限从 800 提升到 2000，让更多历史记忆进上下文
+    if len(result) > MEMORY_TOKEN_BUDGET:
+        result = result[:MEMORY_TOKEN_BUDGET] + "\n..."
+
+    # Phase 6 Part3：记录记忆检索耗时与结果数量到 trace
+    try:
+        from core.trace import record
+        record("memory", (time.perf_counter() - _t0) * 1000.0)
+        logger.debug("记忆检索: chat=%d 扫描=%d 命中注入=%d 耗时=%.1fms",
+                     chat_id, len(all_memories), len(top), (time.perf_counter() - _t0) * 1000.0)
+    except Exception:
+        pass
     return result
 
 
@@ -364,6 +382,7 @@ def search_msglog(chat_id: int, query: str, limit: int = 10, max_scan: int = 500
     if not path.exists():
         return ""
 
+    _t0 = time.perf_counter()
     try:
         import json
         lines = _read_tail_lines(path, max_scan)
@@ -421,6 +440,11 @@ def search_msglog(chat_id: int, query: str, limit: int = 10, max_scan: int = 500
             return ""
 
         # 格式化输出：映射 user_id → 名字
+        try:
+            from core.trace import record
+            record("message_retrieval", (time.perf_counter() - _t0) * 1000.0)
+        except Exception:
+            pass
         return _format_msglog_entries(result, chat_id)
 
     except Exception:
