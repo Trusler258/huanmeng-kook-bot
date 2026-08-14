@@ -84,6 +84,8 @@ class PluginManager:
         if not ok:
             return False, err
         rec = self._records[name]
+        if rec.ctx is None:
+            rec.ctx = PluginContext(name, rec.manifest, self.bus)
 
         if rec.manifest.runtime == RUNTIME_LUA:
             try:
@@ -110,7 +112,6 @@ class PluginManager:
             return False, rec.error
 
         rec.module = module
-        rec.ctx = PluginContext(name, rec.manifest, self.bus)
         try:
             rec.instance = classes[0](rec.ctx)
         except Exception as e:
@@ -182,6 +183,7 @@ class PluginManager:
                     await res
             if rec.ctx is not None:
                 rec.ctx.cleanup()
+            self._cleanup_instance(rec)
             rec.state = STATE_DISABLED
             return True, ""
         except asyncio.CancelledError:
@@ -189,6 +191,17 @@ class PluginManager:
         except Exception as e:
             await self._mark_error(name, e)
             return False, rec.error
+
+    def _cleanup_instance(self, rec: PluginRecord) -> None:
+        """清理 Lua 沙箱自身的定时器（Python 插件实例无 cleanup 则跳过）。"""
+        inst = getattr(rec, "instance", None)
+        if inst is not None and inst is not getattr(rec, "ctx", None):
+            cleanup = getattr(inst, "cleanup", None)
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception as e:
+                    logger.warning("插件 %s 实例清理失败: %s", rec.manifest.name, e)
 
     async def reload(self, name: str) -> tuple[bool, str]:
         """热重载：禁用 → 卸载 → 重新发现/加载/启用。"""
@@ -215,6 +228,7 @@ class PluginManager:
                     await res
             if rec.ctx is not None:
                 rec.ctx.cleanup()
+            self._cleanup_instance(rec)
             await self.bus.publish(EVENT_PLUGIN_UNLOADED, {"name": name})
             self._records.pop(name, None)
             logger.info("Plugin 已卸载: %s", name)

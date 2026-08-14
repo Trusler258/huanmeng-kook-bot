@@ -32,3 +32,6 @@ playwright>=1.40.0
 sqlalchemy>=2.0.0
 alembic>=1.13.0
 aiosqlite>=0.20.0
+
+# === Huanmeng 2.0 Lua Plugin Sandbox ===
+lupa>=2.8
