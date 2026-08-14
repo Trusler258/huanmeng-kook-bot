@@ -357,11 +357,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if related_memories:
         extra_info_parts.append(related_memories)
 
+    # Phase 6 Part4：msglog 回溯结果按 conversation 预算截断，防止把上下文挤爆
     if not related_memories or len(related_memories) < 300:
         try:
             with _trace_span("message_retrieval"):
                 msglog_context = get_msglog_context(msg_content, ctx.get_context(chat_id), chat_id)
             if msglog_context:
+                from core.context_builder import truncate as _budget_truncate
+                from core.context_builder import DEFAULT_BUDGETS
+                msglog_context = _budget_truncate(msglog_context, DEFAULT_BUDGETS["conversation"])
                 extra_info_parts.append(msglog_context)
         except Exception:
             pass
@@ -548,6 +552,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     msg_content, sender_name, user_id, chat_id, is_group
                 )
             if search_result:
+                from core.context_builder import truncate as _budget_truncate
+                from core.context_builder import DEFAULT_BUDGETS
+                search_result = _budget_truncate(search_result, DEFAULT_BUDGETS["tool_result"])
                 extra_info_parts.append(f"【搜索结果（必须基于此回答，不要编造）】\n{search_result}")
                 logger.info("自动搜索结果已注入 (%d字)", len(search_result))
         except Exception as _se:
