@@ -33,3 +33,6 @@ temp/
 
 # 运行时日志
 logs/
+
+# 阶段备份
+backup/
