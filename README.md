@@ -1,4 +1,4 @@
-# kook-lyric-bot
+# huanmeng-kook-bot
 
 > A highly customizable, LLM-powered group chat bot for the KOOK voice & text platform. Built on `khl.py` with native KMarkdown support, cross-platform real-time lyric synchronization, multi-modal image recognition, and a modular plugin system. The default persona is only an example; the entire character, reply style, and permissions are fully user-defined.
 
@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-green" /></a>
-  <a href="#"><img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-8B5CF6" /></a>
+  <a href="#"><img alt="Version" src="https://img.shields.io/badge/version-v2.0.0-8B5CF6" /></a>
   <a href="https://github.com/khl-projects-dev/khl.py"><img alt="Adapter" src="https://img.shields.io/badge/adapter-khl.py%20%28KOOK%29-6C5CE7" /></a>
   <a href="https://platform.deepseek.com/"><img alt="LLM Provider" src="https://img.shields.io/badge/LLM-DeepSeek%20API-00BFFF" /></a>
 </p>
@@ -139,8 +139,8 @@ If you are deploying for the first time, please read the full platform-specific 
 ### Step 1: Clone & install dependencies
 
 ```bash
-git clone <your-fork-url> kook-lyric-bot
-cd kook-lyric-bot
+git clone <your-fork-url> huanmeng-kook-bot
+cd huanmeng-kook-bot
 
 # Core dependencies
 pip install -r requirements.txt
@@ -210,7 +210,7 @@ Full reporter installation instructions per platform are in:
 ## PROJECT STRUCTURE
 
 ```
-kook-lyric-bot/
+huanmeng-kook-bot/
 ├── main.py                     Entry: arg parse, signal handlers, asyncio loop
 ├── bot.py                      HuanmengBot class: initialize khl client, 14-step pipeline, TCP servers, scheduled tasks
 ├── requirements.txt            Core Python dependency pinning (khl.py, OpenAI SDK, Playwright, ddgs, toml, dotenv)

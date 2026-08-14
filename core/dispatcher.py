@@ -41,7 +41,7 @@ class EventDispatcher:
         try:
             _raw_type = getattr(msg, 'type', None)
             _raw_content = getattr(msg, 'content', None)
-            logger.debug("dispatch 入口: type=%s content=%r", _raw_type, _raw_content[:80] if _raw_content else None)
+            logger.debug("dispatch 入口: type=%s content=%r", _raw_type, _raw_content if _raw_content else None)
             await self._dispatch_inner(msg)
         except Exception as e:
             import traceback
@@ -164,9 +164,9 @@ class EventDispatcher:
                 card_imgs = EventDispatcher._extract_card_images(content)
             except Exception:
                 card_imgs = []
-            if card_imgs:
-                logger.info("🧩 CARD 消息解析到 %d 张图片 (attachments=%d, theme_json=%s)",
-                            len(card_imgs), len(image_urls), content[:40].replace("\n", " "))
+            # 只要是卡片消息就打印完整 JSON，便于排查解析不到图片/视频的情况
+            logger.info("🧩 CARD 消息解析到 %d 张图片 (attachments=%d, card_json=%r)",
+                        len(card_imgs), len(image_urls), content)
             # 去重合并保持顺序
             _seen: set[str] = set()
             merged: list[str] = []
@@ -230,10 +230,10 @@ class EventDispatcher:
         self._msg_count += 1
 
         logger.info(
-            "📩 消息 #%d | type=%s | imgs=%d | quoted_imgs=%d | from=%s(%s) | chat=%s | group=%s | content='%s...'",
+            "📩 消息 #%d | type=%s | imgs=%d | quoted_imgs=%d | from=%s(%s) | chat=%s | group=%s | content=%r",
             self._msg_count, msg_type, len(image_urls), len(quoted_image_urls),
             sender_name, user_id_str, chat_id, is_group,
-            content[:30].replace("\n", " "),
+            content,
         )
 
         # ── 预设昵称覆盖 ──
@@ -441,6 +441,11 @@ class EventDispatcher:
             #    无 modules 字段，会自然跳过。
             if "modules" in node:
                 _walk(node.get("modules", []))
+            # ══ 递归 elements 字段：container 里可能直接嵌 image 元素（
+            #    KOOK 包装图片消息的结构：{"type":"container","elements":[{type:image,...}]}），
+            #    此分支专门处理这种 elements 内嵌图片的情况。
+            if "elements" in node:
+                _walk(node.get("elements", []))
 
         # 入口：可能是 JSON 字符串（CARD 消息 content）、单个 card dict、或 card list
         if isinstance(card_payload, str):
