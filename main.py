@@ -63,7 +63,7 @@ def main():
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  幻梦 KOOK Bot  v1.0.0")
+    print("  幻梦 KOOK Bot  v2.0.0")
     print("  Powered by khl.py")
     print("  私聊 · 字频道 · 频道")
     print("=" * 55)
