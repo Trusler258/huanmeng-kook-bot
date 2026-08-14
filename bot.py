@@ -8,6 +8,7 @@ Bot 核心类（KOOK 版）
 
 import asyncio
 import sys
+import time
 from typing import TYPE_CHECKING, Optional
 
 from khl import Bot, MessageTypes, Message
@@ -23,6 +24,27 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger("bot")
+
+# 卡片按钮防重复点击：key = f"{msg_id}:{value}" → 最近处理时间
+# 同一张卡片同一按钮在窗口内只响应一次，避免 update 等长任务被重复触发
+_BTN_HANDLED: dict[str, float] = {}
+_BTN_DEDUP_WINDOW = 600  # 秒；覆盖 update 长任务窗口
+
+
+def _btn_dedup(key: str) -> bool:
+    """返回 False 表示应忽略本次点击（重复），True 表示放行。"""
+    if not key:
+        return True
+    now = time.time()
+    last = _BTN_HANDLED.get(key)
+    if last and now - last < _BTN_DEDUP_WINDOW:
+        return False
+    _BTN_HANDLED[key] = now
+    # 清理过期条目，防止无界增长
+    if len(_BTN_HANDLED) > 500:
+        for k in [k for k, t in _BTN_HANDLED.items() if now - t >= _BTN_DEDUP_WINDOW]:
+            _BTN_HANDLED.pop(k, None)
+    return True
 
 
 class HuanmengBot:
@@ -152,19 +174,52 @@ class HuanmengBot:
                 value = str(body.get("value", "")).strip()
                 user_id = str(body.get("user_id", ""))
                 target_id = str(body.get("target_id", ""))
+                msg_id = str(body.get("msg_id", ""))
                 if not value:
                     return
+
+                # 防二次点击：同一消息同一按钮窗口内只执行一次
+                dedup_key = f"{msg_id}:{value}"
+                if not _btn_dedup(dedup_key):
+                    info("按钮重复点击已忽略 key=%s value=%s", dedup_key, value[:40])
+                    return
+
                 from core.config import get_config
                 from modules.commands import handle_command
                 from services.sender import send_by_chat_type
+                from utils.username import get_or_resolve_username
                 cfg = get_config()
                 is_group = bool(target_id)
                 chat_id = int(target_id) if target_id.isdigit() else 0
                 uid = int(user_id) if user_id.isdigit() else 0
-                info("卡片按钮点击 value=%s user=%s target=%s", value[:40], user_id, target_id)
+
+                # 解析点击人昵称（失败则退回 user_id）
+                nickname = user_id
+                try:
+                    resolved = await get_or_resolve_username(user_id)
+                    if resolved:
+                        nickname = resolved
+                except Exception:
+                    pass
+
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                info("卡片按钮点击 value=%s user=%s(%s) target=%s", value[:40], user_id, nickname, target_id)
+
                 result = await handle_command(value, uid, chat_id, "", is_group, cfg.bot_qq)
+
+                # 点击记录：时间戳 / 点击人昵称 / 频道ID / 按钮值 / 按钮返回内容
+                detail = (
+                    f"**按钮点击记录**\n"
+                    f"- 时间戳：`{ts}`\n"
+                    f"- 点击人：`{nickname}`（ID `{user_id}`）\n"
+                    f"- 频道 ID：`{target_id or '私聊'}`\n"
+                    f"- 按钮值：`{value}`\n"
+                    f"- 按钮返回内容：`{result or '(无)'}`"
+                )
                 if result:
-                    await send_by_chat_type(str(result), chat_id, is_group, user_id if not is_group else None)
+                    await send_by_chat_type(f"{detail}\n\n---\n{result}", chat_id, is_group, user_id if not is_group else None)
+                else:
+                    await send_by_chat_type(detail, chat_id, is_group, user_id if not is_group else None)
             except Exception as e:
                 error("卡片按钮回调异常: %s", e, exc_info=True)
 

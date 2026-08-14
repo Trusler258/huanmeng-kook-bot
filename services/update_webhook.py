@@ -24,16 +24,19 @@ _PORT = int(os.environ.get("BOT_UPDATE_PORT", "62004"))
 
 
 def _extract_commits(body: dict) -> list[str]:
-    """从 GitHub push payload 提取提交摘要（每行一条）"""
+    """从 GitHub push payload 提取提交摘要（每行一条，纯 message 不含作者）。
+
+    分级逻辑依赖 commit message 首行的 [FEAT]/[BUGFIX]/[CORE]/[P0] 前缀，
+    作者信息会干扰关键词兜底匹配，故此处只保留 message 纯文本。
+    """
     out: list[str] = []
     for c in body.get("commits", []) or []:
         if not isinstance(c, dict):
             continue
         msg = (c.get("message") or "").strip().splitlines()
         first = msg[0].strip() if msg else ""
-        author = (c.get("author") or {}).get("name", "") if isinstance(c.get("author"), dict) else ""
         if first:
-            out.append(f"{first[:200]}" + (f"（{author}）" if author else ""))
+            out.append(first[:200])
     if not out:
         # 兼容只有 sha 的简化通知
         msg = (body.get("message") or "").strip().splitlines()

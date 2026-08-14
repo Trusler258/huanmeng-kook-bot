@@ -174,7 +174,19 @@ def _render_perf_recovered(avg_ms: float, window_n: int) -> str:
 
 # ── GitHub 更新卡片 ─────────────────────────────────────────
 
+def _action_button(text: str, value: str, theme: str = "primary") -> dict:
+    """KOOK action-group 按钮：click=return-val，value 作为指令回传"""
+    return {
+        "type": "button",
+        "theme": theme,
+        "value": value,
+        "click": "return-val",
+        "text": {"type": "plain-text", "content": text},
+    }
+
+
 def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[str]) -> str:
+    """普通更新提示卡片（保留了，但普通级现在默认不发，仅 P0 用）"""
     color = "#f0ad4e"  # 黄
     modules = [_header("KOOK BOT · 检测到新版本")]
     rows = [("远程版本", remote_sha[:7])]
@@ -192,6 +204,48 @@ def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[st
             modules.append(_context(f"… 共 {len(commits)} 个提交"))
     modules.append(_divider())
     modules.append(_context("回复 .update 拉取并应用更新 · .up 查看完整更新日志"))
+    modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
+    return _card(color, modules)
+
+
+def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
+    """P0 级核心漏洞修复提醒卡片：高优先级 + 操作按钮。
+
+    按钮 value 按指令回传：
+      .update check  → 先检查并展示待更新 diff
+      .update        → 确认后应用更新
+    符合"P0 是必须更新但非强制，检测到先 check 再确认"策略。
+    """
+    color = "#d9534f"  # 红（P0 高优先级）
+    modules = [_header("KOOK BOT · P0 核心漏洞修复")]
+
+    rows = [("远程版本", remote_sha[:7])]
+    if commits:
+        rows.append(("涉及提交", f"{len(commits)} 个"))
+    modules.append(_section(rows))
+    modules.append(_divider())
+
+    modules.append({"type": "section", "text": {
+        "type": "kmarkdown",
+        "content": "**检测到 P0 级核心修复，建议尽快更新**\n"
+                   "（非强制，但涉及安全/核心漏洞，请优先处理）",
+    }})
+    if commits:
+        modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**更新内容**"}})
+        for c in commits[:5]:
+            modules.append(_context(f"`{c}`"))
+        if len(commits) > 5:
+            modules.append(_context(f"… 共 {len(commits)} 个提交"))
+    modules.append(_divider())
+
+    # 操作按钮：先查看更新，再确认应用
+    modules.append({
+        "type": "action-group",
+        "elements": [
+            _action_button("查看更新", ".update check", theme="primary"),
+            _action_button("确认更新", ".update", theme="danger"),
+        ],
+    })
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
     return _card(color, modules)
 
@@ -301,8 +355,33 @@ def _git_recent_commits(n: int = 6) -> list[str]:
     return []
 
 
+def _git_pending_commits(local_sha: str, remote_sha: str) -> list[str]:
+    """返回本地 HEAD 与远程 HEAD 之间新增的 commit message 纯文本（不含 SHA 前缀）。
+
+    用于分级：需读取 commit 首行原始消息，而非 --oneline 的含 SHA 格式，
+    以便 severity 模块识别 [FEAT]/[BUGFIX]/[CORE]/[P0] 前缀。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", f"{local_sha}..{remote_sha}", "--format=%s"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        if r.returncode == 0:
+            return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception as e:
+        logger.debug("git log 获取 pending commits 失败: %s", e)
+    return []
+
+
 async def check_github_update() -> None:
-    """检查远程 SHA，与本地不同则发更新卡片（去重：仅当 SHA 变化时发）"""
+    """检查远程 SHA，与本地不同则按更新分级处理。
+
+    普通级（FEAT/BUGFIX/CORE）：仅记录检查状态，不主动发卡片；
+    用户手动 .update 时才应用。
+    P0 级：立即发高优先级卡片 + 按钮提醒（先 check 再确认）。
+    去重：仅当 SHA 变化时处理。
+    """
     cfg = load_cfg()
     if not cfg.get("update_enabled", True) or not cfg.get("target_channels"):
         return
@@ -313,22 +392,35 @@ async def check_github_update() -> None:
     if remote == local:
         return  # 无新提交
     if cfg.get("last_notified_sha") == remote:
-        return  # 已通知过这个版本
+        return  # 已处理过这个版本
 
-    commits = _git_recent_commits()
-    card = _render_update_card(local, remote, commits)
-    await _send_to_targets(card)
+    from modules._auto_update.severity import classify_commits, is_p0
+    pending = _git_pending_commits(local, remote)
+    level = classify_commits(pending)
+
+    if is_p0(level):
+        card = _render_p0_update_card(remote, pending)
+        await _send_to_targets(card)
+        logger.warning("P0 更新通知已发: local=%s remote=%s commits=%d",
+                       local[:7], remote[:7], len(pending))
+    else:
+        # 普通级：仅记录，不发卡片（用户 .update 时再应用）
+        logger.info("检测到普通级更新(%s): local=%s remote=%s commits=%d，不主动通知",
+                    level, local[:7], remote[:7], len(pending))
 
     cfg["last_notified_sha"] = remote
     save_cfg(cfg)
-    logger.info("更新通知已发: local=%s remote=%s", local[:7], remote[:7])
 
 
 async def notify_github_update(remote_sha: str, commits: list[str] | None = None) -> bool:
     """GitHub Action webhook 触发的即时更新通知（推送即发，无需轮询）
-    remote_sha: 远程新版本 SHA；commits: 新增提交的一行摘要列表
-    去重：last_notified_sha 相同则不重复推送。
-    返回 True=已发送，False=跳过/失败
+
+    remote_sha: 远程新版本 SHA；commits: 新增提交的一行摘要列表（纯 message，不含作者）。
+    按更新分级处理：
+      - 普通级（FEAT/BUGFIX/CORE）：仅记录，不主动发卡片。
+      - P0 级：发「P0 核心漏洞修复」卡片 + 按钮（先 check 再确认）。
+    去重：last_notified_sha 相同则不重复处理。
+    返回 True=已发送/已记录，False=跳过/失败。
     """
     cfg = load_cfg()
     if not cfg.get("update_enabled", True) or not cfg.get("target_channels"):
@@ -336,14 +428,21 @@ async def notify_github_update(remote_sha: str, commits: list[str] | None = None
     if not remote_sha:
         return False
     if cfg.get("last_notified_sha") == remote_sha:
-        return False  # 已通知过这个版本
+        return False  # 已处理过这个版本
 
-    card = _render_update_card(None, remote_sha, commits or [])
-    await _send_to_targets(card)
+    from modules._auto_update.severity import classify_commits, is_p0
+    level = classify_commits(commits or [])
+    if is_p0(level):
+        card = _render_p0_update_card(remote_sha, commits or [])
+        await _send_to_targets(card)
+        logger.warning("P0 更新通知已发(webhook): remote=%s commits=%d",
+                       remote_sha[:7], len(commits or []))
+    else:
+        logger.info("检测到普通级更新(%s)(webhook): remote=%s commits=%d，不主动通知",
+                    level, remote_sha[:7], len(commits or []))
 
     cfg["last_notified_sha"] = remote_sha
     save_cfg(cfg)
-    logger.info("更新通知已发(webhook): remote=%s commits=%d", remote_sha[:7], len(commits or []))
     return True
 
 
