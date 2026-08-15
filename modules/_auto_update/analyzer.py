@@ -101,7 +101,7 @@ def analyze_python(rel_path: str, content: str) -> FileAnalysis:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
-            sig = _format_signature([a.arg for a in node.bases])
+            sig = _format_signature([_base_name(b) for b in node.bases])
             fa.classes.append(PyItem(
                 kind="class", name=node.name, line=getattr(node, "lineno", 0),
                 signature=sig, decorators=_decorator_names(node.decorator_list),
@@ -147,6 +147,22 @@ def _format_signature(args: list[str], vararg=None, kwarg=None) -> str:
     if kwarg:
         parts.append(f"**{kwarg.arg if hasattr(kwarg, 'arg') else kwarg}")
     return f"({', '.join(parts)})"
+
+
+def _base_name(node) -> str:
+    """安全提取 class 基节点名，兼容 Name / Attribute / Subscript / Call 等 AST 节点。"""
+    import ast as _ast
+    if isinstance(node, _ast.Name):
+        return node.id
+    if isinstance(node, _ast.Attribute):
+        return _base_name(node.value) + "." + node.attr
+    if isinstance(node, _ast.Subscript):
+        return _base_name(node.value) + "[...]"
+    if isinstance(node, _ast.Call):
+        return _base_name(node.func) + "(...)"
+    if isinstance(node, _ast.Tuple):
+        return ", ".join(_base_name(e) for e in node.elts)
+    return "<base>"
 
 
 def _decorator_names(decorators: list) -> list[str]:
