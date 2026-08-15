@@ -1113,7 +1113,7 @@ def _parse_reply(
                     data = json.loads(fixed)
                     replies = data.get("replies", [])
                     if isinstance(replies, list) and replies:
-                        fav_change = safe_fav(data.get("fav", 0))
+                        fav_change = data.get("fav", 0)  # 与主成功路径一致，避免未定义 safe_fav
                         calls = data.get("calls") or []
                         face_cq = data.get("face")
                         mood = data.get("mood", "")
@@ -1164,6 +1164,33 @@ def _parse_reply(
         except Exception:
             pass
         return [], 0, [], "", "", None, "", None, None, "user", {}, None
+
+
+def normalize_final_reply(raw: str) -> Optional[str]:
+    """Phase 20 Hotfix B：统一的「最终回复安全边界」归一化入口。
+
+    LLM output → normalize → Reply → delivery。任何情况下都不允许把原始 JSON /
+    ```json 围栏原文直接送进发送层：
+
+    - 入参为空 → 返回 None（调用方需提供 fallback）。
+    - 纯文本（非 JSON）→ 原样返回（正常 Agent 回复放行）。
+    - JSON / ```json 包裹 → 复用 _parse_reply 提取 replies（含截断修复路径）；
+      提取成功 → 拼接 replies 返回；提取失败 → 返回 None。
+    - 返回 None 一律表示「无法得到有效回复」，由调用方走 persona fallback 或
+      工具成功结果兜底，绝不把原始 JSON 泄漏给用户。
+    """
+    if not raw or not raw.strip():
+        return None
+    text = raw.strip().lstrip('\ufeff')
+    # 去掉 ```json 围栏后判断是否看起来是 JSON
+    stripped = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE).strip()
+    stripped = re.sub(r'\s*```$', '', stripped)
+    # 纯文本：直接放行（不强制解析，避免误伤正常 Agent 回复）
+    if not (stripped.startswith('{') or stripped.startswith('[')):
+        return text
+    replies, *_ = _parse_reply(text, quiet=True)
+    out = "\n".join(str(r) for r in replies if str(r).strip()).strip()
+    return out or None
 
 
 def _build_messages(

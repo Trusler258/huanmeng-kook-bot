@@ -74,6 +74,15 @@ class RequestContext:
     # 阶段耗时样本（线程安全度低，仅单请求内使用；多 async 任务共享时用锁）
     _phases: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
 
+    # ── Phase 20 Hotfix B：区分 wall duration 与嵌套 child duration ──
+    # _phases[phase] 的 total_ms 是「该阶段所有样本之和」，会包含嵌套子阶段重复累加
+    #（例如 plan_step 包裹 tool → tool 又被单独记录一次）。为让 trace_summary 不被误解，
+    # 额外记录每个 phase 的「最外层 span 墙钟耗时」：
+    #   _phase_wall[phase] = 该 phase 作为最外层 span 时的一次实际持续时间。
+    # 嵌套 span（栈内已有其他 span）不写 _phase_wall，避免把子阶段当 wall。
+    _span_stack: list[tuple[str, float]] = field(default_factory=list)
+    _phase_wall: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+
     # 关键阶段打点顺序，便于还原时间线
     events: list[tuple[str, float]] = field(default_factory=list)
 
@@ -146,17 +155,28 @@ class RequestContext:
         self._phases[phase].append(elapsed_ms)
         self.events.append((phase, elapsed_ms))
 
+    def record_phase_wall(self, phase: str, elapsed_ms: float) -> None:
+        """记录该 phase 作为最外层 span 的墙钟耗时（用于区分 wall 与嵌套 child）。"""
+        self._phase_wall[phase].append(elapsed_ms)
+
     def phases(self) -> dict[str, list[float]]:
         """返回各阶段耗时样本（只读视图）。"""
         return {k: list(v) for k, v in self._phases.items()}
 
     def summary(self) -> dict:
-        """各阶段耗时汇总（样本数 + 总和 + P50/P95/P99 毫秒）。"""
+        """各阶段耗时汇总（样本数 + 总和 + wall + P50/P95/P99 毫秒）。
+
+        Phase 20 Hotfix B：`total_ms` 是「该阶段所有样本之和（含嵌套子阶段重复累加）」，
+        `wall_ms` 是「该阶段作为最外层 span 的实际墙钟时间」。两者语义不同，不可直接相加。
+        请求整体墙钟以 trace_summary 的 `total_ms` 为准。
+        """
         out = {}
         for phase, samples in self._phases.items():
+            wall = self._phase_wall.get(phase, [])
             out[phase] = {
                 "count": len(samples),
                 "total_ms": round(sum(samples), 2),
+                "wall_ms": round(sum(wall), 2),
                 "p50_ms": round(_percentile(samples, 50), 2),
                 "p95_ms": round(_percentile(samples, 95), 2),
                 "p99_ms": round(_percentile(samples, 99), 2),
@@ -266,6 +286,44 @@ class RequestContext:
             return "slow_request"
         return "normal"
 
+    def stage_breakdown(self) -> dict:
+        """Phase 20 Hotfix B：把各阶段归类到「性能归属」并给出整体 wall。
+
+        归类的目的是让性能日志能明确说清"慢在哪一层"，而不是笼统说"LLM 性能下降"：
+          queue       ← queue_wait（排队）
+          llm         ← llm（主生成 / 各阶段 span llm）
+          search_tool ← search / tool / tool_call（搜索与工具）
+          delivery    ← kook_send / delivery / response_policy（发送）
+          other       ← 其余阶段
+          total_wall  ← 请求整体墙钟（唯一可相加的权威值）
+        """
+        summary = self.summary()
+        buckets = {"queue": 0.0, "llm": 0.0, "search_tool": 0.0,
+                   "delivery": 0.0, "other": 0.0}
+        search_tool_keys = {"search", "tool", "tool_call"}
+        llm_keys = {"llm", "json_parse"}
+        delivery_keys = {"kook_send", "delivery", "response_policy"}
+        queue_keys = {"queue_wait"}
+        for phase, s in summary.items():
+            # 优先用墙钟（最外层 span），没有墙钟（手动 record）再用累计 total。
+            v = s.get("wall_ms") or s.get("total_ms") or 0.0
+            if phase in queue_keys:
+                buckets["queue"] += v
+            elif phase in llm_keys:
+                buckets["llm"] += v
+            elif phase in search_tool_keys:
+                buckets["search_tool"] += v
+            elif phase in delivery_keys:
+                buckets["delivery"] += v
+            else:
+                buckets["other"] += v
+        buckets["total_wall"] = self.total_ms()
+        # 定位「最慢归属」：忽略 other 与 total_wall，取五个真实归属中最大者。
+        cands = {k: buckets[k] for k in ("queue", "llm", "search_tool", "delivery", "other")}
+        dominant = max(cands, key=lambda k: cands[k]) if any(cands.values()) else "other"
+        buckets["dominant"] = dominant if cands.get(dominant, 0) >= 1.0 else "other"
+        return {k: round(v, 2) if isinstance(v, float) else v for k, v in buckets.items()}
+
 
 class Span:
     """阶段计时上下文管理器：with span('llm') as s: ..."""
@@ -274,14 +332,23 @@ class Span:
         self._ctx = ctx
         self._phase = phase
         self._start = 0.0
+        self._nested = False
 
     def __enter__(self) -> "Span":
         self._start = time.perf_counter()
+        # Phase 20 Hotfix B：栈里已有打开的 span → 说明本 span 是嵌套子阶段，
+        # 写入 wall 会重复累加，故只在最外层 span 时记录 wall。
+        self._nested = bool(self._ctx._span_stack)
+        self._ctx._span_stack.append((self._phase, self._start))
         return self
 
     def __exit__(self, *exc) -> bool:
         elapsed = (time.perf_counter() - self._start) * 1000.0
+        if self._ctx._span_stack:
+            self._ctx._span_stack.pop()
         self._ctx.record(self._phase, elapsed)
+        if not self._nested:
+            self._ctx.record_phase_wall(self._phase, elapsed)
         metrics_record(self._phase, elapsed)  # 同时写入全局统计
         return False
 
@@ -423,6 +490,12 @@ def trace_summary() -> dict:
     """返回当前请求的完整 trace_summary（无上下文返回空 dict）。"""
     ctx = _current_ctx.get()
     return ctx.trace_summary() if ctx is not None else {}
+
+
+def stage_breakdown() -> dict:
+    """返回当前请求的性能归属分解（queue/llm/search_tool/delivery/other/total_wall/dominant）。"""
+    ctx = _current_ctx.get()
+    return ctx.stage_breakdown() if ctx is not None else {}
 
 
 class _NoopSpan:

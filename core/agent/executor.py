@@ -378,8 +378,31 @@ class AgentExecutor:
                 temperature=0.4, timeout=20.0,
             )
             record_llm()
+            # Phase 20 Hotfix B：统一最终回复安全边界。
+            # LLM output → normalize → Reply → delivery。禁止原始 JSON / ```json 原文泄漏。
             if raw and raw.strip():
-                return raw.strip()[:3000]
+                from services.llm import normalize_final_reply
+                normalized = normalize_final_reply(raw)
+                if normalized:
+                    try:
+                        from core.trace import record_final_flag
+                        record_final_flag("final_reply_ok")
+                    except Exception:
+                        pass
+                    return normalized[:3000]
+                # 解析失败：记录标记，按「工具成功优先」处理，绝不把原始 JSON 发给用户。
+                try:
+                    from core.trace import record_final_flag
+                    record_final_flag("final_llm_failed")
+                    record_final_flag("final_reply_fallback")
+                except Exception:
+                    pass
+                logger.warning("Agent 最终回复 JSON 解析失败，走 fallback")
+                tool_done = _extract_tool_success_reminder(accumulated)
+                if tool_done:
+                    return tool_done
+                from core.persona import json_parse_fallback
+                return json_parse_fallback()
         except Exception as e:
             logger.warning("Agent 最终总结 LLM 失败: %s", e)
         # 回退：给 goal + 原始信息片段
@@ -394,6 +417,33 @@ class AgentExecutor:
             info = "\n\n".join(accumulated)[:1200]
             return f"{plan.goal[:200]}\n\n{info}\n\n{fallback}"
         return fallback
+
+
+def _extract_tool_success_reminder(accumulated: list[str]) -> Optional[str]:
+    """Phase 20 Hotfix B：最终回复解析失败时，若 Agent 的工具已成功完成
+    （例如 write_code 已把文件发出去），则返回对该工具成功结果的自然告知，
+    保留任务成功状态，避免告诉用户「任务失败」。
+
+    accumulated 条目形如 "[工具:write_code]\\n已发送 xxx.py"。此处只认成功结果
+    （不含失败/未绑定/出错标记），并把工具的原始成功结果作为事实陈述返回，
+    不做任何人格话术硬编码。
+    """
+    if not accumulated:
+        return None
+    import re as _re
+    for entry in reversed(accumulated):
+        m = _re.match(r'^\[工具:([^\]]+)\]\s*(.*)$', entry, _re.DOTALL)
+        if not m:
+            continue
+        tool, content = m.group(1).strip(), (m.group(2) or "").strip()
+        if not content:
+            continue
+        if any(k in content for k in ("失败", "未绑定", "出错", "超时", "denied", "DENY")):
+            continue
+        # write_code 等"产出型"工具成功 → 直接陈述其结果（文件已发送）。
+        if tool in ("write_code", "code_write", "file") or content.startswith("已发送"):
+            return content[:800]
+    return None
 
 
 # ── 全局单例 ────────────────────────────────────────────────

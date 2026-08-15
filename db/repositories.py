@@ -237,6 +237,9 @@ class SearchCacheRepository(BaseRepository):
     async def put(self, query: str, result: dict, engine: str = "default",
                   ttl_seconds: int = 3600) -> SearchCacheEntry:
         now = _now_ms()
+        # 缓存按 (query, engine) 唯一：写入前清掉旧条目，避免同 key 累积出多条，
+        # 否则 find 可能命中陈旧的已过期行导致缓存失效/不一致。
+        await self.delete_where(query=query, engine=engine)
         return await self.create(
             query=query, engine=engine, result=result,
             created_at=now, expires_at=now + ttl_seconds * 1000,

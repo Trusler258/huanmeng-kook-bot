@@ -49,6 +49,17 @@ _perf_state_lock = Lock()
 # 上次性能检查时间（避免每次调用都触发检查）
 _last_perf_check = 0.0
 
+# Phase 20 Hotfix B：最近一次请求的性能归属（由 core.logger.log_trace_summary 上报），
+# 用于在降级卡片里标注"慢的是哪一层（queue/llm/search_tool/delivery）"，避免笼统归因 LLM。
+_last_stage: dict = {}  # {queue,llm,search_tool,delivery,other,total_wall,dominant}
+
+
+def note_request_stage(stage: dict) -> None:
+    """缓存最近一次请求的性能归属分解（供降级卡片展示）。"""
+    global _last_stage
+    if isinstance(stage, dict) and stage:
+        _last_stage = dict(stage)
+
 
 # ── 配置读写 ────────────────────────────────────────────────
 
@@ -149,7 +160,7 @@ def _render_perf_degraded(avg_ms: float, p50_ms: float, p95_ms: float, p99_ms: f
                           timeout_rate: float, window_n: int, threshold: float) -> str:
     color = "#d9534f"  # 红
     modules = [
-        _header("KOOK BOT · LLM 服务降级"),
+        _header("KOOK BOT · 服务降级"),
         _section([
             ("服务", "LLM API"),
             ("状态", "已降级"),
@@ -159,6 +170,17 @@ def _render_perf_degraded(avg_ms: float, p50_ms: float, p95_ms: float, p99_ms: f
             ("超时率", f"{timeout_rate * 100:.0f}%"),
             ("统计窗口", f"最近 {window_n} 次调用"),
         ]),
+    ]
+    # Phase 20 Hotfix B：标注慢的归属层，避免把 search/tool 慢误归因到 LLM。
+    if _last_stage:
+        _sb = _last_stage
+        modules.append(_section([
+            ("当前瓶颈归属", _sb.get("dominant", "unknown")),
+            ("queue / llm", f"{_sb.get('queue', 0)} / {_sb.get('llm', 0)} ms"),
+            ("search_tool", f"{_sb.get('search_tool', 0)} ms"),
+            ("delivery / wall", f"{_sb.get('delivery', 0)} / {_sb.get('total_wall', 0)} ms"),
+        ]))
+    modules += [
         _divider(),
         _context("建议：回复 .sys 查看主机状态；.cost 查看 API 消耗；仍异常可 .restart 重启恢复。"),
         _context(f"检测时间 {time.strftime('%H:%M')} · 恢复后自动通知"),

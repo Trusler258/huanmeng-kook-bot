@@ -80,7 +80,12 @@ class ToolRuntime:
             result = await self._exec_once(req)
             if result.is_success() or result.status == CANCELLED or result.status == DENIED:
                 return result
-            # 可重试：失败/超时
+            # Phase 20 Hotfix B：超时不重试。同一 tool+同参数超时通常意味着该操作
+            # 超出时间预算，原样重试只会"无意义重复"（如 search_web 同 query 重复 15s）。
+            # 由上层（Agent）对 TIMEOUT 做 fallback/总结，避免二次踩坑。
+            if result.status == TIMEOUT:
+                return result
+            # 可重试：失败（异常/错误）
             if attempt >= retry_budget:
                 return result
             attempt += 1

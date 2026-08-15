@@ -12,6 +12,34 @@ from typing import Any
 
 logger = logging.getLogger("huanmeng.tools")
 
+# ── Phase 20 Hotfix B：搜索词优化结果缓存 ────────────────────
+# 同一 raw query 的优化结果只计算一次并复用。ToolRuntime 对同 query 重试时
+# 直接命中缓存，不再重复调用 keyword optimization LLM（见 _optimize_search_keywords）。
+_OPT_CACHE: dict[str, tuple[float, str]] = {}
+_OPT_CACHE_TTL = 600.0      # 秒；超时后允许重新优化
+_OPT_CACHE_MAX = 512        # 上限，防止无界增长
+
+
+def _opt_cache_get(query: str):
+    import time as _t
+    hit = _OPT_CACHE.get(query)
+    if hit and (_t.time() - hit[0]) < _OPT_CACHE_TTL:
+        return hit[1]
+    return None
+
+
+def _opt_cache_set(query: str, optimized: str) -> None:
+    # 空/空白 query 不缓存（不值得占用容量，且 get 侧也不会命中）
+    if not query or not query.strip():
+        return
+    import time as _t
+    _OPT_CACHE[query] = (_t.time(), optimized)
+    if len(_OPT_CACHE) > _OPT_CACHE_MAX:
+        for k in list(_OPT_CACHE):
+            if _t.time() - _OPT_CACHE[k][0] >= _OPT_CACHE_TTL:
+                _OPT_CACHE.pop(k, None)
+
+
 # ── 工具定义（OpenAI JSON Schema 格式）──────────────────────
 
 TOOLS: list[dict] = [
@@ -425,10 +453,17 @@ def _extract_input(text: str) -> str:
 
 
 async def _optimize_search_keywords(query: str) -> str:
-    """用 LLM 把用户口语转换为精炼搜索关键词"""
+    """用 LLM 把用户口语转换为精炼搜索关键词。
+    Phase 20 Hotfix B：同一 query 的优化结果走缓存复现，重试时不重复调用 LLM。"""
     # 短查询或纯英文/数字不优化
     if len(query) <= 3:
         return query
+
+    # 缓存命中：直接复用第一次生成的 optimized query（重试关键路径）
+    cached = _opt_cache_get(query)
+    if cached is not None:
+        logger.info("搜索词优化缓存命中(复用): '%s' → '%s'", query, cached)
+        return cached
 
     from services.llm import call_llm
     from core.config import get_config
@@ -458,6 +493,7 @@ async def _optimize_search_keywords(query: str) -> str:
             optimized = optimized.strip("\"'""''")
             if optimized and len(optimized) < len(query) * 3:
                 logger.info("搜索词优化: '%s' → '%s'", query, optimized)
+                _opt_cache_set(query, optimized)
                 return optimized
     except Exception as e:
         logger.debug("搜索词优化失败，用原文: %s", e)

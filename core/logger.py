@@ -279,7 +279,12 @@ def log_trace_summary():
             return
         parts = []
         for phase, s in sorted(summary.items()):
-            parts.append(f"{phase}={s['total_ms']}ms(x{s['count']})")
+            # Phase 20 Hotfix B：优先展示墙钟 wall_ms（最外层 span 的真实耗时），
+            # total_ms 是含嵌套子阶段的累计值，仅作参考，避免把嵌套累加误当 wall。
+            wall = s.get("wall_ms")
+            display = wall if wall else s["total_ms"]
+            suffix = f" (wall{wall})" if wall else ""
+            parts.append(f"{phase}={display}ms(x{s['count']}){suffix}")
         # Phase 6：慢请求分类 + LLM 调用数 + 工具明细
         severity = ctx.severity()
         tool_desc = ""
@@ -299,15 +304,31 @@ def log_trace_summary():
         base = f"[TRACE {ctx.trace_id}] total={ctx.total_ms()}ms severity={severity}" \
                f"{llm_desc}{tool_desc} | {', '.join(parts)}"
         get_logger().info(base)
+        # Phase 20 Hotfix B：性能归属分解，明确慢在哪一层（queue/llm/search_tool/delivery）。
+        stage_desc = ""
+        try:
+            _sb = ctx.stage_breakdown()
+            stage_desc = (f" | perf: queue={_sb['queue']}ms llm={_sb['llm']}ms "
+                          f"search_tool={_sb['search_tool']}ms delivery={_sb['delivery']}ms "
+                          f"other={_sb['other']}ms wall={_sb['total_wall']}ms "
+                          f"dominant={_sb['dominant']}")
+            # 上报给性能监控，供降级卡片标注瓶颈归属层。
+            try:
+                from services.notify_system import note_request_stage
+                note_request_stage(_sb)
+            except Exception:
+                pass
+        except Exception:
+            stage_desc = ""
         if severity == "very_slow_request":
             get_logger().warning(
-                "[VERY_SLOW %s] total=%sms 需重点排查 | %s%s", ctx.trace_id, ctx.total_ms(),
-                ", ".join(parts), llm_desc
+                "[VERY_SLOW %s] total=%sms 需重点排查 | %s%s%s", ctx.trace_id, ctx.total_ms(),
+                ", ".join(parts), llm_desc, stage_desc
             )
         elif severity == "slow_request":
             get_logger().warning(
-                "[SLOW %s] total=%sms | %s%s", ctx.trace_id, ctx.total_ms(),
-                ", ".join(parts), llm_desc
+                "[SLOW %s] total=%sms | %s%s%s", ctx.trace_id, ctx.total_ms(),
+                ", ".join(parts), llm_desc, stage_desc
             )
     except Exception:
         pass

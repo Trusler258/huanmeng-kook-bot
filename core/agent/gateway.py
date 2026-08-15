@@ -121,6 +121,15 @@ async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,
     ctx = get_context_mgr()
     cfg = get_config()
 
+    # Phase 20 Hotfix B：二道防线 —— 即使上游传入的 final_text 含 JSON/```json 原文，
+    # 也在此归一化为纯文本，绝不把原始 JSON 送进发送层。
+    from services.llm import normalize_final_reply
+    normalized = normalize_final_reply(final_text)
+    if normalized is None:
+        from core.persona import json_parse_fallback
+        normalized = json_parse_fallback()
+    final_text = normalized
+
     # 拆成可发送的句子（按换行/句号），避免一次性超长
     sentences = _split_sentences(final_text)
     if not sentences:
