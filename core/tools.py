@@ -139,7 +139,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "编写程序代码并发送文件给用户。用户让你写代码/做游戏/做网页/写脚本时必须调用此工具，不要只口头答应。",
+            "description": "编写程序代码并发送文件给用户。用户让你写代码/做游戏/做网页/写脚本时必须调用此工具，不要只口头答应。注意：本工具只生成代码并作为附件发送，不执行代码、不返回运行结果。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -339,15 +339,10 @@ async def _write_code(
         (tmp / fname).write_text(content, encoding="utf-8")
         logger.info("write_code: 写入 %s (%d 字节)", fname, len(content.encode("utf-8")))
 
-    # ── 编译 + 运行 ──
-    run_result = ""
-    cpp_files = sorted([f for f in files if f.endswith(".cpp")])
-    if cpp_files and language in ("c++", "cpp"):
-        try:
-            run_result = await _compile_and_run(tmp, cpp_files, group_id if is_group else user_id, is_group, description)
-        except Exception as e:
-            logger.warning("编译运行异常: %s", e)
-            run_result = f"[编译异常] {e}"
+    # ── Phase 20 Part5/6：生成代码与执行代码彻底分离 ──
+    # 本工具只负责「生成 → 写文件 → 作为附件发送」，绝不编译/运行任何代码。
+    # 执行代码(code.execute)属于 HIGH 风险，走独立入口且默认 DENY。
+    # 因此这里不再调用 _compile_and_run，避免 write_code 意外 spawn 进程。
 
     from services.sender import send_file
     send_msgs = []
@@ -364,8 +359,6 @@ async def _write_code(
         ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
         send_msgs.append(f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败")
 
-    if run_result:
-        send_msgs.append(run_result)
     return "\n".join(send_msgs)
 
 

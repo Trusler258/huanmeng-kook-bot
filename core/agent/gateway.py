@@ -15,8 +15,12 @@ import time
 from typing import Optional
 
 from core.agent.config import AGENT_ENABLED
-from core.agent.executor import AgentContext, get_executor
-from core.agent.planner import get_planner
+from core.agent.executor import (
+    AgentContext, get_executor, has_continuation, get_continuation,
+)
+from core.agent.planner import (
+    get_planner, extract_constraints, TaskConstraints,
+)
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import set_plan_summary, get_trace_id
@@ -44,6 +48,22 @@ async def try_handle_with_agent(
     if not msg or not msg.strip():
         return False
 
+    constraints = extract_constraints(msg)
+
+    # Phase 20 Part8：续说（"继续/再详细/一次说完/全部整理"）→ 基于上次已收集信息补全，
+    # 不重复规划/工具，仅一次 LLM 总结，避免重复 LLM/Tool。
+    if (constraints.is_continuation or constraints.is_one_shot) \
+            and has_continuation(chat_id, user_id):
+        continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
+        result = await get_executor().try_continue_task(continuation_ctx)
+        if result is not None and result.final_text:
+            await _deliver(result.final_text, chat_id, is_group, user_id,
+                           sender_name, bot_qq)
+            logger.info("Agent: 续说已处理 chat=%d final=%s",
+                        chat_id, result.final_text[:40])
+            return True
+        # 无续说状态 → 回退原 pipeline
+
     planner = get_planner()
     # 规则判定：简单聊天/简单 command 直接放行，不触发任何 LLM 规划
     if not planner.should_plan(msg, intent, is_group):
@@ -55,22 +75,14 @@ async def try_handle_with_agent(
                 trace_id, intent, msg[:40])
 
     # 规划：失败 → fallback
-    plan = await planner.plan(msg)
+    plan = await planner.plan(msg, constraints=constraints)
     if plan is None:
         logger.info("Agent: 规划失败，fallback 原 pipeline trace=%s", trace_id)
         set_plan_summary(planned=False, reason="plan_failed")
         return False
 
     # 执行：按 Plan 执行 Skill/Tool，得到最终回复
-    ctx = AgentContext(
-        user_id=int(user_id or 0),
-        group_id=int(chat_id or 0) if is_group else 0,
-        chat_id=int(chat_id or 0),
-        sender_name=sender_name or "",
-        is_group=bool(is_group),
-        bot_qq=int(bot_qq or 0),
-        original_msg=msg,
-    )
+    ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
     result = await get_executor().execute(plan, ctx)
 
     # 发送最终回复 + 写上下文
@@ -84,6 +96,19 @@ async def try_handle_with_agent(
     # 执行无回复 → 回退原 pipeline（不丢消息）
     logger.warning("Agent: 执行后无回复，回退原 pipeline trace=%s", trace_id)
     return False
+
+
+def _build_ctx(user_id: int, chat_id: int, sender_name: str, is_group: bool,
+               bot_qq: int, msg: str) -> AgentContext:
+    return AgentContext(
+        user_id=int(user_id or 0),
+        group_id=int(chat_id or 0) if is_group else 0,
+        chat_id=int(chat_id or 0),
+        sender_name=sender_name or "",
+        is_group=bool(is_group),
+        bot_qq=int(bot_qq or 0),
+        original_msg=msg,
+    )
 
 
 async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,

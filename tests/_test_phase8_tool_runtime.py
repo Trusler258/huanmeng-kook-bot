@@ -56,22 +56,28 @@ async def test_permission():
     # 白名单允许
     ok, _ = check_permission("weather")
     assert ok is True
-    # 高风险拒绝
+    # Phase 20 Part5：write_code=code.generate=LOW → 允许（生成代码，不执行）
     ok, _ = check_permission("write_code")
+    assert ok is True
+    # 执行代码 / Shell → HIGH → 拒绝
+    ok, _ = check_permission("code_execute")
+    assert ok is False
+    ok, _ = check_permission("shell_execute")
     assert ok is False
     # 未知工具默认 DENY
     ok, _ = check_permission("rm_rf_all")
     assert ok is False
-    print("OK test_permission (白名单允许 / 高风险拒绝 / 未知默认 DENY)")
+    print("OK test_permission (白名单允许 / 生成代码允许 / 执行代码拒绝 / 未知默认 DENY)")
 
 
 async def test_runtime_denied():
     new_request(conversation_id=1, user_id=1)
     rt = get_tool_runtime()
-    res = await rt.execute(ToolRequest(tool_name="write_code", arguments={}))
+    # Phase 20 Part5：改用真正的执行类工具验证 HIGH → DENY
+    res = await rt.execute(ToolRequest(tool_name="shell_execute", arguments={}))
     assert res.status == DENIED, res.status
     assert "拒绝" in (res.error or "")
-    print("OK test_runtime_denied (ToolRuntime 拒绝高风险工具)")
+    print("OK test_runtime_denied (ToolRuntime 拒绝执行类高风险工具)")
 
 
 async def test_runtime_unknown_denied():

@@ -26,8 +26,10 @@ TOTAL_TASK_TIMEOUT: float = float(os.getenv("AGENT_TOTAL_TIMEOUT", "60"))
 PLANNER_LLM_TIMEOUT: float = float(os.getenv("AGENT_PLANNER_TIMEOUT", "15"))
 EVALUATOR_LLM_TIMEOUT: float = float(os.getenv("AGENT_EVALUATOR_TIMEOUT", "10"))
 
-# 规划判定最小消息长度：过短消息不进入 LLM 规划（仍是 Fast Path）
-PLANNER_MIN_MSG_LEN: int = int(os.getenv("AGENT_PLANNER_MIN_MSG_LEN", "12"))
+# 规划判定最小消息长度：过短消息不进入 LLM 规划（仍是 Fast Path）。
+# Phase 20 Part4：从 12 降到 8，让"分析这个项目并修改优化/整理并搜索多个资料"
+# 等短复杂任务能进入规划；纯闲聊由 _is_casual 排除，不受此阈值影响。
+PLANNER_MIN_MSG_LEN: int = int(os.getenv("AGENT_PLANNER_MIN_MSG_LEN", "8"))
 
 # 规划应当触发的行为类关键词（用户明确要求"帮我/执行/找一下/分析"等）
 PLANNER_TRIGGER_KEYWORDS: tuple[str, ...] = (

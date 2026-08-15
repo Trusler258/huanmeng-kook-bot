@@ -31,6 +31,98 @@ from core.trace import record, record_llm, set_plan_summary
 
 logger = get_logger("agent.planner")
 
+# ── Phase 20 Part8：用户任务约束 ──
+# 从用户消息中抽取自然语言约束，进入 Task Context，供最终总结与执行循环使用。
+# 例："一次说完" → completion_requirement=COMPLETE_IN_ONE_RESPONSE；
+#     "继续/再详细/全部整理" → 续说（走 continuation 补齐完整内容）。
+@dataclass
+class TaskConstraints:
+    completion_requirement: str = ""    # COMPLETE_IN_ONE_RESPONSE / CONTENT_STEPWISE / ""
+    detail_level: str = ""              # high / medium / low / ""
+    output_mode: str = ""               # text / list / step / ""
+    user_constraints: list[str] = field(default_factory=list)
+
+    def compact(self) -> str:
+        parts = []
+        if self.completion_requirement:
+            parts.append(f"completion_requirement={self.completion_requirement}")
+        if self.detail_level:
+            parts.append(f"detail_level={self.detail_level}")
+        if self.output_mode:
+            parts.append(f"output_mode={self.output_mode}")
+        if self.user_constraints:
+            parts.append("user_constraints=" + "、".join(self.user_constraints))
+        return " ".join(parts)
+
+    is_one_shot = property(lambda self: self.completion_requirement == "COMPLETE_IN_ONE_RESPONSE")
+    is_continuation = property(lambda self: self.completion_requirement == "CONTENT_STEPWISE")
+
+
+# 一次说完 / 续说 / 详细 等约束关键词
+_COMPLETE_ONE_SHOT = ("一次说完", "一次给我", "全部整理", "全部给我", "一步到位",
+                      "全部一次", "一次说", "一次讲完", "一次性")
+_COMPLETE_CONTINUE = ("继续", "再详细", "讲完", "说全", "说完整", "接着讲", "接着说",
+                      "继续说", "全部整完", "继续说完")
+_DETAIL_HIGH = ("详细", "具体", "写详细", "详细一点", "具体一点", "完整写出", "尽可能详细")
+_OUTPUT_LIST = ("列表", "分点", "分条", "分步骤", "逐步", "步骤", "提纲")
+
+
+def extract_constraints(msg: str) -> TaskConstraints:
+    """从用户消息中抽取任务约束（纯规则，不调用 LLM）。"""
+    text = msg or ""
+    c = TaskConstraints()
+    if any(p in text for p in _COMPLETE_ONE_SHOT):
+        c.completion_requirement = "COMPLETE_IN_ONE_RESPONSE"
+    if any(p in text for p in _COMPLETE_CONTINUE):
+        c.completion_requirement = c.completion_requirement or "CONTENT_STEPWISE"
+    if any(p in text for p in _DETAIL_HIGH):
+        c.detail_level = "high"
+    if any(p in text for p in _OUTPUT_LIST):
+        c.output_mode = "list"
+    for p in (_COMPLETE_ONE_SHOT + _COMPLETE_CONTINUE + _DETAIL_HIGH + _OUTPUT_LIST):
+        if p in text:
+            c.user_constraints.append(p)
+    return c
+
+
+# ── Phase 20 Part4：纯社交/闲聊/确认短句排除集 ──
+# 无论消息多长，只要整体是这类内容，一律不进入 Planner（保持 Fast Path，0 次 Agent LLM）。
+# 设计目的：避免"你好/哈哈/谢谢/好的"等普通聊天被当作复杂任务触发规划。
+_CASUAL_TOKENS: tuple[str, ...] = (
+    "你好", "您好", "你好呀", "哈喽", "嗨", "hello", "hi",
+    "在吗", "在不在", "在不", "有人吗",
+    "谢谢", "感谢", "多谢", "辛苦了", "拜托",
+    "好的", "好滴", "好嘞", "好哒", "明白", "知道了", "了解", "收到",
+    "嗯", "嗯嗯", "嗯呢", "哦", "哦哦", "哦好的",
+    "哈哈", "哈哈哈", "呵呵", "嘿嘿", "嘻嘻", "啧啧",
+    "666", "6", "牛", "牛啊", "厉害", "nb", "牛批",
+    "可以", "没问题", "行", "行吧", "对对", "对的", "是的", "没错",
+    "再见", "拜拜", "晚安", "早", "早上好", "上午好", "中午好", "下午好", "晚上好",
+    "好的谢谢", "谢谢啦", "辛苦啦", "在的", "我在", "怎么啦", "咋啦", "干嘛",
+)
+
+# 强任务动词：裸"帮我"需含此类动词才算真实任务，避免"帮我一下"这类闲聊误触发。
+# 单字动词(写/做/查/算/搜)仅通过 PLANNER_TRIGGER_KEYWORDS 的"帮我写"等组合触发，
+# 单独出现不触发规划，避免"写"/"查"等短续句误判。
+_TASK_VERBS: tuple[str, ...] = (
+    "写", "做", "做一", "查", "找", "搜", "分析", "整理", "总结", "对比",
+    "研究", "调查", "计算", "算", "部署", "配置", "安装", "生成", "创建",
+    "设计", "修改", "优化", "修复", "讲解", "解释", "介绍", "生成一", "编一",
+    "搭建", "开发", "实现", "翻译", "转换", "统计", "汇总", "规划", "计划",
+    "列出", "出一", "出一份", "编写", "推导", "求解", "评估", "检查", "审查",
+)
+
+# Phase 20 Part4：可直接触发规划的多字强任务动词（裸出现即视为复杂任务）。
+# 覆盖"分析这个项目并修改优化/整理并搜索多个资料/完成一个多步骤任务/帮我部署 xxx"等。
+# 均为 >1 字动词，避免"写/查/算"等单字续句误触发。
+_TASK_INTENT_VERBS: tuple[str, ...] = (
+    "分析", "部署", "配置", "安装", "整理", "总结", "对比", "研究", "调查",
+    "设计", "优化", "修改", "生成", "创建", "搭建", "实现", "完成", "搜索",
+    "统计", "汇总", "规划", "计划", "评估", "检查", "审查", "翻译", "转换",
+    "编写", "推导", "求解", "修复", "讲解", "介绍", "开发", "构建", "搭建",
+    "列出", "策划", "编写", "整理并搜索",
+)
+
 
 @dataclass
 class PlanStep:
@@ -54,6 +146,8 @@ class Plan:
     # Phase 12：步骤依赖与成功条件（Verifier 用）
     dependencies: dict = field(default_factory=dict)   # {step_index: [前置step_index]}
     success_conditions: list[str] = field(default_factory=list)
+    # Phase 20 Part8：用户任务约束（"一次说完"/“继续”/详细 等）
+    constraints: TaskConstraints = field(default_factory=TaskConstraints)
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +159,12 @@ class Plan:
             "status": self.status,
             "dependencies": self.dependencies,
             "success_conditions": self.success_conditions,
+            "constraints": {
+                "completion_requirement": self.constraints.completion_requirement,
+                "detail_level": self.constraints.detail_level,
+                "output_mode": self.constraints.output_mode,
+                "user_constraints": list(self.constraints.user_constraints),
+            },
         }
 
 
@@ -78,33 +178,90 @@ class AgentPlanner:
     def should_plan(self, msg: str, intent: str = "", is_group: bool = True) -> bool:
         """决定是否进入规划。纯规则，不调用 LLM。
 
-        返回 False 的情况（继续 Fast Path）：
+        返回 False 的情况（继续 Fast Path，0 次 Agent LLM）：
         - 空消息 / 过短消息
         - command 意图（指令由指令管道处理，不需 Agent 规划）
-        - 纯闲聊（无触发关键词）
+        - 纯社交/闲聊/确认（你好/哈哈/谢谢/好的 等），无论多长
+        - 裸"帮我"但未紧跟强任务动词（如"帮我一下"）
+        - 无触发关键词、无复杂句式
         """
         if not msg:
             return False
         text = msg.strip()
+        if not text:
+            return False
         if len(text) < PLANNER_MIN_MSG_LEN:
             return False
         if intent == "command":
             return False
-        # 行为类触发词 → 需要规划
+
+        # Phase 20 Part4：纯社交/闲聊/确认 → 一律 Fast Path
+        if self._is_casual(text):
+            logger.debug("Agent: 闲聊短句，保持 Fast Path: %r", text[:30])
+            return False
+
         low = text.lower()
+        # 行为类触发词 → 需要规划
         if any(k in low for k in PLANNER_TRIGGER_KEYWORDS):
+            # 裸"帮我"需含强任务动词，避免"帮我一下"误触发
+            if "帮我" in low and not self._has_task_verb(text):
+                return False
             return True
-        # 复杂多步骤句式（先…再… / 并且… / 同时…）也视为需规划
+        # Phase 20 Part4：裸多字强任务动词 → 复杂任务（分析/部署/整理/完成/搜索…）
+        if any(v in text for v in _TASK_INTENT_VERBS):
+            return True
+        # 复杂多步骤句式（先…再… / 并且… / 同时… / 以及…）也视为需规划
         import re
-        if re.search(r"(先.{1,12}再|然后|并且|同时|顺便|分别)", text):
+        if re.search(r"(先.{1,12}再|然后|并且|同时|顺便|分别|先.{1,12}而后)", text):
             return True
         return False
 
+    @staticmethod
+    def _is_casual(text: str) -> bool:
+        """判断是否为纯社交/闲聊/确认内容。
+
+        规则：去掉标点与空白后，若由若干"闲聊token"拼接而成即视为闲聊；
+        或整段命中某个闲聊 token（如"好的谢谢"）。避免把带任务词的句子误判。
+        """
+        import re
+        compact = re.sub(r"[\s，。！？、,.!?~～…\-—_]+", "", text).lower()
+        # 整段命中长 token（如"好的谢谢"）→ 闲聊
+        if any(tk in compact for tk in _CASUAL_TOKENS if len(tk) >= 4):
+            return True
+        # 逐 token 匹配：若 compact 能被若干闲聊 token 完整覆盖 → 闲聊
+        if not compact:
+            return True
+        rest = compact
+        matched_any = False
+        while rest:
+            hit = None
+            # 优先匹配较长的 token，避免"嗯"把"嗯帮我写"错误吞掉
+            for tk in sorted(_CASUAL_TOKENS, key=len, reverse=True):
+                if rest.startswith(tk):
+                    hit = tk
+                    break
+            if hit is None:
+                break
+            matched_any = True
+            rest = rest[len(hit):]
+        return matched_any and not rest
+
+    @staticmethod
+    def _has_task_verb(text: str) -> bool:
+        """消息中是否含强任务动词。
+
+        全文本搜索（而非'帮我'后固定窗口），因为动词可能出现在语言名之后，
+        如"帮我用 python 写一个 2048"。闲聊"帮我一下"不含任何任务动词 → False。
+        """
+        return any(v in text for v in _TASK_VERBS)
+
     # ── 生成 Plan ──
-    async def plan(self, task_request: str, enabled: bool = True) -> Optional[Plan]:
+    async def plan(self, task_request: str, enabled: bool = True,
+                   constraints: Optional[TaskConstraints] = None) -> Optional[Plan]:
         """为复杂任务生成结构化 Plan。失败/超时/解析失败 → 返回 None（fallback）。
 
         enabled=False 时直接返回 None（Agent 全局关闭）。
+        constraints：用户任务约束（"一次说完"/“继续”/详细 等），随 Plan 进入 Task Context。
         """
         if not enabled:
             return None
@@ -113,7 +270,10 @@ class AgentPlanner:
 
         from core.trace import span as _span
         with _span("planner"):
-            return await self._do_plan(task_request)
+            plan = await self._do_plan(task_request)
+            if plan is not None and constraints is not None:
+                plan.constraints = constraints
+            return plan
 
     async def _do_plan(self, task_request: str) -> Optional[Plan]:
         try:

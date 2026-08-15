@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-green" /></a>
-  <a href="#"><img alt="Version" src="https://img.shields.io/badge/version-v2.0.0-8B5CF6" /></a>
+  <a href="#"><img alt="Version" src="https://img.shields.io/badge/version-v2.0.1fix-8B5CF6" /></a>
   <a href="https://github.com/khl-projects-dev/khl.py"><img alt="Adapter" src="https://img.shields.io/badge/adapter-khl.py%20%28KOOK%29-6C5CE7" /></a>
   <a href="https://platform.deepseek.com/"><img alt="LLM Provider" src="https://img.shields.io/badge/LLM-DeepSeek%20API-00BFFF" /></a>
 </p>

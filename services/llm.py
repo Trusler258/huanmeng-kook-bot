@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 # ── 回复 JSON schema ──────────────────────────────────────
@@ -487,6 +488,12 @@ async def call_llm(
             record_llm_call(elapsed, success=True)
         except Exception:
             pass
+        # Phase 20：把单次 LLM 耗时采样写入当前 trace（供 P50/P95/P99 统计）
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration(elapsed * 1000.0)
+        except Exception:
+            pass
         return text
     except asyncio.TimeoutError:
         elapsed = loop.time() - start_time
@@ -496,6 +503,11 @@ async def call_llm(
             record_llm_call(elapsed, success=False)
         except Exception:
             pass
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration(elapsed * 1000.0)
+        except Exception:
+            pass
         return ""
     except Exception as e:
         elapsed = loop.time() - start_time
@@ -503,6 +515,11 @@ async def call_llm(
         try:
             from services.notify_system import record_llm_call
             record_llm_call(elapsed, success=False)
+        except Exception:
+            pass
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration(elapsed * 1000.0)
         except Exception:
             pass
         return ""
@@ -608,6 +625,11 @@ async def call_llm_with_tools(
             record_llm_call(loop.time() - start_time, success=True)
         except Exception:
             pass
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration((loop.time() - start_time) * 1000.0)
+        except Exception:
+            pass
         return ToolCallResult(content=content.strip(), tool_calls=tc_list)
 
     except asyncio.TimeoutError:
@@ -617,12 +639,22 @@ async def call_llm_with_tools(
             record_llm_call(loop.time() - start_time, success=False)
         except Exception:
             pass
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration((loop.time() - start_time) * 1000.0)
+        except Exception:
+            pass
         return ToolCallResult(content="", tool_calls=[])
     except Exception as e:
         logger.error("LLM FC [%s] 失败: %s", model_cfg.name[:20], e)
         try:
             from services.notify_system import record_llm_call
             record_llm_call(loop.time() - start_time, success=False)
+        except Exception:
+            pass
+        try:
+            from core.trace import record_llm_duration
+            record_llm_duration((loop.time() - start_time) * 1000.0)
         except Exception:
             pass
         return ToolCallResult(content="", tool_calls=[])
@@ -886,10 +918,10 @@ async def generate_multi_reply_with_tools(
 
     # ── 处理结果 ──
     if errors:
-        return _parse_reply(
-            json.dumps({"replies": [errors[0].rstrip("。") + "喵"], "fav": 0, "calls": [], "face": None, "mood": "无奈", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}),
-            speaker_name,
-        )
+        # Phase 20 Part7：工具被拒绝/出错时，禁止硬编码 fallback 话术。
+        # 让 LLM 基于已有的 persona system（msgs[0]）自然、符合人设地说明，
+        # 保证「Permission DENY → 结构化 ToolResult → LLM → Persona 风格回复」。
+        return await _reply_from_error(msgs, errors[0], reply_model, speaker_name)
     if data_results:
         wrap_msgs = [
             {"role": "system", "content": "你是幻梦，一个可爱的QQ机器人。用自然语气回复，加个喵或颜文字。1句，≤40字。"},
@@ -929,6 +961,47 @@ async def generate_multi_reply_with_tools(
         sentences = [raw.strip()[:120]]
     return sentences, 0, [], "", "", None, "", None, None, "user", {}, None
 
+
+
+async def _reply_from_error(msgs: list[dict], err_text: str,
+                            reply_model: str, speaker_name: str) -> tuple:
+    """Phase 20 Part7：工具被拒绝或出错时，让 LLM 基于 persona 自然回复。
+
+    msgs 已包含 persona system（由调用方用 ContextBuilder 注入），此处追加一句
+    用户指令，让 LLM 用自己的语气向用户说明（不暴露内部细节），保证人设一致：
+    Permission DENY → 结构化 ToolResult → LLM → Persona 风格回复。
+    禁止 Permission 层直接生成最终用户话术。
+    仅当 LLM 彻底失败时才返回中性兜底（Graceful Degradation，不吐崩溃堆栈）。
+    """
+    try:
+        from core.trace import record_llm_duration
+        _st = time.monotonic()
+        follow = list(msgs) + [{
+            "role": "user",
+            "content": (
+                "刚才的某个操作没有成功完成。请用你一贯的语气，自然、简短地告诉用户"
+                "这件事（不要复述内部报错细节，也不要暴露权限/系统内部信息）："
+                f"{err_text}"
+            ),
+        }]
+        raw = await call_llm(reply_model, follow, max_tokens=200, temperature=0.4)
+        try:
+            record_llm_duration((time.monotonic() - _st) * 1000.0)
+        except Exception:
+            pass
+        if raw and raw.strip():
+            return _parse_reply(
+                json.dumps({
+                    "replies": [raw.strip()], "fav": 0, "calls": [], "face": None,
+                    "mood": "无奈", "action": "", "at": None, "mode": None,
+                    "origin": "user", "actor": {},
+                }, ensure_ascii=False),
+                speaker_name,
+            )
+    except Exception:
+        pass
+    # 兜底：LLM 不可用时，仅给中性致歉（不暴露内部细节）
+    return [], 0, [], "抱歉，这个操作我没能完成，换个说法再试试喵～", "", None, "", None, None, "user", {}, None
 
 
 def _parse_reply(

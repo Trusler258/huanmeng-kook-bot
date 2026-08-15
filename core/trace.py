@@ -83,6 +83,9 @@ class RequestContext:
     tool_calls: list[dict] = field(default_factory=list)
     # 本次请求内部发出的 LLM 调用（含 judge / 主生成 / 工具后总结 / 搜索判断等）
     llm_call_count: int = 0
+    # 每次 LLM 调用的耗时样本（毫秒），用于输出 avg/max/P50/P95/P99。
+    # 与 llm_call_count 一一对应（每次调用 push 一个耗时样本）。
+    llm_durations: list[float] = field(default_factory=list)
 
     # ── Phase 7 增强：Agent 规划摘要 + Skill 使用 ──
     # 记录"为什么规划、执行了什么、调用了几次 LLM"等 trace_summary 信息。
@@ -174,9 +177,37 @@ class RequestContext:
         self._phases.setdefault("tool", []).append(duration_ms)
         self.events.append(("tool_call", duration_ms))
 
-    def record_llm(self) -> None:
-        """记录一次 LLM 调用发起（用于统计本次请求的 llm_call_count）。"""
+    def record_llm(self, elapsed_ms: float | None = None) -> None:
+        """记录一次 LLM 调用发起（用于统计本次请求的 llm_call_count）。
+
+        elapsed_ms: 该次调用耗时（毫秒）。传入则同时计入 llm_durations 样本，
+        用于输出 LLM 的 avg/max/P50/P95/P99。
+        """
         self.llm_call_count += 1
+        if elapsed_ms is not None:
+            self.llm_durations.append(elapsed_ms)
+
+    def record_llm_duration(self, elapsed_ms: float) -> None:
+        """为一次已发起的 LLM 调用补记耗时样本（毫秒）。"""
+        self.llm_durations.append(elapsed_ms)
+
+    def llm_stats(self) -> dict:
+        """LLM 调用统计：calls / total / avg / max / P50 / P95 / P99（毫秒）。"""
+        samples = self.llm_durations
+        if not samples:
+            return {
+                "calls": self.llm_call_count, "total_ms": 0.0, "avg_ms": 0.0,
+                "max_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0,
+            }
+        return {
+            "calls": self.llm_call_count,
+            "total_ms": round(sum(samples), 2),
+            "avg_ms": round(sum(samples) / len(samples), 2),
+            "max_ms": round(max(samples), 2),
+            "p50_ms": round(_percentile(samples, 50), 2),
+            "p95_ms": round(_percentile(samples, 95), 2),
+            "p99_ms": round(_percentile(samples, 99), 2),
+        }
 
     # ── Phase 7：Agent 规划 / Skill 使用记录 ──
     def set_plan_summary(self, **kwargs) -> None:
@@ -199,7 +230,7 @@ class RequestContext:
             "conversation_id": self.conversation_id,
             "user_id": self.user_id,
             "total_ms": self.total_ms(),
-            "llm_call_count": self.llm_call_count,
+            "llm": self.llm_stats(),
             "tool_calls": list(self.tool_calls),
             "skills": list(self.skills_used),
             "plan": dict(self.plan_summary),
@@ -308,11 +339,18 @@ def record_tool_call(tool_name: str, duration_ms: float, status: str,
                              error=error)
 
 
-def record_llm():
+def record_llm(elapsed_ms: float | None = None):
     """便捷：记录一次 LLM 调用发起（无上下文时安全忽略）。"""
     ctx = _current_ctx.get()
     if ctx is not None:
-        ctx.record_llm()
+        ctx.record_llm(elapsed_ms)
+
+
+def record_llm_duration(elapsed_ms: float):
+    """便捷：为已发起的 LLM 调用补记耗时样本（无上下文时安全忽略）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_llm_duration(elapsed_ms)
 
 
 def get_llm_call_count() -> int:

@@ -26,7 +26,7 @@ from core.agent.config import (
 from core.agent.budget import AgentBudget, LoopDetector
 from core.agent.verifier import AgentVerifier
 from core.agent.evaluator import ResultEvaluator
-from core.agent.planner import Plan, PlanStep
+from core.agent.planner import Plan, PlanStep, TaskConstraints
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import record, record_llm, set_plan_summary
@@ -283,6 +283,32 @@ class AgentExecutor:
                          tools=[s.tool for s in plan.steps if s.tool],
                          skills=[s.skill for s in plan.steps if s.skill])
 
+    async def try_continue_task(self, ctx: AgentContext,
+                                additional: str = "") -> Optional[AgentResult]:
+        """Phase 20 Part8：续说。用户说"继续/再详细/全部整理"时，基于上次已收集信息
+        重新总结成更完整回复。无续说状态 → 返回 None。
+
+        不做任何工具调用（信息已在上一次收集），仅一次 LLM 总结，避免重复 LLM/Tool。
+        """
+        state = get_continuation(int(ctx.chat_id or 0), int(ctx.user_id or 0))
+        if not state:
+            return None
+        plan = Plan(
+            goal=state.get("goal", ctx.original_msg or ""),
+            steps=[PlanStep(action=a) for a in state.get("plan_steps", [])],
+            constraints=state.get("constraints") or TaskConstraints(),
+        )
+        plan.constraints.completion_requirement = "COMPLETE_IN_ONE_RESPONSE"
+        if state.get("constraints") and state["constraints"].is_continuation:
+            plan.constraints = state["constraints"]
+        accumulated = list(state.get("accumulated", []))
+        final = await self._compose_final(plan, accumulated, ctx, fallback=None)
+        if not final:
+            return None
+        return AgentResult(plan=plan, final_text=final, sentences=[final] if final else [],
+                           status="COMPLETED", llm_calls=0,
+                           tool_calls=self._tool_call_snapshot(plan))
+
     async def _finalize(self, plan: Plan, result: AgentResult, accumulated: list[str],
                         start: float, ctx: AgentContext) -> None:
         """生成最终回复文本（一次 LLM 总结调用）。"""
@@ -291,30 +317,64 @@ class AgentExecutor:
         result.sentences = [final] if final else []
         plan.status = result.status
         self._record_loop(plan, ctx)
+        # Phase 20 Part8：持久化续说状态，供"继续/再详细/全部整理"复用
+        if accumulated or plan.steps:
+            _CONTINUATION[(int(ctx.chat_id or 0), int(ctx.user_id or 0))] = {
+                "goal": plan.goal,
+                "accumulated": list(accumulated),
+                "constraints": plan.constraints,
+                "plan_steps": [s.action for s in plan.steps],
+            }
 
     async def _compose_final(self, plan: Plan, accumulated: list[str], ctx: AgentContext,
                              fallback: Optional[str] = None) -> str:
-        """用一次 LLM 调用把 goal + 已收集信息总结为回复。失败回退 fallback。"""
+        """用一次 LLM 调用把 goal + 已收集信息总结为回复。失败回退 fallback。
+
+        Phase 20 Part8：尊重用户任务约束——
+        - COMPLETE_IN_ONE_RESPONSE：明确要求一次性给全，禁止反问"先听哪块"。
+        - detail_level=high：要求尽可能完整详细。
+        - output_mode=list：要求分点/分步骤输出。
+        """
         info = "\n\n".join(accumulated) if accumulated else "（无外部信息）"
         if not accumulated and fallback is not None:
             return fallback
+        cons = getattr(plan, "constraints", None)
         try:
             from services.llm import call_llm
+            from services.llm import _build_system_text
             from core.config import get_config
+            cfg = get_config()
+            # Phase 20 Part9：Agent 与普通聊天共用同一套系统提示（Persona/Tone/Format），
+            # 避免"普通聊天有人设、Agent 没人设"。
+            system_text = _build_system_text(cfg.bot_name, cfg.system_prompt, ctx.is_group)
+            guide = ""
+            if cons is not None:
+                if cons.is_one_shot or cons.is_continuation:
+                    guide += ("\n用户明确要求一次性/继续把内容说完。请直接给出完整内容，"
+                              "不要反问用户想先看哪部分，不要只给大纲，把能给出的都一次性写完。")
+                if cons.detail_level == "high":
+                    guide += "\n用户要求详细。请尽量完整、具体、详细地展开所有要点。"
+                if cons.output_mode == "list":
+                    guide += "\n用户希望分点/分条/分步骤输出，请用清晰的编号列表组织。"
+                if cons.user_constraints:
+                    guide += "\n用户原话约束：" + "、".join(cons.user_constraints)
             prompt = (
-                "请根据以下任务目标和已获取的信息，用自然、可爱的语气给用户一个完整回答。\n"
-                "直接陈述结果，不要提'我搜索了'这类过程词。\n\n"
+                "请根据以下任务目标和已获取的信息，用你一贯的语气，给用户一个完整回答。\n"
+                "直接陈述结果，不要提'我搜索了'这类过程词。"
+                f"{guide}\n\n"
                 f"任务目标：{plan.goal[:300]}\n\n"
-                f"已获取信息：\n{info[:2500]}"
+                f"已获取信息：\n{info[:4000]}"
             )
             raw = await call_llm(
-                get_config().reply_model,
-                [{"role": "user", "content": prompt}],
-                max_tokens=600, temperature=0.4, timeout=15.0,
+                cfg.reply_model,
+                [{"role": "system", "content": system_text},
+                 {"role": "user", "content": prompt}],
+                max_tokens=1200 if (cons is not None and cons.is_one_shot) else 600,
+                temperature=0.4, timeout=20.0,
             )
             record_llm()
             if raw and raw.strip():
-                return raw.strip()[:1500]
+                return raw.strip()[:3000]
         except Exception as e:
             logger.warning("Agent 最终总结 LLM 失败: %s", e)
         # 回退：给 goal + 原始信息片段
@@ -332,6 +392,22 @@ class AgentExecutor:
 
 
 # ── 全局单例 ────────────────────────────────────────────────
+# Phase 20 Part8：续说状态（chat_id,user_id）→ {"goal","accumulated","constraints","plan_steps"}
+_CONTINUATION: dict = {}
+
+
+def has_continuation(chat_id: int, user_id: int) -> bool:
+    return (int(chat_id or 0), int(user_id or 0)) in _CONTINUATION
+
+
+def get_continuation(chat_id: int, user_id: int) -> Optional[dict]:
+    return _CONTINUATION.get((int(chat_id or 0), int(user_id or 0)))
+
+
+def clear_continuation(chat_id: int, user_id: int) -> None:
+    _CONTINUATION.pop((int(chat_id or 0), int(user_id or 0)), None)
+
+
 _executor: Optional[AgentExecutor] = None
 
 

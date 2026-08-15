@@ -287,16 +287,27 @@ def log_trace_summary():
             tool_desc = " | tools=" + ",".join(
                 f"{t['tool_name']}:{t['status']}:{t['duration_ms']}ms" for t in ctx.tool_calls
             )
+        # Phase 20：LLM P50/P95/P99 统计，回答"LLM 到底调了几次、慢在哪层"
+        llm_desc = ""
+        try:
+            _ls = ctx.llm_stats()
+            llm_desc = (f" | llm_calls={_ls['calls']} total={_ls['total_ms']}ms "
+                        f"avg={_ls['avg_ms']}ms max={_ls['max_ms']}ms "
+                        f"p50={_ls['p50_ms']} p95={_ls['p95_ms']} p99={_ls['p99_ms']}")
+        except Exception:
+            llm_desc = f" | llm_calls={ctx.llm_call_count}"
         base = f"[TRACE {ctx.trace_id}] total={ctx.total_ms()}ms severity={severity}" \
-               f" llm_calls={ctx.llm_call_count}{tool_desc} | {', '.join(parts)}"
+               f"{llm_desc}{tool_desc} | {', '.join(parts)}"
         get_logger().info(base)
         if severity == "very_slow_request":
             get_logger().warning(
-                "[VERY_SLOW %s] total=%sms 需重点排查 | %s", ctx.trace_id, ctx.total_ms(), ", ".join(parts)
+                "[VERY_SLOW %s] total=%sms 需重点排查 | %s%s", ctx.trace_id, ctx.total_ms(),
+                ", ".join(parts), llm_desc
             )
         elif severity == "slow_request":
             get_logger().warning(
-                "[SLOW %s] total=%sms | %s", ctx.trace_id, ctx.total_ms(), ", ".join(parts)
+                "[SLOW %s] total=%sms | %s%s", ctx.trace_id, ctx.total_ms(),
+                ", ".join(parts), llm_desc
             )
     except Exception:
         pass

@@ -333,6 +333,9 @@ class EventDispatcher:
             patch_request(conversation_id=chat_id_int, user_id=user_id_int, is_group=is_group)
         except Exception:
             pass
+        # ── 携带 trace 身份：worker 处理每条消息时据此刻画独立 RequestContext，
+        #    避免长生命周期 worker 继承第一条消息的 context 导致 span 跨消息累积
+        #    （此前 total=35965613ms / process x76 的根因：同一 ctx 被整频道复用）。
         from core.queues import enqueue_message
         with span("dispatcher"):
             await enqueue_message(
@@ -349,6 +352,13 @@ class EventDispatcher:
                 is_mentioned=is_mentioned,
                 image_urls=image_urls,
                 quoted_image_urls=quoted_image_urls,
+                _trace_meta={
+                    "message_id": msg_id,
+                    "channel_id": channel_id,
+                    "conversation_id": chat_id_int,
+                    "user_id": user_id_int,
+                    "is_group": is_group,
+                },
             )
 
     @staticmethod

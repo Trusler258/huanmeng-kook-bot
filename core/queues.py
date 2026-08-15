@@ -39,9 +39,18 @@ async def _group_worker(chat_id: int, queue: asyncio.Queue):
     while True:
         try:
             kwargs = await queue.get()
-            # Phase1 Trace：记录排队等待耗时
+            # ── 每条消息建立独立 RequestContext（Phase1 Trace）──
+            #   worker 是长生命周期任务，若沿用继承的 contextvar，会把整频道的
+            #   span 累积进同一条消息的 ctx（此前 total=10h / process x76 的根因）。
+            #   用 dispatcher 传入的 _trace_meta 每消息重新刻画一份独立上下文，
+            #   保证 total_ms() 等于该消息真实 wall time，span 只属于本条消息。
             try:
-                from core.trace import record, span
+                from core.trace import new_request, record, span
+                meta = kwargs.pop("_trace_meta", None)
+                if meta:
+                    new_request(**meta)
+                else:
+                    new_request(conversation_id=chat_id)
                 enqueued = kwargs.pop("_enqueued_at", None)
                 if enqueued is not None:
                     record("queue_wait", (time.perf_counter() - enqueued) * 1000.0)

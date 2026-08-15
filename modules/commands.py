@@ -3013,6 +3013,60 @@ async def cmd_lyric(args, user_id, group_id, sender_name, is_group, bot_qq):
             "提示：旧版 `.lyric` 直接带未知参数会被当成 on；现在必须显式写 on 才会开启频道。")
 
 
+async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.listening <歌名> [歌手|软件] | .listening off | .listening — 设置 KOOK 机器人"正在听"动态状态
+
+    通过 KOOK API /api/v3/game/activity 设置 data_type=2 的音乐状态。
+    用法：
+      .listening 有点甜 汪苏泷、BY2     设置"正在听 有点甜"
+      .listening 有点甜 cloudmusic      指定播放软件（默认 cloudmusic）
+      .listening off                    结束"正在听"状态
+      .listening                        查看当前状态
+    """
+    from services.music_status import set_music, clear_music, current_status
+
+    sub = (args[0] if args else "").strip()
+
+    # 结束状态
+    if sub.lower() in ("off", "close", "stop", "0", "结束", "关闭"):
+        ok, msg = clear_music()
+        return ("✅ 已结束" + ("正在听" if ok else f"（{msg}）") if ok
+                else f"❌ 结束状态失败：{msg}")
+
+    # 查看状态
+    if sub == "" or sub.lower() in ("status", "state", "?", "状态", "查看"):
+        cur = current_status()
+        if not cur:
+            return "📻 当前没有正在听的状态。用 `.listening <歌名> [歌手]` 设置。"
+        return (f"📻 机器人当前状态：**正在听 {cur.get('music_name', '')}**\n"
+                f"  - 歌手：{cur.get('singer', '') or '未指定'}\n"
+                f"  - 软件：{cur.get('software', 'cloudmusic')}\n"
+                f"用 `.listening off` 结束。")
+
+    # 设置：歌名 [歌手|软件]
+    music_name = sub
+    singer = ""
+    software = "cloudmusic"
+    if len(args) >= 2:
+        second = args[1].strip()
+        if second in ("cloudmusic", "qqmusic", "kugou"):
+            software = second
+        else:
+            singer = second
+    if len(args) >= 3:
+        third = args[2].strip()
+        if third in ("cloudmusic", "qqmusic", "kugou"):
+            software = third
+
+    ok, msg = await set_music(music_name, singer=singer, software=software)
+    if ok:
+        return (f"🎵 已设置机器人状态：**正在听 {music_name}**\n"
+                + (f"  - 歌手：{singer}\n" if singer else "")
+                + f"  - 软件：{software}\n"
+                f"用 `.listening off` 结束。")
+    return f"❌ 设置失败：{msg}"
+
+
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     """.sys [card|shot|shotdesk] — PC 状态/截屏"""
     from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
@@ -3154,6 +3208,8 @@ COMMAND_MAP: dict[str, callable] = {
     "sys":        cmd_sys,
     "pc":         cmd_sys,
     "lyric":      cmd_lyric,
+    "listening":  cmd_listening,   # ★ 设置机器人"正在听"状态
+    "正在听":      cmd_listening,
 }
 
 
