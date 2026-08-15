@@ -170,7 +170,7 @@ def _health_check(files: list[dict], root: Path) -> list[str]:
         if item.get("status") == "added":
             for imp in analyzer.extract_imports(content):
                 base = imp.split(".")[0]
-                if not (root / imp.replace(".", "/") + ".py").exists() \
+                if not (root / (imp.replace(".", "/") + ".py")).exists() \
                         and not _is_stdlib(base):
                     logger.warning("健康检查: %s 引用可能的第三方/新模块 %s", rel, imp)
     return errors
