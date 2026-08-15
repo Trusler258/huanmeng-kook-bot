@@ -465,18 +465,17 @@ def agent_search(query: str, limit: int = 5, deep_fetch: bool = False) -> str:
 
 
 # ── Phase 6 Part6：DeepSeek 原生搜索超时 / 重试 / 阶段耗时 ──
-# 原实现单次 urlopen timeout=45s，导致一次搜索最长可挂 45s+
-# （几十秒甚至 1 分钟的元凶之一）。现：
-#   - 单次 HTTP timeout 收紧到 DS_SEARCH_TIMEOUT（默认 12s）
-#   - 重试上限 DS_SEARCH_MAX_RETRIES（这里 retry=1，合计 2 次尝试），退避 1s
-#   - 通过 core.trace 记录 search_http / search_retry / search_parse 阶段耗时
+# 单次 HTTP 超时 DS_SEARCH_TIMEOUT 大幅调高（默认 60s，可设 DS_SEARCH_TIMEOUT 覆盖）：
+#  DeepSeek 搜+合成较慢，过短的超时会被过早掐断导致回退/重复搜索。
+#  还超时就再搜一遍：重试上限 DS_SEARCH_MAX_RETRIES（默认 retry=1，合计 2 次尝试），退避 1s。
+#  通过 core.trace 记录 search_http / search_retry / search_parse 阶段耗时。
 import os
 import json
 import time as _time
 import asyncio
 import urllib.request
 
-DS_SEARCH_TIMEOUT: float = float(os.getenv("DS_SEARCH_TIMEOUT", "12"))
+DS_SEARCH_TIMEOUT: float = float(os.getenv("DS_SEARCH_TIMEOUT", "60"))
 DS_SEARCH_MAX_RETRIES: int = int(os.getenv("DS_SEARCH_MAX_RETRIES", "1"))  # retry 次数上限
 # Phase 6.5：SQLite search_cache 短 TTL 缓存（query+参数）。TTL 配置化，默认 300s。
 SEARCH_CACHE_TTL: int = int(os.getenv("SEARCH_CACHE_TTL", "300"))

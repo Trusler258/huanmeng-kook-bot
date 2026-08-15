@@ -21,6 +21,15 @@ from utils.format_lang import format_lang
 logger = get_logger("search")
 
 
+def _count_search_results(text: str) -> int:
+    """估算搜索结果条数：优先统计列表项行（- / * / • / 1. / 1、），否则按段落数近似。"""
+    import re
+    items = re.findall(r'(?m)^\s*(?:[-*•]|\d{1,2}[\.、])\s+', text)
+    if items:
+        return len(items)
+    return max(1, text.count("\n\n") + 1)
+
+
 async def perform_search(
     query: str,
     sender_name: str = "",
@@ -40,7 +49,14 @@ async def perform_search(
         return cached
 
     from services.sender import send_by_chat_type
-    search_tip = f"🔍 web_search ['{query[:60]}{'…' if len(query)>60 else ''}']"
+    search_tip = f"🔍 DeepSeek搜索: {query[:60]}{'…' if len(query)>60 else ''}"
+
+    # ── 搜索前即时提示：先发一条"正在搜"，避免用户长时间无反馈（卡好久）──
+    if chat_id:
+        try:
+            asyncio.create_task(send_by_chat_type(search_tip, chat_id, is_group, user_id=user_id))
+        except Exception:
+            pass
 
     # ── Step 2: DeepSeek Responses API 原生搜索（优先）──
     logger.info("执行 DeepSeek 原生搜索: '%s...' (user=%s)", query[:40], sender_name)
@@ -48,8 +64,8 @@ async def perform_search(
     _search_start = asyncio.get_event_loop().time()
     try:
         from modules.web_search import ds_native_search
-        # Phase 6: 外层 wait_for 上限收紧到 DS 自身最坏情况（2次尝试×12s + 1s退避）
-        result_text = await asyncio.wait_for(ds_native_search(query), timeout=30.0)
+        # 外层 wait_for 上限与 DS 大幅调高的单次超时匹配（默认 60s×2 次尝试 + 退避）
+        result_text = await asyncio.wait_for(ds_native_search(query), timeout=90.0)
     except asyncio.TimeoutError:
         logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
     except Exception as e:
@@ -57,11 +73,20 @@ async def perform_search(
     from core.trace import record as _trace_record
     _trace_record("search_total", (asyncio.get_event_loop().time() - _search_start) * 1000.0)
 
-    # ── Step 3: Agent 搜索（回退）──
+    # ── 找到结果后提示条数：先于最终组成的答案发出，保持"搜→找到→回答"顺序 ──
+    if chat_id and result_text:
+        try:
+            n = _count_search_results(result_text)
+            asyncio.create_task(send_by_chat_type(
+                f"✅ 找到 {n} 个结果", chat_id, is_group, user_id=user_id))
+        except Exception:
+            pass
+
+    # ── Step 3: 无结果回退 ──
     if result_text is None:
         set_search_cache(query, result_text)
         logger.info("DeepSeek 搜索无结果: '%s...'", query[:40])
-        return f"{search_tip}\n\n暂无搜索结果。"
+        return "暂无搜索结果。"
 
     if not result_text:
         logger.info("搜索无结果: '%s...'", query[:30])
@@ -72,7 +97,6 @@ async def perform_search(
     if len(result_text) > max_len:
         result_text = result_text[:max_len] + "..."
 
-    result_text = f"{search_tip}\n\n{result_text}"
     logger.info("搜索完成: '%s...' → %d字符\n%s", query[:30], len(result_text), result_text[:800])
 
     # ── Step 3: 写入缓存 + 记忆 ──
