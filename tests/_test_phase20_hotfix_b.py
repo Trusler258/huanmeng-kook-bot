@@ -288,6 +288,60 @@ def test_metrics_snapshot():
 
 
 # ═══════════════════════════════════════════════════════════════
+# 17. FC/普通调用 max_tokens<=0 不得传给 API（chat 复杂度预算为 0 → 不设上限）
+# ═══════════════════════════════════════════════════════════════
+async def test_max_tokens_zero_omitted():
+    """回归：DeepSeek 报 'Invalid max_tokens value, valid range is [1, 393216]'。
+    根因：chat 复杂度 output_max_tokens=0 被直接塞进 req_params["max_tokens"]。
+    修复：边界处 max_tokens<=0 视为"不设上限"，不写入请求参数。
+    这里 mock _create_client 捕获 req_params，验证 max_tokens=0 时该键被省略。
+    """
+    if not _LLM_OK:
+        print("[SKIP] max_tokens_zero (缺 openai)")
+        return
+    import services.llm as llm
+    from core.config import ModelConfig
+    _cfg = ModelConfig()   # 默认空配置；_create_client 已被 mock，不触网
+    captured = {}
+
+    class _FakeMsg:
+        content = "hi"
+        tool_calls = None
+    class _FakeChoice:
+        message = _FakeMsg()
+    class _FakeComp:
+        choices = [_FakeChoice()]
+    class _FakeCompletions:
+        def create(self, **kw):
+            captured.update(kw)
+            return _FakeComp()
+    class _FakeChat:
+        completions = _FakeCompletions()
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            self.chat = _FakeChat()
+
+    orig = llm._create_client
+    llm._create_client = lambda *a, **kw: _FakeClient()
+    try:
+        # max_tokens=0 → 请求参数中不得出现 max_tokens（会触发 DeepSeek 400）
+        r = await llm.call_llm_with_tools(_cfg, [], [], max_tokens=0)
+        check("mtk_zero_omitted", "max_tokens" not in captured,
+              f"captured={set(captured.keys())}")
+        check("mtk_zero_ok", isinstance(r, llm.ToolCallResult))
+        # max_tokens=None → 同样省略
+        await llm.call_llm_with_tools(_cfg, [], [], max_tokens=None)
+        check("mtk_none_omitted", "max_tokens" not in captured,
+              f"captured={set(captured.keys())}")
+        # 正值 → 保留
+        await llm.call_llm_with_tools(_cfg, [], [], max_tokens=8000)
+        check("mtk_positive_kept", captured.get("max_tokens") == 8000,
+              f"max_tokens={captured.get('max_tokens')}")
+    finally:
+        llm._create_client = orig
+
+
+# ═══════════════════════════════════════════════════════════════
 # 主入口
 # ═══════════════════════════════════════════════════════════════
 async def main():
@@ -307,6 +361,7 @@ async def main():
     test_persona_json_fallback()
     test_note_request_stage()
     test_metrics_snapshot()
+    await test_max_tokens_zero_omitted()
 
     print(f"\n{'ALL PASS' if FAIL == 0 else f'{FAIL} FAILED'}  ({PASS} passed, {FAIL} failed)")
     sys.exit(1 if FAIL else 0)

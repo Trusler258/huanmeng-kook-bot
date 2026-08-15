@@ -431,7 +431,8 @@ async def call_llm(
             "temperature": temperature,
             "messages": messages,
         }
-        if max_tokens is not None:
+        # max_tokens<=0 视为"不设上限"（chat 复杂度输出预算为 0），避免 DeepSeek 报 0 值非法。
+        if max_tokens is not None and max_tokens > 0:
             req_params["max_tokens"] = max_tokens
         if json_mode:
             req_params["response_format"] = {"type": "json_object"}
@@ -568,7 +569,9 @@ async def call_llm_with_tools(
     if tools:
         req_params["tools"] = tools
         req_params["tool_choice"] = "auto"
-    if max_tokens is not None:
+    # max_tokens<=0 视为"不设上限"（chat 复杂度输出预算为 0），否则 DeepSeek 报
+    # "Invalid max_tokens value, valid range is [1, 393216]"（0 值非法）。
+    if max_tokens is not None and max_tokens > 0:
         req_params["max_tokens"] = max_tokens
     if _td:
         req_params["extra_body"] = _td
