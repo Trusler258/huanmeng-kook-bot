@@ -26,11 +26,18 @@ _last: dict = {}
 
 
 def _get_token() -> str:
-    """从 khl.py Bot 实例取 token，失败回退 config。"""
+    """从 khl.py Bot 实例取 token，失败回退启动配置。"""
     try:
         import services.sender as _s
         if _s._bot:
             return _s._bot.client.token
+    except Exception:
+        pass
+    try:
+        from core.config import get_config
+        cfg = get_config()
+        if cfg.kook_token:
+            return cfg.kook_token
     except Exception:
         pass
     try:

@@ -190,8 +190,6 @@ class AgentPlanner:
         text = msg.strip()
         if not text:
             return False
-        if len(text) < PLANNER_MIN_MSG_LEN:
-            return False
         if intent == "command":
             return False
 
@@ -201,6 +199,31 @@ class AgentPlanner:
             return False
 
         low = text.lower()
+        # Phase 20 P0：复杂度驱动，不因 intent=chat 就一律 Fast Path。
+        # 知识类（历史/原理/教程/对比/分析）→ 进 Agent 展开，且豁免长度限制：
+        # 短消息（如"mysql历史"）也可能是复杂知识问题，不能因过短被 Fast Path 压短。
+        # task 等级仍走下方 PLANNER_MIN_MSG_LEN 限制，避免"查一下"等含糊短命令误触发。
+        try:
+            from core.complexity import assess_complexity
+            _cx = assess_complexity(text)
+            if _cx.level == "knowledge":
+                # 纯知识问题进 Agent：可搜索/多步展开，避免 Fast Path 压短
+                logger.debug("Agent: 知识复杂度(knowledge)，进入规划: %r", text[:30])
+                return True
+        except Exception:
+            pass
+        # 过短消息 → Fast Path（chat 与含糊短任务）
+        if len(text) < PLANNER_MIN_MSG_LEN:
+            return False
+        # 明确执行型任务 → 进 Agent
+        try:
+            from core.complexity import assess_complexity
+            _cx = assess_complexity(text)
+            if _cx.level == "task":
+                logger.debug("Agent: 任务复杂度(task)，进入规划: %r", text[:30])
+                return True
+        except Exception:
+            pass
         # 行为类触发词 → 需要规划
         if any(k in low for k in PLANNER_TRIGGER_KEYWORDS):
             # 裸"帮我"需含强任务动词，避免"帮我一下"误触发

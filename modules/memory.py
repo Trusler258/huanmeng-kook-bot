@@ -128,6 +128,36 @@ def append_memory(chat_id: int, new_line: str):
         memories.pop(0)
     memories.append(new_line)
     save_memories_to_file(chat_id, memories)
+    # Phase 20 P0：同步写 SQLite/FTS5（fire-and-forget；失败静默，不影响文件 legacy）
+    _append_memory_sqlite_async(chat_id, new_line)
+
+
+def _append_memory_sqlite_async(chat_id: int, line: str) -> None:
+    """异步写一条记忆到 SQLite（不阻塞、不抛异常）。无 running loop 时跳过。"""
+    try:
+        import asyncio as _asyncio
+        _asyncio.get_running_loop().create_task(_append_memory_sqlite(chat_id, line))
+    except RuntimeError:
+        pass  # 无事件循环（如同步脚本）→ 跳过 DB 写入
+
+
+async def _append_memory_sqlite(chat_id: int, line: str) -> None:
+    """写一条记忆到 SQLite（Phase 20 P0）。DB 未初始化/异常 → 静默回退文件。"""
+    try:
+        from db.database import db
+        if not db.initialized:
+            return
+        from db.repositories import MemoryRepository
+        async with db.session() as s:
+            repo = MemoryRepository(s)
+            await repo.add(
+                content=line,
+                conversation_id=int(chat_id or 0),
+                memory_type="auto",
+                source="append",
+            )
+    except Exception:
+        pass  # 记忆仍保留在文件中，DB 写入失败不影响主流程
 
 
 # ════════════════════════════════════════════════════════════
@@ -308,8 +338,8 @@ async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: 
     query_parts = [current_msg] + [l for l in (context_lines or [])[-5:] if l]
     query_text = " ".join(query_parts)
 
-    # ── 主源：MemoryEngine（Filter/Candidate/Score/Rerank/Budget）──
-    source = "file"
+    # ── 主源：MemoryEngine（Filter/Candidate/Score/Rerank/Budget，底层 SQLite/FTS5）──
+    source = "legacy_file"
     top: list[str] = []
     try:
         from core.memory_engine import get_memory_engine
@@ -318,7 +348,7 @@ async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: 
             since_ms=since_ms or None, budget=MEMORY_TOKEN_BUDGET,
         )
         if engine_hits:
-            source = "memory_engine"
+            source = "sqlite_fts5"
             top = engine_hits.split("\n")[1:]  # 去掉标题行
     except Exception as e:
         logger.warning("MemoryEngine 检索不可用，回退: %s", e)
@@ -328,12 +358,13 @@ async def get_top_memories(current_msg: str, context_lines: list[str], chat_id: 
         sqlite_hits = await _sqlite_search_memories(query_text, chat_id, max_cnt,
                                                     user_id=user_id, since_ms=since_ms)
         if sqlite_hits is not None:
-            source = "sqlite"
+            source = "sqlite_fts5"
             top = sqlite_hits
 
     # ── fallback：DB 不可用 / 异常 / 无数据时读文件 ──
     if not top:
         top = _legacy_file_top_memories(current_msg, context_lines, chat_id, max_cnt)
+        source = "legacy_file"
 
     if not top:
         _record_memory_trace(_t0, 0, source, "miss")

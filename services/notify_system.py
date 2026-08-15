@@ -145,7 +145,8 @@ def _divider() -> dict:
 
 # ── 性能降级卡片 ────────────────────────────────────────────
 
-def _render_perf_degraded(avg_ms: float, timeout_rate: float, window_n: int, threshold: float) -> str:
+def _render_perf_degraded(avg_ms: float, p50_ms: float, p95_ms: float, p99_ms: float,
+                          timeout_rate: float, window_n: int, threshold: float) -> str:
     color = "#d9534f"  # 红
     modules = [
         _header("KOOK BOT · LLM 服务降级"),
@@ -153,7 +154,8 @@ def _render_perf_degraded(avg_ms: float, timeout_rate: float, window_n: int, thr
             ("服务", "LLM API"),
             ("状态", "已降级"),
             ("平均延迟", f"{avg_ms:.0f} ms"),
-            ("正常阈值", f"{threshold:.0f} ms"),
+            ("P50 / P95 / P99", f"{p50_ms:.0f} / {p95_ms:.0f} / {p99_ms:.0f} ms"),
+            ("正常阈值(P95)", f"{threshold:.0f} ms"),
             ("超时率", f"{timeout_rate * 100:.0f}%"),
             ("统计窗口", f"最近 {window_n} 次调用"),
         ]),
@@ -164,7 +166,7 @@ def _render_perf_degraded(avg_ms: float, timeout_rate: float, window_n: int, thr
     return _card(color, modules)
 
 
-def _render_perf_recovered(avg_ms: float, window_n: int) -> str:
+def _render_perf_recovered(avg_ms: float, p50_ms: float, p95_ms: float, window_n: int) -> str:
     color = "#2ecc71"  # 绿
     modules = [
         _header("KOOK BOT · LLM 服务已恢复"),
@@ -172,6 +174,7 @@ def _render_perf_recovered(avg_ms: float, window_n: int) -> str:
             ("服务", "LLM API"),
             ("状态", "正常"),
             ("平均延迟", f"{avg_ms:.0f} ms"),
+            ("P50 / P95", f"{p50_ms:.0f} / {p95_ms:.0f} ms"),
             ("统计窗口", f"最近 {window_n} 次调用"),
         ]),
         _divider(),
@@ -300,7 +303,7 @@ def render_update_check_card(text: str) -> str:
             if ln.strip():
                 log_lines.append(ln.strip())
             continue
-        if ln.strip().startswith("  ") and "[" in ln and "+" in ln:
+        if ln.strip().startswith("  ") and "[" in ln:
             file_lines.append(ln.strip())
         elif ln.strip():
             summary.append(ln.strip())
@@ -327,6 +330,73 @@ def render_update_check_card(text: str) -> str:
         })
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
     return _card_obj(color, modules)
+
+
+# ── 高风险人工审批 ──────────────────────────────────────────
+
+# 待确认的审批：token -> asyncio.Future(bool)
+_approval_pending: dict[str, asyncio.Future] = {}
+
+
+def _render_approval_card(token: str, files: list[dict], assessment) -> list:
+    """高风险更新人工确认卡片：展示涉及文件 + 确认/取消按钮。"""
+    color = "#d9534f"  # 红
+    modules = [_header("KOOK BOT · 高风险更新确认")]
+    high_files = getattr(assessment, "high_files", None) or [
+        f.get("filename", "") for f in files
+    ]
+    modules.append(_section([
+        ("风险等级", f"**{assessment.level}**"),
+        ("高风险文件", f"{len(high_files)} 个"),
+    ]))
+    modules.append(_divider())
+    modules.append({"type": "section", "text": {
+        "type": "kmarkdown", "content": "**涉及高风险文件**"}})
+    for name in high_files[:20]:
+        modules.append(_context(f"`{name}`"))
+    if len(high_files) > 20:
+        modules.append(_context(f"… 共 {len(high_files)} 个高风险文件"))
+    modules.append(_divider())
+    modules.append({
+        "type": "action-group",
+        "elements": [
+            _action_button("确认更新", f".update approve {token}", theme="danger"),
+            _action_button("取消更新", f".update deny {token}", theme="secondary"),
+        ],
+    })
+    modules.append(_context(f"审批有效期 10 分钟 · 仅 admin 点击生效"))
+    return _card_obj(color, modules)
+
+
+async def request_update_approval(files: list[dict], assessment, timeout: float = 600.0) -> bool:
+    """高风险更新人工审批回调（注入 safe_update 的 set_approve_callback）。
+
+    发卡片到目标频道，等待 admin 点击「确认更新/取消更新」按钮，返回是否放行。
+    超时（默认 10 分钟）未处理则默认拒绝。
+    """
+    import uuid
+    token = uuid.uuid4().hex[:16]
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _approval_pending[token] = fut
+    try:
+        await _send_to_targets(_render_approval_card(token, files, assessment))
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("高风险更新审批超时 token=%s", token)
+            return False
+    finally:
+        _approval_pending.pop(token, None)
+
+
+def resolve_approval(token: str, approved: bool) -> str:
+    """点击审批按钮后调用：把结果回传给等待中的请求。"""
+    fut = _approval_pending.get(token)
+    if not fut or fut.done():
+        return "审批已失效或已处理"
+    fut.set_result(approved)
+    return "已确认更新" if approved else "已取消更新"
 
 
 # ── 发送 ────────────────────────────────────────────────────
@@ -358,8 +428,26 @@ async def _send_to_targets(content) -> None:
 
 # ── 性能检查 ────────────────────────────────────────────────
 
+def _percentile(values: list[float], p: float) -> float:
+    """计算百分位数（线性插值）。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    if len(s) == 1:
+        return s[0]
+    rank = (len(s) - 1) * (p / 100.0)
+    lo = int(rank)
+    hi = min(lo + 1, len(s) - 1)
+    frac = rank - lo
+    return s[lo] + (s[hi] - s[lo]) * frac
+
+
 async def check_perf_and_notify() -> None:
-    """检查性能窗口，超阈值发降级卡片；恢复后发恢复卡片（状态机去重）"""
+    """检查性能窗口，超阈值发降级卡片；恢复后发恢复卡片（状态机去重）。
+
+    Phase 20 Part1：降级判定改用 P95（历史分位数）而非均值，避免单次慢请求误报。
+    只有当窗口内 P95 持续高于阈值（或超时率过高）才判定为 LLM 降级。
+    """
     global _perf_state, _last_perf_check
     cfg = load_cfg()
     if not cfg.get("perf_enabled", True) or not cfg.get("target_channels"):
@@ -375,25 +463,32 @@ async def check_perf_and_notify() -> None:
     if len(window) < 5:
         return  # 样本太少
 
-    avg_ms = sum(w[0] for w in window) / len(window)
+    samples = sorted(w[0] for w in window)
+    avg_ms = sum(samples) / len(samples)
+    p50_ms = _percentile(samples, 50)
+    p95_ms = _percentile(samples, 95)
+    p99_ms = _percentile(samples, 99)
     timeout_n = sum(1 for w in window if not w[1])
     timeout_rate = timeout_n / len(window)
     threshold = float(cfg.get("perf_avg_ms", 2000))
     thr_rate = float(cfg.get("perf_timeout_rate", 0.5))
 
-    degraded = (avg_ms > threshold) or (timeout_rate > thr_rate)
+    # 用 P95 判定降级：单次慢请求不会抬高 P95，只有持续变慢才触发。
+    degraded = (p95_ms > threshold) or (timeout_rate > thr_rate)
 
     with _perf_state_lock:
         if degraded and _perf_state != "degraded":
             _perf_state = "degraded"
-            card = _render_perf_degraded(avg_ms, timeout_rate, len(window), threshold)
+            card = _render_perf_degraded(avg_ms, p50_ms, p95_ms, p99_ms,
+                                         timeout_rate, len(window), threshold)
             await _send_to_targets(card)
-            logger.info("性能降级通知已发: avg=%.0fms rate=%.0f%%", avg_ms, timeout_rate * 100)
+            logger.info("性能降级通知已发: avg=%.0fms p50=%.0fms p95=%.0fms p99=%.0fms rate=%.0f%%",
+                        avg_ms, p50_ms, p95_ms, p99_ms, timeout_rate * 100)
         elif (not degraded) and _perf_state == "degraded":
             _perf_state = None
-            card = _render_perf_recovered(avg_ms, len(window))
+            card = _render_perf_recovered(avg_ms, p50_ms, p95_ms, len(window))
             await _send_to_targets(card)
-            logger.info("性能恢复通知已发: avg=%.0fms", avg_ms)
+            logger.info("性能恢复通知已发: avg=%.0fms p95=%.0fms", avg_ms, p95_ms)
 
 
 # ── GitHub 更新检查 ─────────────────────────────────────────
@@ -530,6 +625,110 @@ async def notify_github_update(remote_sha: str, commits: list[str] | None = None
     cfg["last_notified_sha"] = remote_sha
     save_cfg(cfg)
     return True
+
+
+async def _head_sha_api() -> str:
+    """通过 GitHub API 获取远程分支 HEAD SHA（服务器非 git 仓库时 git 命令不可用）"""
+    try:
+        from modules._auto_update.engine import GITHUB_API, GITHUB_BRANCH
+        import httpx
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            r = await client.get(
+                f"{GITHUB_API}/commits/{GITHUB_BRANCH}",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            r.raise_for_status()
+            return r.json().get("sha", "")
+    except Exception:
+        return ""
+
+
+async def _fetch_commit_info(sha: str) -> dict | None:
+    """通过 GitHub API 获取单个 commit 信息（短 hash 亦可）。
+
+    返回 {"sha": 完整sha, "message": 首行message, "files": [{filename,status}]}
+    """
+    if not sha:
+        return None
+    try:
+        from modules._auto_update.engine import GITHUB_API
+        import httpx
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            r = await client.get(
+                f"{GITHUB_API}/commits/{sha}",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            r.raise_for_status()
+            d = r.json()
+            files = [
+                {"filename": f.get("filename", ""), "status": f.get("status", "")}
+                for f in d.get("files", [])
+            ]
+            return {
+                "sha": d.get("sha", ""),
+                "message": d.get("commit", {}).get("message", "").split("\n")[0],
+                "files": files,
+            }
+    except Exception:
+        return None
+
+
+def _render_resend_text(full_sha: str, message: str, files: list[dict], level: str) -> str:
+    """构造补发通知的普通级更新检查文本（供 render_update_check_card 解析）"""
+    lines = [f"远程版本：**{full_sha[:7]}**", f"更新内容:{message}（等级 [{level}]）"]
+    if files:
+        lines.append("")
+        for f in files[:20]:
+            lines.append(f"  [{level}] {f['filename']}  ({f['status']})")
+        if len(files) > 20:
+            lines.append(f"  … 共 {len(files)} 个文件")
+    lines.append("")
+    lines.append("更新日志:")
+    lines.append(f"  {full_sha[:7]}  {message}")
+    return "\n".join(lines)
+
+
+async def resend_github_update(num: str = "", commits: list[str] | None = None) -> str:
+    """补发 git 更新通知（忽略 last_notified_sha 去重）。
+
+    - 无参数：默认补发远程最新版本（HEAD）的更新通知。
+    - 带短 hash：查询并补发该 commit 的更新内容。
+    用于 .update pull 后顶掉了 webhook/轮询更新通知时的手动补发：
+      - P0 级 → 重发「P0 核心漏洞修复」红色卡片 + 查看/确认按钮
+      - 普通级 → 重发「更新检查」卡片（含文件差异 + 应用更新按钮）
+    返回面向用户的文本总结。
+    """
+    cfg = load_cfg()
+    if not cfg.get("target_channels"):
+        return "补发失败：尚未配置通知目标频道，先执行 .notify 选择频道"
+
+    from modules._auto_update.severity import classify_commits, is_p0
+
+    # 目标 commit：指定短 hash 则查它，否则取远程 HEAD（最新版本）
+    target = num or await _head_sha_api()
+    if not target:
+        return "补发失败：无法获取远程版本 SHA"
+    info = await _fetch_commit_info(target)
+    if not info:
+        return f"补发失败：无法获取 commit {target[:7]} 的信息"
+    full_sha = info["sha"]
+    message = info["message"] or "(无提交信息)"
+    files = info["files"]
+
+    level = classify_commits([message])
+    if is_p0(level):
+        card = _render_p0_update_card(full_sha, [message])
+        await _send_to_targets(card)
+        msg = f"已补发 P0 更新通知（{full_sha[:7]}：{message}）"
+    else:
+        text = _render_resend_text(full_sha, message, files, level)
+        card = render_update_check_card(text)
+        await _send_to_targets(card)
+        msg = f"已补发更新通知（等级 {level}，{full_sha[:7]}：{message}）"
+
+    cfg["last_notified_sha"] = full_sha
+    save_cfg(cfg)
+    return msg
 
 
 # ── 指令支持 ────────────────────────────────────────────────

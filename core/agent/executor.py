@@ -107,8 +107,13 @@ class AgentExecutor:
         except asyncio.TimeoutError:
             plan.status = "TIMEOUT"
             self._record_loop(plan, ctx)
-            final = self._fallback_compose(plan, accumulated,
-                                           "任务执行超时，先给出已获取的信息喵~")
+            # Phase 20 Part13：超时提示统一走 persona.timeout_message
+            try:
+                from core.persona import timeout_message
+                _timeout_fallback = timeout_message()
+            except Exception:
+                _timeout_fallback = "任务执行超时，先给出已获取的信息。"
+            final = self._fallback_compose(plan, accumulated, _timeout_fallback)
             return AgentResult(plan=plan, final_text=final, sentences=[final],
                                status="TIMEOUT",
                                llm_calls=0,

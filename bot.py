@@ -111,6 +111,16 @@ class HuanmengBot:
         init_sender(self.khl_bot)
         info("消息发送器已初始化")
 
+        # 6a. Phase 20 P0：初始化 SQLite/FTS5（正式接入生产热路径）。
+        # 失败仅降级到 Legacy（文件 memory / 内存搜索缓存），绝不阻断 Bot 启动。
+        try:
+            from db.database import init_db
+            await init_db()
+            from db.database import db
+            info("数据库已就绪 (url=%s)", db.url)
+        except Exception as e:
+            warning("数据库初始化失败，进入 Legacy fallback: %s", e)
+
         # 6a. 初始化用户名查询模块（注入 khl.py Bot 实例）
         from utils.username import init_username
         init_username(self.khl_bot)
@@ -238,6 +248,17 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_holiday())
         _asyncio.ensure_future(self._bg_notify_loop())
         _asyncio.ensure_future(self._bg_update_webhook())
+        _asyncio.ensure_future(self._bg_set_version_status())
+
+        # 注入高风险更新人工审批回调（卡片确认后放行）
+        try:
+            from modules._auto_update.safe_update import set_approve_callback
+            from services.notify_system import request_update_approval
+            set_approve_callback(request_update_approval)
+            info("已注入高风险更新人工审批回调")
+        except Exception as e:
+            warning("注入高风险更新审批回调失败: %s", e)
+
         info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日+通知(性能/GitHub)+更新Webhook:62004")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
@@ -259,6 +280,19 @@ class HuanmengBot:
                 info("⏳ 5 秒后重试...")
                 await asyncio.sleep(5)
                 await self.khl_bot.start()
+
+    async def _bg_set_version_status(self):
+        """启动后自动设置 KOOK 动态状态"正在听 当前版本: <版本>"，用于在客户端直接看到当前版本"""
+        try:
+            await asyncio.sleep(2)  # 等待 bot 连接就绪
+            from services.music_status import set_music
+            ok, msg = await set_music(f"当前版本: {self.VERSION}", singer=self.VERSION)
+            if ok:
+                info("已设置 KOOK 动态状态: 正在听 当前版本: %s", self.VERSION)
+            else:
+                warning("设置 KOOK 动态状态失败: %s", msg)
+        except Exception as e:
+            warning("设置 KOOK 动态状态失败: %s", e)
 
     def stop(self):
         """触发停止信号"""
@@ -301,6 +335,14 @@ class HuanmengBot:
         # 持久化瞬时上下文（重启不丢记忆）
         from core.context_manager import save_context
         save_context()
+
+        # Phase 20 P0：优雅关闭数据库（dispose 引擎，避免连接泄漏）
+        try:
+            from db.database import close_db
+            await close_db()
+            info("数据库已关闭")
+        except Exception as e:
+            warning("数据库关闭降级: %s", e)
 
         info("👋 再见！")
         print("")  # 空行让日志更清晰

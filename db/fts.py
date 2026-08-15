@@ -12,6 +12,13 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from core.logger import get_logger
+
+logger = get_logger("db.fts")
+
+# FTS5 虚拟表名（供 tokenizer 迁移检测使用）
+FTS_TABLES = ("messages_fts", "memories_fts")
+
 # 建表语句（幂等：IF NOT EXISTS）
 _FTS_SQL = [
     # messages FTS
@@ -76,6 +83,25 @@ async def ensure_fts(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         for stmt in _FTS_SQL:
             await conn.execute(text(stmt))
+
+
+async def rebuild_fts(engine: AsyncEngine, tables=FTS_TABLES) -> None:
+    """从 content 表重建 FTS 索引（external content 表迁移/回填用）。
+
+    用 'rebuild' 指令从业务表重建索引，比逐行 INSERT 可靠。
+    仅在有存量数据时执行；空表跳过。
+    """
+    for fts_name in tables:
+        try:
+            async with engine.begin() as conn:
+                src_cnt = (await conn.execute(text(
+                    f"SELECT count(*) FROM {fts_name.replace('_fts','')}"))).scalar()
+                if src_cnt > 0:
+                    await conn.execute(text(
+                        f"INSERT INTO {fts_name}({fts_name}) VALUES ('rebuild')"))
+                    logger.info("FTS 重建完成 %s (%s rows)", fts_name, src_cnt)
+        except Exception as e:
+            logger.warning("FTS 重建跳过 %s: %s", fts_name, e)
 
 
 def _plain(q: str) -> str:

@@ -908,13 +908,44 @@ async def generate_multi_reply_with_tools(
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
+        # 工具已成功执行 → 记录 tool_success，绝不让最终 LLM 失败覆盖工具成功。
+        if action_results:
+            try:
+                from core.trace import record_final_flag
+                record_final_flag("tool_success")
+            except Exception:
+                pass
         json_raw = await call_llm(
             reply_model, msgs,
             max_tokens=max(max_tokens or 0, 8000),
             temperature=0.4, json_mode=True,
         )
         if json_raw and json_raw.strip():
-            return _parse_reply(json_raw, speaker_name)
+            parsed = _parse_reply(json_raw, speaker_name, quiet=True)
+            if parsed[0]:
+                try:
+                    from core.trace import record_final_flag
+                    record_final_flag("final_reply_ok")
+                except Exception:
+                    pass
+                return parsed
+            # 工具已成功，但最终 LLM JSON 解析失败 → 用工具结果兜底，
+            # 禁止让用户"再说一遍"覆盖已成功的工具执行。
+            logger.warning("工具已成功执行，但最终 LLM JSON 解析失败，回退工具结果")
+            try:
+                from core.trace import record_final_flag
+                record_final_flag("final_llm_failed")
+                record_final_flag("final_reply_fallback")
+            except Exception:
+                pass
+            if action_results:
+                return _parse_reply(
+                    json.dumps({"replies": [action_results[0]], "fav": 0, "calls": [],
+                                "face": None, "mood": "开心", "action": "", "at": None,
+                                "mode": None, "origin": "user", "actor": {}},
+                               ensure_ascii=False),
+                    speaker_name,
+                )
 
     # ── 处理结果 ──
     if errors:
@@ -1001,7 +1032,13 @@ async def _reply_from_error(msgs: list[dict], err_text: str,
     except Exception:
         pass
     # 兜底：LLM 不可用时，仅给中性致歉（不暴露内部细节）
-    return [], 0, [], "抱歉，这个操作我没能完成，换个说法再试试喵～", "", None, "", None, None, "user", {}, None
+    # Phase 20 Part13：统一走 persona.tool_failed，避免硬编码另一套人格。
+    try:
+        from core.persona import tool_failed as _persona_tool_failed
+        _fallback_msg = _persona_tool_failed()
+    except Exception:
+        _fallback_msg = "抱歉，这个操作我没能完成，换个说法再试试。"
+    return [], 0, [], _fallback_msg, "", None, "", None, None, "user", {}, None
 
 
 def _parse_reply(
@@ -1016,6 +1053,7 @@ def _parse_reply(
     try:
         from core.trace import span as _trace_span
         with _trace_span("json_parse"):
+            raw = raw.lstrip('\ufeff')  # 去掉 BOM
             raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
             raw = re.sub(r'\s*```$', '', raw)
             start = raw.find("{")
@@ -1317,6 +1355,8 @@ async def generate_multi_reply(
 
     # ------JSON解析（含防幻觉清洗）------
     try:
+        # 0. 去掉 BOM
+        raw = raw.lstrip('\ufeff')
         # 1. 去掉 markdown 代码块
         raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
         raw = re.sub(r'\s*```$', '', raw)

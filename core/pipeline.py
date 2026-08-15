@@ -318,6 +318,21 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         _fast_search = True  # router 出错 → 走完整 pipeline（含搜索判断），不丢消息
     logger.debug("请求意图: intent=%s fast_search=%s msg='%s'", intent, _fast_search, msg_content[:30])
 
+    # ------Phase 20 P0: 复杂度评估（与意图拆开）------
+    # 决定回答深度/是否需要 Agent/输出长度/上下文预算。
+    # 纯规则，不调用 LLM；失败保守回落 chat，不丢消息。
+    try:
+        from core.complexity import assess_complexity
+        _complexity = assess_complexity(msg_content)
+    except Exception:
+        _complexity = None
+    _cx_level = _complexity.level if _complexity else "chat"
+    _context_scale = _complexity.context_scale if _complexity else 1.0
+    _detail_hint = _complexity.detail_hint if _complexity else ""
+    if _complexity and not _complexity.is_chat:
+        logger.info("复杂度: level=%s score=%d scale=%.1f", _cx_level,
+                    _complexity.score, _context_scale)
+
     # ------Phase 7 Agent 薄适配层------
     # 复杂任务走 Agent Planner+Executor（返回 True 表示已处理并回复，直接结束）；
     # 简单聊天 / 简单 command / 规划失败 → 返回 False，继续原 Fast Path，不改原逻辑。
@@ -458,11 +473,20 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # Phase 9：把分桶的额外上下文交给 Context Engine 仲裁
     # （Retrieve→Rank→Compress→Budget→Inject），产出带预算的 extra_info，
     # 并记录各类 Token 消耗到 trace。
-    from core.context_builder import build_context_from_parts
+    from core.context_builder import build_context_from_parts, DEFAULT_TOKEN_BUDGETS
     from core.trace import record_context_tokens as _record_ctx_tokens
     buckets_joined = {k: "\n\n".join(v) for k, v in extra_buckets.items() if v}
-    built_extra = build_context_from_parts(buckets_joined, with_headers=False)
+    # Phase 20 P0：Context 按复杂度动态扩容（2200 不是硬上限）。
+    # 复杂任务/知识问题放大各段预算，避免关键 context 被截断导致回答被压短。
+    _ctx_budgets = None
+    if _context_scale > 1.0:
+        _ctx_budgets = {k: int(v * _context_scale) for k, v in DEFAULT_TOKEN_BUDGETS.items()}
+    built_extra = build_context_from_parts(buckets_joined, budgets=_ctx_budgets,
+                                           with_headers=False)
     extra_info = built_extra.text
+    # 注入复杂度详细提醒（推到 extra_info 末尾，让 LLM 知道要展开回答）
+    if _detail_hint:
+        extra_info = (extra_info + _detail_hint) if extra_info else _detail_hint
     if built_extra.dropped:
         logger.debug("extra_info 按预算丢弃 %d 项: %s",
                      len(built_extra.dropped), built_extra.dropped[:5])
@@ -560,11 +584,28 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         for _c in _cap_resolved["caps"]:
             if _c.category == "skill":
                 _record_skill(_c.name, selected=True, loaded=True)
+        # Phase 20 Part5：把 Capability 解析统计写入 trace，供审计 caps=0/tools=0。
+        # 无能力匹配时正常记录 0，不静默失败。
+        try:
+            from core.trace import record_capability_stats as _record_cap_stats
+            _record_cap_stats({
+                "capabilities_discovered": len(_caps),
+                "capabilities_selected": len([c for c in _caps if getattr(c, "selected", False)]),
+                "tools_available": len(fc_schemas),
+            })
+        except Exception:
+            pass
     except Exception as _ce:
         logger.warning("Capability 解析失败，回退核心能力: %s", _ce)
         _caps = []
         skill_text = ""
         fc_schemas = []
+        try:
+            from core.trace import record_capability_stats as _record_cap_stats
+            _record_cap_stats({"capabilities_discovered": 0, "capabilities_selected": 0,
+                               "tools_available": 0, "error": str(_ce)[:120]})
+        except Exception:
+            pass
 
     sys_sections = _build_sys_sections(cfg.bot_name, _personality, is_group, _custom_persona,
                                        capabilities=_caps)
@@ -578,7 +619,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     _sys_parts = {"system": _essential}
     if skill_text:
         _sys_parts["skill"] = skill_text
-    sys_built = _build_ctx(_sys_parts, with_headers=False)
+    # Phase 20 P0：system 段预算也按复杂度扩容，避免 Stable 人格被截断
+    _sys_budgets = None
+    if _context_scale > 1.0:
+        _sys_budgets = {k: int(v * _context_scale) for k, v in DEFAULT_TOKEN_BUDGETS.items()}
+    sys_built = _build_ctx(_sys_parts, budgets=_sys_budgets, with_headers=False)
     system_text_override = sys_built.text
     logger.info("system_context: %d字 caps=%d tools=%d (system=%d skill=%d)",
                 len(system_text_override), len(_caps), len(fc_schemas),
@@ -680,15 +725,21 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
             bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
             is_group=is_group, extra_info=extra_info_for_llm,
-            max_tokens=None,
+            max_tokens=(_complexity.output_max_tokens if _complexity else None),
             user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
             system_text_override=system_text_override,
             tools_override=fc_schemas,
         )
 
     if not sentences:
+        # Phase 20 Part13：回复失败提示统一走 persona，不硬编码另一套人格。
+        try:
+            from core.persona import reply_failed
+            _fail_head = reply_failed()
+        except Exception:
+            _fail_head = "回复生成失败。"
         error_lines = [
-            "呜呜，回复生成失败了喵~",
+            _fail_head,
             f"错误: LLM返回空内容",
             f"时间: {now.strftime('%H:%M:%S')}",
             f"对话者: {sender_name}",

@@ -25,7 +25,16 @@ CARD_RE = re.compile(r'\[CARD\](.*?)\[/CARD\]', re.DOTALL)
 CQ_FILE_RE = re.compile(r'\[CQ:file,file=file:///([^\],>]+),name=([^\]]+)\]')
 
 # 兜底提示（LLM 格式错误时替换裸 JSON 泄漏）
-_JSON_LEAK_FALLBACK = "呜…刚才脑子乱了一下喵，能再说一遍吗？(＞﹏＜)"
+# Phase 20 Part13：统一走 persona.json_parse_fallback，避免硬编码另一套人格。
+def _json_leak_fallback() -> str:
+    try:
+        from core.persona import json_parse_fallback
+        return json_parse_fallback()
+    except Exception:
+        return "呜…刚才内容格式出了点问题喵。"
+
+
+_JSON_LEAK_FALLBACK = _json_leak_fallback()
 
 
 @dataclass

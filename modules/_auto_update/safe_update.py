@@ -285,7 +285,10 @@ async def safe_check_and_update(
         if _approve_callback is None:
             return (f"更新被拒绝：检测到 {len(assessment.high_files)} 个高风险文件，"
                     f"未配置人工审批回调。\n{assessment.reason}")
-        approved = _approve_callback(actionable, assessment)
+        if asyncio.iscoroutinefunction(_approve_callback):
+            approved = await _approve_callback(actionable, assessment)
+        else:
+            approved = _approve_callback(actionable, assessment)
         if not approved:
             return f"更新已取消（高风险未获审批）：{assessment.reason}"
 

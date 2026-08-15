@@ -97,6 +97,23 @@ class RequestContext:
     # 由 core.context_builder.ContextEngine 产出后写入，供 trace_summary 审计上下文占用。
     context_tokens: dict = field(default_factory=dict)
 
+    # ── Phase 20 Part7：最终回复状态标记 ──
+    # 取值：tool_success / final_llm_failed / final_reply_fallback / final_reply_ok。
+    # 用于审计"是否因最终 LLM 失败而覆盖了已成功的工具结果"。
+    final_flags: list[str] = field(default_factory=list)
+
+    # ── Phase 20 Part5：Capability 解析统计 ──
+    # capabilities_discovered / capabilities_selected / tools_available。
+    capability_stats: dict = field(default_factory=dict)
+
+    def record_capability_stats(self, stats: dict) -> None:
+        if stats:
+            self.capability_stats = dict(stats)
+
+    def record_final_flag(self, flag: str) -> None:
+        if flag and flag not in self.final_flags:
+            self.final_flags.append(flag)
+
     def record_context_tokens(self, stats: dict) -> None:
         """记录本次请求各类上下文的 Token 消耗（key 形如 system_tokens / history_tokens…）。"""
         if not stats:
@@ -235,6 +252,8 @@ class RequestContext:
             "skills": list(self.skills_used),
             "plan": dict(self.plan_summary),
             "context_tokens": dict(self.context_tokens),
+            "final_flags": list(self.final_flags),
+            "capability": dict(self.capability_stats),
             "phases": self.summary(),
         }
 
@@ -384,6 +403,20 @@ def record_context_tokens(stats: dict) -> None:
     ctx = _current_ctx.get()
     if ctx is not None:
         ctx.record_context_tokens(stats)
+
+
+def record_final_flag(flag: str) -> None:
+    """记录最终回复状态标记（tool_success / final_llm_failed / final_reply_fallback / final_reply_ok）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_final_flag(flag)
+
+
+def record_capability_stats(stats: dict) -> None:
+    """记录 Capability 解析统计（capabilities_discovered / selected / tools_available）。"""
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        ctx.record_capability_stats(stats)
 
 
 def trace_summary() -> dict:

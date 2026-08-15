@@ -4,6 +4,7 @@
 .update       手动触发增量更新（走安全流水线：Fetch→Diff→分析→评估→快照→应用→Health→回滚）
 .update check 只检查不下载
 .update force 强制全量对比（跳过 SHA 缓存）
+.update resend  补发被顶掉的 git 更新通知（绕过去重，P0 发红色卡片 / 普通级发更新检查卡片）
 .upd          同上（短别名）
 .upd test     公开连通性测试（无需权限）
 """
@@ -17,7 +18,7 @@ from modules._auto_update.safe_update import safe_check_and_update
 
 
 async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.update [check|force|test]"""
+    """.update [check|force|test|resend]"""
     # test 模式无需权限，任何人可用
     if args and args[0].lower() == "test":
         return await _test_connectivity()
@@ -30,6 +31,18 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
             return "权限不足喵~"
     except Exception:
         pass
+
+    # 补发被顶掉的 git 更新通知（需权限，绕过去重）
+    if args and args[0].lower() in ("resend", "notify", "补发"):
+        from services.notify_system import resend_github_update
+        sha_arg = args[1] if len(args) > 1 else ""
+        return await resend_github_update(sha_arg)
+
+    # 高风险更新人工审批：点击卡片「确认/取消更新」按钮后回传
+    if args and args[0].lower() in ("approve", "deny"):
+        from services.notify_system import resolve_approval
+        token = args[1] if len(args) > 1 else ""
+        return resolve_approval(token, args[0].lower() == "approve")
 
     check_only = args and args[0].lower() == "check"
     force = args and args[0].lower() == "force"

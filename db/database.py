@@ -52,6 +52,16 @@ class DatabaseManager:
     def url(self) -> str:
         return self._database_url
 
+    @property
+    def health(self) -> dict:
+        """DB health 状态（Phase 20 Part12）：不抛异常，未初始化即返回 degraded。"""
+        if not self._initialized or self._engine is None:
+            return {"initialized": False, "status": "degraded", "source": "legacy"}
+        try:
+            return {"initialized": True, "status": "ready", "source": "sqlite_fts5"}
+        except Exception:
+            return {"initialized": self._initialized, "status": "degraded", "source": "legacy"}
+
     def _resolve_url(self) -> str:
         """优先读环境变量 DATABASE_URL，否则默认 SQLite 文件。"""
         url = os.environ.get("DATABASE_URL", "").strip()
@@ -82,13 +92,49 @@ class DatabaseManager:
     async def _init_schema(self) -> None:
         """建表 + 建 FTS 虚拟表 + 建索引（幂等）。"""
         from db.models import Base
-        from db.fts import ensure_fts
+        from db.fts import ensure_fts, rebuild_fts
 
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        await ensure_fts(self._engine)
+        migrated = await self._migrate_fts_tokenizer()
+        # 先升级 memories 业务表结构，再构建 FTS 索引，
+        # 避免 ALTER TABLE 使 external content FTS 索引失配。
         await self._upgrade_memories_schema()
+        await ensure_fts(self._engine)
+        # 仅当本次发生了 tokenizer 迁移（表被重建）时，才重建索引回填存量数据
+        if migrated:
+            await rebuild_fts(self._engine, tables=[m for m in migrated])
         logger.info("数据库表结构已就绪（含 FTS5）")
+
+    async def _migrate_fts_tokenizer(self) -> set:
+        """把旧版 unicode61 建的 FTS 表重建为 trigram（Phase 20）。
+
+        早期版本用 unicode61 分词，中文按单字切分，导致中文字串（如"三次握手"）
+        无法按子串命中。`CREATE VIRTUAL TABLE IF NOT EXISTS` 不会重建已存在的表，
+        因此需检测既有 FTS 表的分词器，若不含 trigram 则连同触发器一起删除，
+        由 ensure_fts 用 trigram 重建。
+
+        返回被重建（删除）的 FTS 表名集合，供调用方重建索引。
+        """
+        from db.fts import FTS_TABLES
+        migrated: set = set()
+        try:
+            async with self._engine.begin() as conn:
+                for name in FTS_TABLES:
+                    row = (await conn.execute(text(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=:n"
+                    ), {"n": name})).first()
+                    # 表不存在则由 ensure_fts 创建；已存在但非 trigram 则重建
+                    if row is not None and row[0] and "trigram" not in row[0]:
+                        await conn.execute(text(f"DROP TRIGGER IF EXISTS {name.replace('_fts','')}_ai"))
+                        await conn.execute(text(f"DROP TRIGGER IF EXISTS {name.replace('_fts','')}_ad"))
+                        await conn.execute(text(f"DROP TRIGGER IF EXISTS {name.replace('_fts','')}_au"))
+                        await conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
+                        migrated.add(name)
+                        logger.info("FTS 分词器迁移: %s 由非 trigram 重建", name)
+        except Exception as e:
+            logger.warning("FTS 分词器迁移失败（可忽略，新库已是 trigram）: %s", e)
+        return migrated
 
     async def _upgrade_memories_schema(self) -> None:
         """为既有 memories 表补齐 Phase 11 新增列（幂等：列已存在则跳过）。"""

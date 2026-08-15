@@ -89,6 +89,19 @@ def classify_request(msg: str, *, is_group: bool = True,
     if any(w in low for w in _TOOL_KEYWORDS):
         return "tool"
 
+    # Phase 20 P0：知识/执行复杂度 → 不当作普通 chat
+    # 例："mysql历史"、"说说mysql历史"、"讲解TCP三次握手原理" 等
+    # 不能一律归为 chat，否则 Fast Path 直接压短回答。
+    try:
+        from core.complexity import assess_complexity
+        _complexity = assess_complexity(text)
+        if _complexity.level == "task":
+            return "tool"          # 执行型任务 → 走复杂处理（可进 Agent）
+        if _complexity.level == "knowledge":
+            return "search"        # 知识类问题 → 允许搜索 + 展开回答
+    except Exception:
+        pass
+
     # 默认普通聊天
     return "chat"
 
@@ -107,6 +120,13 @@ def needs_search_heuristic(msg: str) -> bool:
         return True
     if _SEARCH_QUESTION.search(msg):
         return True
+    # Phase 20 P0：知识类问题（历史/原理/教程/对比/分析）通常需要搜索或展开
+    try:
+        from core.complexity import assess_complexity
+        if assess_complexity(low).level == "knowledge":
+            return True
+    except Exception:
+        pass
     return False
 
 
