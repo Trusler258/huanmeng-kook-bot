@@ -157,6 +157,17 @@ def apply_hunks(
     offset = 0  # 累积行号偏移（插入/删除导致）
 
     for hunk in hunks:
+        # 新增文件（@@ -0,0 +1,N @@）：本地为空、旧计数为 0，直接整块写入。
+        # 否则 _find_context_match 会因无上下文返回 hint_pos=-1 而被误判为 skip，
+        # 导致新增文件永不落盘（Phase20 健康检查"文件缺失"根因）。
+        if not local_lines and hunk.old_start == 0 and hunk.old_count == 0:
+            block = _reconstruct_block(hunk)
+            if block:
+                result = block[:]
+                offset = len(block)
+                apply_ok += 1
+            continue
+
         # 计算在已调整的本地文件中的位置
         adjusted_start = hunk.old_start - 1 + offset  # → 0-indexed
 
