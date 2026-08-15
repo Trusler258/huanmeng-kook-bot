@@ -26,6 +26,7 @@ def _clean_reply(text: str) -> str:
 
 from core.logger import get_logger
 from core.config import get_config
+from core.reply_split import split_knowledge_sentences
 from utils.format_lang import format_lang
 from modules.judge import should_respond
 from modules.memory import (
@@ -968,6 +969,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         combined_reply = re.sub(r'\[FACE:[^\]]*\]?', '', combined_reply).strip()
 
     sentences = [s for s in combined_reply.split(" || ") if s.strip()]
+    # 结构化分段：把含多个阶段小标题的长句拆成多条，每条作为独立消息发送
+    _segs = []
+    for _s in sentences:
+        _segs.extend(split_knowledge_sentences(_s))
+    sentences = _segs
     if not sentences:
         sentences = ["喵~"]
     _face_cq_for_later = face_cq
