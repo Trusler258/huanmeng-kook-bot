@@ -37,7 +37,7 @@ _RATE_LIMITED = "__RATE_LIMITED__"
 
 def _gh_headers() -> dict:
     """构造 GitHub API 请求头：有 token 时带 Authorization，否则匿名。"""
-    headers = _gh_headers()
+    headers = {"Accept": "application/vnd.github+json"}
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
     return headers
