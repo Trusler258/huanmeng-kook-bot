@@ -26,8 +26,27 @@ logger = get_logger("auto_update")
 # 格式: "你的GitHub用户名/你的仓库名"，可用环境变量 GITHUB_REPO 覆盖（服务器无需改代码）
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "Trusler258/huanmeng-kook-bot").strip()
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "master").strip()
+# GitHub API 用 token 认证可将匿名配额 60 次/小时 提升到 5000 次/小时，避免 .update 频繁拉取被打 403 限流
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}" if GITHUB_REPO else ""
 CACHE_DIR = ".update_cache"
+
+# _get_head_sha 命中限流时的特殊返回标记
+_RATE_LIMITED = "__RATE_LIMITED__"
+
+
+def _gh_headers() -> dict:
+    """构造 GitHub API 请求头：有 token 时带 Authorization，否则匿名。"""
+    headers = _gh_headers()
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
+
+
+def _is_rate_limited(resp) -> bool:
+    """判断是否命中 GitHub API 限流（403 rate limit exceeded / 429）。"""
+    return resp is not None and getattr(resp, "status_code", 0) in (403, 429) and \
+        "rate limit" in (getattr(resp, "text", "") or "").lower()
 
 # 文件下载镜像
 RAW_MIRRORS = [
@@ -74,7 +93,7 @@ async def _fetch_compare(base_sha: str, head_sha: str) -> list[dict] | None:
         return None
     try:
         url = f"{GITHUB_API}/compare/{base_sha[:7]}...{head_sha[:7]}"
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = _gh_headers()
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
@@ -96,7 +115,7 @@ async def _fetch_commit_log(base_sha: str, head_sha: str) -> str:
         return ""
     try:
         url = f"{GITHUB_API}/compare/{base_sha[:7]}...{head_sha[:7]}"
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = _gh_headers()
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
@@ -115,12 +134,15 @@ async def _fetch_commit_log(base_sha: str, head_sha: str) -> str:
 
 
 async def _get_head_sha() -> str | None:
-    """获取远程 HEAD commit SHA"""
+    """获取远程 HEAD commit SHA；命中 GitHub API 限流时返回特殊标记。"""
     try:
         url = f"{GITHUB_API}/commits/{GITHUB_BRANCH}"
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = _gh_headers()
         async with httpx.AsyncClient(timeout=10, verify=False) as client:
             resp = await client.get(url, headers=headers)
+            if _is_rate_limited(resp):
+                logger.warning("GitHub API 被限流(403/429)，请配置 GITHUB_TOKEN 或等配额恢复")
+                return _RATE_LIMITED
             resp.raise_for_status()
             return resp.json().get("sha", "")
     except Exception as e:
@@ -132,7 +154,7 @@ async def _fetch_all_files(head_sha: str) -> list[dict] | None:
     """获取某个 commit 的完整文件列表（用于首次/force-push 全量同步）"""
     try:
         url = f"{GITHUB_API}/commits/{head_sha}"
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = _gh_headers()
         async with httpx.AsyncClient(timeout=10, verify=False) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
@@ -163,7 +185,7 @@ async def _get_blob_sha(rel_path: str, commit_sha: str) -> str:
     """获取某个文件在指定 commit 中的 blob SHA"""
     try:
         url = f"{GITHUB_API}/contents/{rel_path}?ref={commit_sha}"
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = _gh_headers()
         async with httpx.AsyncClient(timeout=5, verify=False) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
@@ -204,6 +226,8 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
 
     # 1. 获取 HEAD SHA
     head = await _get_head_sha()
+    if head == _RATE_LIMITED:
+        return "GitHub API 被限流(403/429)：匿名配额 60 次/小时已用尽。请配置 GITHUB_TOKEN 或 1 小时后重试"
     if not head:
         return "无法连接 GitHub，请检查网络"
 
