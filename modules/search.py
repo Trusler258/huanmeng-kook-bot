@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Optional
 
 import httpx
@@ -19,6 +20,24 @@ from modules.judge import get_cached_search, set_search_cache, is_realtime_query
 from utils.format_lang import format_lang
 
 logger = get_logger("search")
+
+# ── 搜索提示去重：同一(chat, query)在短时间内只发一次"正在搜"/"找到 N 个结果"，
+# ── 避免 pipeline 自动搜索与 Agent 工具搜索两条路径对同一 query 重复推送提示。 ──
+import threading
+_TIP_DEDUP_TTL = 30.0  # 秒
+_tip_lock = threading.Lock()
+_tip_sent: dict[tuple, float] = {}  # (chat_id, query) -> monotonic time
+
+
+def _tip_should_send(key: tuple) -> bool:
+    """返回 True 表示本次应发送提示；去重窗口内重复 key 返回 False。"""
+    now = time.monotonic()
+    with _tip_lock:
+        last = _tip_sent.get(key)
+        if last is not None and (now - last) < _TIP_DEDUP_TTL:
+            return False
+        _tip_sent[key] = now
+        return True
 
 
 def _count_search_results(text: str) -> int:
@@ -52,7 +71,7 @@ async def perform_search(
     search_tip = f"🔍 DeepSeek搜索: {query[:60]}{'…' if len(query)>60 else ''}"
 
     # ── 搜索前即时提示：先发一条"正在搜"，避免用户长时间无反馈（卡好久）──
-    if chat_id:
+    if chat_id and _tip_should_send(("tip", chat_id, query)):
         try:
             asyncio.create_task(send_by_chat_type(search_tip, chat_id, is_group, user_id=user_id))
         except Exception:
@@ -74,7 +93,7 @@ async def perform_search(
     _trace_record("search_total", (asyncio.get_event_loop().time() - _search_start) * 1000.0)
 
     # ── 找到结果后提示条数：先于最终组成的答案发出，保持"搜→找到→回答"顺序 ──
-    if chat_id and result_text:
+    if chat_id and result_text and _tip_should_send(("found", chat_id, query)):
         try:
             n = _count_search_results(result_text)
             asyncio.create_task(send_by_chat_type(
