@@ -342,6 +342,50 @@ async def test_max_tokens_zero_omitted():
 
 
 # ═══════════════════════════════════════════════════════════════
+# 18. .notifyperf 开关：set_perf_enabled / get_perf_enabled 持久化
+# ═══════════════════════════════════════════════════════════════
+def test_notifyperf_toggle():
+    """回归：新增 .notifyperf 指令，关闭后 check_perf_and_notify 不再推送降级卡片。
+    这里验证 set_perf_enabled/get_perf_enabled 正确读写并持久化到 notify_config.json。
+    """
+    import services.notify_system as ns
+
+    # 用临时文件隔离，避免污染真实配置
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    tmp.close()
+    from pathlib import Path
+    orig_file = ns._CONFIG_FILE
+    backup = None
+    if orig_file.exists():
+        backup = orig_file.read_text(encoding="utf-8")
+    ns._CONFIG_FILE = Path(tmp.name)
+
+    try:
+        # 默认开启
+        check("perf_default_on", ns.get_perf_enabled() is True)
+        # 关闭
+        ok, cur = ns.set_perf_enabled(False)
+        check("perf_off_ok", ok is True)
+        check("perf_off_state", cur is False)
+        check("perf_off_persisted", ns.get_perf_enabled() is False)
+        # 重新开启
+        ok, cur = ns.set_perf_enabled(True)
+        check("perf_on_ok", ok is True)
+        check("perf_on_state", cur is True)
+        check("perf_on_persisted", ns.get_perf_enabled() is True)
+    finally:
+        ns._CONFIG_FILE = orig_file
+        if backup is not None:
+            orig_file.write_text(backup, encoding="utf-8")
+        if Path(tmp.name).exists():
+            try:
+                Path(tmp.name).unlink()
+            except Exception:
+                pass
+
+
+# ═══════════════════════════════════════════════════════════════
 # 主入口
 # ═══════════════════════════════════════════════════════════════
 async def main():
@@ -362,6 +406,7 @@ async def main():
     test_note_request_stage()
     test_metrics_snapshot()
     await test_max_tokens_zero_omitted()
+    test_notifyperf_toggle()
 
     print(f"\n{'ALL PASS' if FAIL == 0 else f'{FAIL} FAILED'}  ({PASS} passed, {FAIL} failed)")
     sys.exit(1 if FAIL else 0)

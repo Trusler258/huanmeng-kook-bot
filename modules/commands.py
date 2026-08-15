@@ -727,6 +727,28 @@ async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_qq
             f"（无新提交则不会重复推送）")
 
 
+async def cmd_notifyperf(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.notifyperf [on|off|status] — 开/关 LLM 性能降级通知（仅管理员）。
+
+    用于关闭"KOOK BOT · LLM 服务降级"这类推送，避免在开发/调试期被打扰。
+    - 无参数 / status：显示当前状态
+    - on  ：开启性能降级通知
+    - off ：关闭性能降级通知（降级/恢复卡片都不再推送）
+    """
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return "权限不足喵~"
+
+    from services.notify_system import get_perf_enabled, set_perf_enabled
+    if args and args[0].lower() in ("on", "off"):
+        enable = args[0].lower() == "on"
+        set_perf_enabled(enable)
+        return f"已{'开启' if enable else '关闭'} LLM 性能降级通知。\n当前：{'开启' if enable else '已关闭'}（.notifyperf on 可恢复）"
+    cur = get_perf_enabled()
+    return f"LLM 性能降级通知当前状态：{'开启' if cur else '已关闭'}"
+
+
 async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     """.jsonraw <对话内容> → 输出 LLM 原始 JSON"""
     text = " ".join(args) if args else "喵"
@@ -3159,6 +3181,7 @@ COMMAND_MAP: dict[str, callable] = {
     "notify":     cmd_notify,
     "notifyset":  cmd_notifyset,
     "notifycheck": cmd_notifycheck,
+    "notifyperf":  cmd_notifyperf,
     "jsonraw":    cmd_jsonraw,
     "md":         cmd_md,
     "draw":       cmd_draw,

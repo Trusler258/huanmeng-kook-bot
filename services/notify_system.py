@@ -779,6 +779,26 @@ def add_target_channel(channel_id) -> bool:
     return True
 
 
+def set_perf_enabled(enabled: bool) -> tuple[bool, bool]:
+    """开/关 LLM 性能降级通知（perf_enabled）。返回 (成功与否, 当前开关状态)。
+
+    关闭后 check_perf_and_notify 不再发送降级/恢复卡片；开启则恢复，并重置
+    降级状态机，让下一次检查重新评估（避免沿用关闭前的 degraded 状态）。
+    """
+    global _perf_state
+    cfg = load_cfg()
+    cfg["perf_enabled"] = bool(enabled)
+    save_cfg(cfg)
+    if enabled:
+        with _perf_state_lock:
+            _perf_state = None
+    return True, bool(enabled)
+
+
+def get_perf_enabled() -> bool:
+    return bool(load_cfg().get("perf_enabled", True))
+
+
 # ── 后台任务循环 ────────────────────────────────────────────
 
 async def notify_loop() -> None:
