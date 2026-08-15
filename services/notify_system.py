@@ -311,7 +311,10 @@ def render_update_check_card(text: str) -> str:
     if text.strip().startswith("已是最新"):
         modules.append(_context("当前已是最新版本，无需更新。"))
         modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
-        return _card(color, modules)
+        # 必须返回 card 对象（list），与下方分支一致。
+        # 若返回 [CARD] 字符串，send_raw_group/_send_raw 会把它当 type=10 的 content，
+        # KOOK 报 40000 json格式不正确。
+        return _card_obj(color, modules)
 
     summary: list[str] = []
     file_lines: list[str] = []
