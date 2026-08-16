@@ -32,6 +32,15 @@ _SEARCH_REALTIME = {"天气", "现在时间", "现在几点", "气温", "当前"
 _SEARCH_EXPLICIT = {"搜索", "搜一下", "查一下", "查一查", "帮我查", "给我查",
                     "介绍一下", "搜搜", "百度", "谷歌", "查查", "查资料",
                     "搜到", "搜了", "查资料", "帮查"}
+# 命令行/指令查询：问"给X指令/命令/写法/tellraw/怎么写"时，具体语法(尤其带版本号，
+# 如 MC 1.21.x 的 /tellraw 彩虹渐变)是外部事实，模型未必可靠，应触发联网搜索后实答，
+# 避免机器人"只说不做"——仅口头说"帮主人找找看"却从不真正搜索。
+_SEARCH_CMD = {
+    "指令", "命令", "tellraw", "command", "gommand",
+    "怎么写", "怎么写一个", "怎么给", "怎么配", "怎么设", "怎么用",
+    "求一个", "来个指令", "来个命令", "给个指令", "给个命令",
+}
+
 # 纯知识问句（是什么/为什么/怎么/定义/解释/原理等）：模型自身知识优先直接回答，
 # 不因此触发自动搜索——只有命中 _SEARCH_EXPLICIT 或实时词时才搜。
 _SEARCH_QUESTION = re.compile(r'(今年|最近|昨天|今天|明天|上周|上月)\s*(.*?)(新闻|事件|发生|结果|排名|比分|价格|多少|什么)$')
@@ -80,10 +89,12 @@ def classify_request(msg: str, *, is_group: bool = True,
     if role_tag == "admin" and any(k in low for k in _SYSTEM_KEYWORDS):
         return "system"
 
-    # 明显搜索意图（用户明确要求搜索，或实时话题）
+    # 明显搜索意图（用户明确要求搜索，或实时话题，或命令行/指令查询）
     if any(w in low for w in _SEARCH_EXPLICIT):
         return "search"
     if any(w in low for w in _SEARCH_REALTIME):
+        return "search"
+    if any(w in low for w in _SEARCH_CMD):
         return "search"
     if _SEARCH_QUESTION.search(text):
         return "search"
@@ -126,6 +137,10 @@ def needs_search_heuristic(msg: str) -> bool:
     if any(w in low for w in _SEARCH_EXPLICIT):
         return True
     if any(w in low for w in _SEARCH_REALTIME):
+        return True
+    # 命令行/指令查询（给X指令/命令/tellraw/怎么写/怎么配）——需要联网获取具体语法，
+    # 不能只口头说"帮主人找找看"。
+    if any(w in low for w in _SEARCH_CMD):
         return True
     if _SEARCH_QUESTION.search(msg):
         return True
