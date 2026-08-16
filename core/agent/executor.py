@@ -239,6 +239,9 @@ class AgentExecutor:
         # Phase 8：Agent 不得直接执行工具，统一走 ToolRuntime（权限/超时/重试/预算/Trace）
         from core.tool_runtime import ToolRequest, get_tool_runtime
         from core.trace import get_trace_id
+        # Phase 20 Hotfix D：工具超时"工具自身默认优先"（write_code=120s 等长耗时工具
+        # 不被 Agent 全局 15s 硬切断）；未配置的工具回落 TOOL_TIMEOUT 兜底。
+        from core.tools import effective_tool_timeout
         req = ToolRequest(
             tool_name=step.tool or "",
             arguments=step.params or {},
@@ -246,7 +249,7 @@ class AgentExecutor:
             user_id=ctx.user_id, group_id=ctx.group_id, chat_id=ctx.chat_id,
             sender_name=ctx.sender_name, is_group=ctx.is_group,
             bot_qq=ctx.bot_qq, original_msg=ctx.original_msg,
-            timeout=TOOL_TIMEOUT,
+            timeout=effective_tool_timeout(step.tool or "", TOOL_TIMEOUT),
         )
         try:
             res = await get_tool_runtime().execute(req)

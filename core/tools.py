@@ -713,6 +713,19 @@ def _tool_timeout(tool_name: str, explicit: float | None) -> float:
     return TOOL_TIMEOUTS.get(tool_name, DEFAULT_TOOL_TIMEOUT)
 
 
+def effective_tool_timeout(tool_name: str, agent_fallback: float) -> float:
+    """Agent 层工具超时解析（Phase 20 Hotfix D）。
+
+    工具自身配置了默认超时（如 write_code=120s、agent_think=90s、read_url=20s）
+    时优先使用工具默认；未配置的工具回落 Agent 兜底（默认 15s）。
+
+    背景：executor 之前对所有工具无条件传 15s（TOOL_TIMEOUT），而 _tool_timeout
+    的"显式参数优先"规则让 15s 永远覆盖 write_code 的工具级 120s 默认，
+    导致代码生成被 15 秒硬切断。本函数让长耗时工具走自身默认，其他工具不变。
+    """
+    return TOOL_TIMEOUTS.get(tool_name, agent_fallback)
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
