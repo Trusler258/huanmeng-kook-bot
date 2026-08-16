@@ -53,6 +53,41 @@ _KNOWLEDGE_STRONG: tuple[str, ...] = (
     "总结", "整理", "汇总", "归纳", "梳理", "优缺点", "组成部分", "流程",
 )
 
+# Phase 20 Hotfix：口语化"解释/原理"疑问词（常见于日常提问），命中即归 knowledge。
+# 覆盖 为啥/咋回事/什么原理/是啥/啥意思/什么意思/有什么用 等，防止被误判为 chat 短回。
+_EXPLAIN_WORDS: tuple[str, ...] = (
+    "为啥", "为什么", "为何", "何故", "咋回事", "怎么回事", "咋能", "凭啥",
+    "什么原理", "是啥", "啥意思", "是什么意思", "什么意思", "啥情况", "怎么一回事",
+    "有什么用", "有啥用", "怎么实现", "怎么做到", "怎么办", "怎么做", "咋做",
+    "什么是", "是什么", "怎么用", "去哪", "从哪", "发明", "来源", "区别", "原理",
+    "机制", "科普", "请教", "咋",
+)
+# 命中即不算解释类疑问（闲聊/寒暄），避免误伤
+_EXPLAIN_EXCLUDE: tuple[str, ...] = (
+    "在干嘛", "干嘛", "干啥", "吃了吗", "吃了没", "睡了没", "咋了", "咋啦",
+    "咋样", "咋样了", "你咋样", "你叫啥", "叫啥", "叫啥名", "这是啥", "那是啥",
+    "啥事", "怎么样", "今天天气", "在吗", "行不行", "好吃吗", "还好吗",
+)
+
+# 解释疑问句里"被解释的主题"而非产出指令的生产动词：问"怎么实现X"是问原理，
+# 不是要我写代码，因此这类词在解释疑问句中不再触发 task。
+_PRODUCTION_NO_TASK: tuple[str, ...] = (
+    "实现", "生成", "编写", "部署", "搭建", "配置", "安装",
+    "设计", "翻译", "转换", "优化", "修复",
+)
+
+
+def _is_explain_question(text: str) -> bool:
+    """是否口语化"解释/原理"疑问句（如"为啥X不安全"/"什么是递归"/"X咋不安全"）。"""
+    if not text or len(text) < 4:
+        return False
+    if any(ex in text for ex in _EXPLAIN_EXCLUDE):
+        return False
+    if any(w in text for w in _EXPLAIN_WORDS if len(w) >= 2):
+        return True
+    # 单字"咋"（如"eval咋不安全"）也算，但已被 exclude 挡住"咋了/咋啦/咋样"
+    return "咋" in text and "怎么样" not in text
+
 # 明确"要详细展开"的强触发词
 _DETAIL_STRONG: tuple[str, ...] = (
     "详细", "具体", "完整", "展开", "说透", "全部", "一次说完", "尽可能详细",
@@ -193,6 +228,13 @@ def assess_complexity(msg: str) -> Complexity:
         "科普", "解析", "解读", "整理", "总结", "梳理", "归纳",
     )
     is_knowledge = bool(k_strong or k_hits)
+    # Phase 20 Hotfix：口语"解释/原理"疑问（为啥/咋回事/什么原理…）一律归 knowledge，
+    # 统一走带人格的知识展开风格，避免同一问题今天简短、明天超详细地参差不齐。
+    # 命中闲聊疑问（咋了/干嘛/吃了吗）则不算，防止误伤寒暄。
+    explain_hit = _is_explain_question(text)
+    if explain_hit:
+        is_knowledge = True
+        score += 40  # 提升权重，便于进入 Agent / 搜索
     # Phase 20 Hotfix C：用户明确要求"详细/展开/完整/一次说完"且消息有实际内容
     # （≥8 字）时，即使没有命中知识关键词（如"详细说说上下文稀疏"），也按
     # knowledge 展开回答，避免被压成 1~3 句短回。
@@ -200,12 +242,24 @@ def assess_complexity(msg: str) -> Complexity:
         is_knowledge = True
     # 去掉偏知识的动词后，剩下的是"真正的执行动词"
     real_task = [v for v in t_hits if v not in _KNOWLEDGE_VERBS]
+    # Phase 20 Hotfix：解释疑问句（非"帮我X"命令）里的裸生产动词（实现/生成/编写/部署…）
+    # 是被解释的主题而非产出指令——"TCP怎么实现可靠传输"问的是原理，不是叫我写代码。
+    # 故此时剔除这些生产动词，优先归 knowledge，不抢 task。
+    if explain_hit and "帮我" not in text:
+        real_task = [v for v in real_task if v not in _PRODUCTION_NO_TASK]
 
     # 明确执行型任务（写/部署/搭建/实现/生成/帮我X 等产出物动词）→ task
-    strong_task = any(w in text for w in ("帮我写", "帮我做", "帮我查", "帮我找",
-                                          "帮我分析", "帮我整理", "帮我配置",
-                                          "部署", "搭建", "实现", "生成", "编写",
-                                          "写一个", "写一个程序", "写代码"))
+    # 解释疑问句（explain_hit 且非"帮我X"命令）里的裸生产动词（实现/生成/编写/部署…）
+    # 是被解释的主题而非产出指令（"TCP怎么实现可靠传输"问的是原理），故剔除。
+    if explain_hit and "帮我" not in text:
+        strong_task = any(w in text for w in ("帮我写", "帮我做", "帮我查", "帮我找",
+                                              "帮我分析", "帮我整理", "帮我配置",
+                                              "写一个", "写一个程序", "写代码"))
+    else:
+        strong_task = any(w in text for w in ("帮我写", "帮我做", "帮我查", "帮我找",
+                                              "帮我分析", "帮我整理", "帮我配置",
+                                              "部署", "搭建", "实现", "生成", "编写",
+                                              "写一个", "写一个程序", "写代码"))
     if strong_task or (real_task and not is_knowledge):
         # 仅裸"帮我"（如"帮我一下"）不判 task，避免闲聊误触发
         if (strong_task or real_task) and not (len(real_task) == 1 and real_task[0] == "帮我"):
