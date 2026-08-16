@@ -174,6 +174,12 @@ class AgentExecutor:
                 continue
 
             if vr.verdict == "fail":
+                # Phase 20 Hotfix C：超时不重试——同一搜索任务再次等待一个长超时
+                # 是无意义浪费（Hotfix B 已保证 ToolRuntime 对 TIMEOUT 不重试，
+                # 这里兜底 Agent 步骤级：结果含"超时"标记 → 直接转总结）。
+                if "超时" in (step.result or ""):
+                    logger.info("Agent 步骤超时，不重试直接转总结: %s", step.action)
+                    break
                 # 有限重试
                 if retry_left > 0:
                     retry_left -= 1
@@ -289,9 +295,15 @@ class AgentExecutor:
                          skills=[s.skill for s in plan.steps if s.skill])
 
     async def try_continue_task(self, ctx: AgentContext,
-                                additional: str = "") -> Optional[AgentResult]:
+                                additional: str = "",
+                                constraints: Optional[TaskConstraints] = None) -> Optional[AgentResult]:
         """Phase 20 Part8：续说。用户说"继续/再详细/全部整理"时，基于上次已收集信息
         重新总结成更完整回复。无续说状态 → 返回 None。
+
+        Phase 20 Hotfix C：constraints 传入**本次消息**新提取的约束（如"详细说说"→
+        detail_level=high、"一次说完"→COMPLETE_IN_ONE_RESPONSE），与上次任务的
+        goal/accumulated 合并——确保"一次说完/继续/详细展开"继承任务上下文并修改
+        输出深度，而不是重新规划一个新任务。
 
         不做任何工具调用（信息已在上一次收集），仅一次 LLM 总结，避免重复 LLM/Tool。
         """
@@ -303,9 +315,19 @@ class AgentExecutor:
             steps=[PlanStep(action=a) for a in state.get("plan_steps", [])],
             constraints=state.get("constraints") or TaskConstraints(),
         )
-        plan.constraints.completion_requirement = "COMPLETE_IN_ONE_RESPONSE"
-        if state.get("constraints") and state["constraints"].is_continuation:
-            plan.constraints = state["constraints"]
+        # 本次消息的约束（详细/一次说完/分点）优先生效；未提供时回退 state
+        if constraints is not None:
+            merged = TaskConstraints(
+                completion_requirement=constraints.completion_requirement or "COMPLETE_IN_ONE_RESPONSE",
+                detail_level=constraints.detail_level or (state.get("constraints") or TaskConstraints()).detail_level,
+                output_mode=constraints.output_mode or (state.get("constraints") or TaskConstraints()).output_mode,
+                user_constraints=list(constraints.user_constraints or []),
+            )
+            plan.constraints = merged
+        else:
+            plan.constraints.completion_requirement = "COMPLETE_IN_ONE_RESPONSE"
+            if state.get("constraints") and state["constraints"].is_continuation:
+                plan.constraints = state["constraints"]
         accumulated = list(state.get("accumulated", []))
         final = await self._compose_final(plan, accumulated, ctx, fallback=None)
         if not final:
@@ -363,6 +385,13 @@ class AgentExecutor:
                     guide += "\n用户希望分点/分条/分步骤输出，请用清晰的编号列表组织。"
                 if cons.user_constraints:
                     guide += "\n用户原话约束：" + "、".join(cons.user_constraints)
+            # Phase 20 Hotfix C：解释型问题（为什么/原理/区别/机制）按结构组织，
+            # 结论 → 原因 → 机制/示例 → 注意事项/替代方案，避免只给一句安全提示。
+            goal_low = (plan.goal or "").lower()
+            if any(k in goal_low for k in ("为什么", "为何", "原理", "机制", "区别",
+                                           "差异", "对比", "怎么", "如何", "是不是")):
+                guide += ("\n这是解释型问题：先一句话给结论，再解释原因/机制（可举例子），"
+                          "最后说明边界与替代方案（如安全场景下的替代做法），不要只给警告。")
             prompt = (
                 "请根据以下任务目标和已获取的信息，用你一贯的语气（保持你的人格，如'喵~'），"
                 "给用户一个完整回答。\n"
@@ -378,7 +407,7 @@ class AgentExecutor:
                 cfg.reply_model,
                 [{"role": "system", "content": system_text},
                  {"role": "user", "content": prompt}],
-                max_tokens=1200 if (cons is not None and cons.is_one_shot) else 600,
+                max_tokens=_final_max_tokens(cons, goal_low),
                 temperature=0.4, timeout=20.0,
             )
             record_llm()
@@ -421,6 +450,21 @@ class AgentExecutor:
             info = "\n\n".join(accumulated)[:1200]
             return f"{plan.goal[:200]}\n\n{info}\n\n{fallback}"
         return fallback
+
+
+def _final_max_tokens(cons, goal_low: str) -> int:
+    """最终总结的 token 预算（上限，不是目标量）：详细请求或解释型问题放宽。
+    Phase 20 Hotfix C：普通知识/任务也保留足够篇幅（1200），
+    避免模型因 cap 过小把回答压成一句话。"""
+    if cons is not None and cons.detail_level == "high":
+        return 2000
+    if any(k in goal_low for k in ("为什么", "为何", "原理", "机制", "区别",
+                                   "差异", "对比", "怎么", "如何", "是不是",
+                                   "历史", "介绍", "讲解", "教程", "部署", "发展")):
+        return 1600
+    if cons is not None and (cons.is_one_shot or cons.is_continuation):
+        return 1200
+    return 1200
 
 
 def _extract_tool_success_reminder(accumulated: list[str]) -> Optional[str]:

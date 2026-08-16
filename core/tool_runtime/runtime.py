@@ -117,6 +117,23 @@ class ToolRuntime:
                 timeout=req.timeout,
             )
             end_ms = time.perf_counter() * 1000.0
+            # Phase 20 Hotfix C：execute_tool 超时返回 "__TOOL_TIMEOUT__:" 前缀文本
+            # （而非抛异常），这里识别并标记为 TIMEOUT，确保上层（Agent/FC）不重试、
+            # 走降级总结路径，避免同一搜索任务重复等待一个长超时。
+            if isinstance(content, str) and content.startswith("__TOOL_TIMEOUT__:"):
+                status = TIMEOUT
+                detail = content.split(":", 1)[1] if ":" in content else ""
+                self._trace(req, status, start_ms, end_ms, trace_id, req.attempt,
+                            error=detail or "工具执行超时")
+                get_event_bus().emit(EVENT_TOOL_COMPLETED, {
+                    "tool": req.tool_name, "trace_id": trace_id,
+                    "tool_call_id": req.tool_call_id, "status": status,
+                    "duration_ms": round(end_ms - start_ms, 2),
+                })
+                return self._mk(req, status, error=detail or "工具执行超时",
+                                start_ms=start_ms, end_ms=end_ms,
+                                duration_ms=end_ms - start_ms,
+                                trace_id=trace_id, retry_count=req.attempt)
             status = OK if content is not None else OK
             self._trace(req, status, start_ms, end_ms, trace_id, req.attempt)
             get_event_bus().emit(EVENT_TOOL_COMPLETED, {

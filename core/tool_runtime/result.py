@@ -44,6 +44,11 @@ class ToolResult:
         """规范化后的文本，用于回填 LLM 的 role=tool 消息。"""
         if self.status == DENIED:
             return f"[工具 {self.tool_name} 已被拒绝执行] {self.error or '无权限'}"
+        if self.status == TIMEOUT:
+            # Phase 20 Hotfix C：超时返回明确文本（不再空字符串），
+            # 让上层 Agent/LLM 知道"搜索/工具超时"，避免把空结果当成功，
+            # 同时引导走降级总结路径（不重复执行同一工具）。
+            return f"[工具 {self.tool_name} 执行超时，未获得结果] {self.error or ''}".strip()
         return self.content or ""
 
     def summary(self) -> dict:

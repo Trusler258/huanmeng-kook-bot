@@ -82,9 +82,13 @@ async def perform_search(
     result_text = None
     _search_start = asyncio.get_event_loop().time()
     try:
-        from modules.web_search import ds_native_search
-        # 外层 wait_for 上限与 DS 大幅调高的单次超时匹配（默认 60s×2 次尝试 + 退避）
-        result_text = await asyncio.wait_for(ds_native_search(query), timeout=90.0)
+        from modules.web_search import ds_native_search, DS_SEARCH_TIMEOUT, DS_SEARCH_MAX_RETRIES
+        # Phase 20 Hotfix C：外层上限与内部重试预算对齐（内部每次尝试 DS_SEARCH_TIMEOUT、
+        # 最多 DS_SEARCH_MAX_RETRIES+1 次），避免 90s 空等；
+        # 超时后立即进入降级路径，不再重复等待。
+        _budget = DS_SEARCH_TIMEOUT * (DS_SEARCH_MAX_RETRIES + 1) + 5.0
+        _outer = min(_budget, 35.0)
+        result_text = await asyncio.wait_for(ds_native_search(query), timeout=_outer)
     except asyncio.TimeoutError:
         logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
     except Exception as e:
@@ -150,6 +154,22 @@ async def auto_search_if_needed(
     from modules.judge import needs_search as _needs_search_judge
     
     msg_lower = msg.lower()
+
+    # ★ Phase 20 Hotfix C：纯知识问句（是什么/为什么/怎么/定义/解释/原理/历史…）
+    # 且**没有**明确搜索意图词时，默认模型自身知识可答，不触发自动搜索。
+    # 只有用户明确要求搜、或话题是实时性的，才真正执行搜索。
+    _KNOWLEDGE_WORDS = (
+        "是什么", "什么意思", "含义", "定义", "概念", "解释", "为什么", "为何",
+        "怎么", "如何", "怎样", "原理", "机制", "区别", "差异", "对比", "历史",
+        "起源", "教程", "介绍", "科普",
+    )
+    _SEARCH_INTENT_WORDS = (
+        "搜索", "搜一下", "搜搜", "查一下", "查一查", "查查", "帮我查", "给我查",
+        "百度", "谷歌", "搜到", "查资料", "查信息", "上网查",
+    )
+    if any(k in msg for k in _KNOWLEDGE_WORDS) and not any(s in msg for s in _SEARCH_INTENT_WORDS):
+        logger.info("自动搜索跳过（纯知识问句，模型自身可答）: '%s...'", msg[:30])
+        return None
 
     # ★ 预检：用户拒搜 → 跳过（与 core/tools.py 保持一致）
     no_search_patterns = [

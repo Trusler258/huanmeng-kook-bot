@@ -36,3 +36,6 @@ logs/
 
 # 阶段备份
 backup/
+
+# 自更新模块运行时快照缓存
+.update_cache/

@@ -128,6 +128,8 @@ _DETAIL_HINT = {
         "3. 把回答拆成多条 replies（每条是一段：一个小标题 + 它下面的说明），"
         "每条会作为独立消息逐条发出，不要把所有内容塞进单个 replies 元素。"
         "4. 按时间/主题分 3~8 个阶段，阶段内'年份：事件'用 - 分点，节与节之间用空行隔开。"
+        "5. 如果是'为什么/原理/区别/机制'类问题，按 **结论 → 原因 → 机制/示例 → 注意事项/替代方案** "
+        "的顺序组织，先一句话给结论，再展开解释攻击链/原理细节，必要时给一个小例子，最后说明边界与替代做法。"
     ),
     LEVEL_TASK: (
         "\n【本次为执行型任务，请按步骤完整执行并汇报结果】"
@@ -189,6 +191,11 @@ def assess_complexity(msg: str) -> Complexity:
         "科普", "解析", "解读", "整理", "总结", "梳理", "归纳",
     )
     is_knowledge = bool(k_strong or k_hits)
+    # Phase 20 Hotfix C：用户明确要求"详细/展开/完整/一次说完"且消息有实际内容
+    # （≥8 字）时，即使没有命中知识关键词（如"详细说说上下文稀疏"），也按
+    # knowledge 展开回答，避免被压成 1~3 句短回。
+    if detail >= 30 and len(text) >= 8 and not is_knowledge:
+        is_knowledge = True
     # 去掉偏知识的动词后，剩下的是"真正的执行动词"
     real_task = [v for v in t_hits if v not in _KNOWLEDGE_VERBS]
 

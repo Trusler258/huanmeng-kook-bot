@@ -753,7 +753,10 @@ async def execute_tool(
         record_tool_call(tool_name, elapsed, "TIMEOUT",
                          start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)
         logger.warning("工具执行超时 %s: %.1fs/%.1fs", tool_name, elapsed / 1000.0, limit)
-        return f"工具执行超时（{limit:.0f}s），请稍后重试。"
+        # Phase 20 Hotfix C：超时返回带 __TOOL_TIMEOUT__: 前缀的文本，
+        # 供 ToolRuntime 识别为 TIMEOUT 状态（上层不重试、走降级总结）。
+        # 保留"超时"字样兼容旧调用方/测试的直接文本断言。
+        return f"__TOOL_TIMEOUT__:{tool_name} 工具执行超时（{limit:.0f}s），请稍后重试。"
     except asyncio.CancelledError:
         record_tool_call(tool_name, (_time.perf_counter() - start) * 1000.0,
                          "CANCELLED", start_ms=start * 1000.0, end_ms=_time.perf_counter() * 1000.0)

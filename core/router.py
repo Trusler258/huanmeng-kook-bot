@@ -28,9 +28,12 @@ from typing import Optional
 # ── 搜索触发特征 ──────────────────────────────────────────
 _SEARCH_REALTIME = {"天气", "现在时间", "现在几点", "气温", "当前", "实时",
                     "新闻", "最新", "汇率", "股价", "期货", "比赛", "直播"}
-_SEARCH_TRIGGER = {"搜索", "查一下", "查一查", "什么是", "什么意思", "为什么",
-                   "怎么", "如何", "定义", "百科", "解释", "多少", "何时",
-                   "在哪", "介绍一下", "给我查", "帮我查", "热点", "够新的"}
+# 明确要求"去搜"的意图词（用户主动要求搜索时触发）
+_SEARCH_EXPLICIT = {"搜索", "搜一下", "查一下", "查一查", "帮我查", "给我查",
+                    "介绍一下", "搜搜", "百度", "谷歌", "查查", "查资料",
+                    "搜到", "搜了", "查资料", "帮查"}
+# 纯知识问句（是什么/为什么/怎么/定义/解释/原理等）：模型自身知识优先直接回答，
+# 不因此触发自动搜索——只有命中 _SEARCH_EXPLICIT 或实时词时才搜。
 _SEARCH_QUESTION = re.compile(r'(今年|最近|昨天|今天|明天|上周|上月)\s*(.*?)(新闻|事件|发生|结果|排名|比分|价格|多少|什么)$')
 
 # ── 工具 / 数据查询特征 ───────────────────────────────────
@@ -77,8 +80,8 @@ def classify_request(msg: str, *, is_group: bool = True,
     if role_tag == "admin" and any(k in low for k in _SYSTEM_KEYWORDS):
         return "system"
 
-    # 明显搜索意图
-    if any(w in low for w in _SEARCH_TRIGGER):
+    # 明显搜索意图（用户明确要求搜索，或实时话题）
+    if any(w in low for w in _SEARCH_EXPLICIT):
         return "search"
     if any(w in low for w in _SEARCH_REALTIME):
         return "search"
@@ -92,13 +95,14 @@ def classify_request(msg: str, *, is_group: bool = True,
     # Phase 20 P0：知识/执行复杂度 → 不当作普通 chat
     # 例："mysql历史"、"说说mysql历史"、"讲解TCP三次握手原理" 等
     # 不能一律归为 chat，否则 Fast Path 直接压短回答。
+    # Phase 20 Hotfix C：知识类问题**不**因复杂度强制触发 search——
+    # 模型自身可答的基础知识/概念/原理优先直接回答；需要外部资料时
+    # 由 FC 层的 search_web 工具或用户明确"搜/查/介绍一下"再触发。
     try:
         from core.complexity import assess_complexity
         _complexity = assess_complexity(text)
         if _complexity.level == "task":
             return "tool"          # 执行型任务 → 走复杂处理（可进 Agent）
-        if _complexity.level == "knowledge":
-            return "search"        # 知识类问题 → 允许搜索 + 展开回答
     except Exception:
         pass
 
@@ -110,23 +114,21 @@ def needs_search_heuristic(msg: str) -> bool:
     """快速判断是否需要搜索（仅规则，不触发模型判断）。
 
     返回 True 时调用方应执行搜索；返回 False 表示普通聊天，无需搜索。
+
+    Phase 20 Hotfix C：只有明确搜索意图（搜/查/介绍一下）或实时话题
+    （新闻/天气/最新…）才返回 True。纯知识问句（是什么/为什么/怎么/定义/
+    原理/历史）不再因 complexity=knowledge 强制搜索——模型自身知识可答的
+    优先直接回答，避免"缓存命中率定义"这类问题无谓触发 DeepSeek 搜索。
     """
     if not msg:
         return False
     low = msg.lower().strip()
-    if any(w in low for w in _SEARCH_TRIGGER):
+    if any(w in low for w in _SEARCH_EXPLICIT):
         return True
     if any(w in low for w in _SEARCH_REALTIME):
         return True
     if _SEARCH_QUESTION.search(msg):
         return True
-    # Phase 20 P0：知识类问题（历史/原理/教程/对比/分析）通常需要搜索或展开
-    try:
-        from core.complexity import assess_complexity
-        if assess_complexity(low).level == "knowledge":
-            return True
-    except Exception:
-        pass
     return False
 
 

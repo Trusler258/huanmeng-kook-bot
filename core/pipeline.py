@@ -730,6 +730,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
             system_text_override=system_text_override,
             tools_override=fc_schemas,
+            detail_hint=_detail_hint or (_complexity.detail_hint if _complexity else ""),
         )
 
     if not sentences:
@@ -1084,13 +1085,27 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 try:
                     from services.llm import call_llm as raw_llm
                     if is_search_or_read:
-                        follow_sys = (
-                            "你是幻梦，一只猫娘助手。用可爱语气回复，加喵~或颜文字。\n"
-                            "回答要**具体**：列出地名、数字、时间等事实，别只说'好厉害'这种空话。\n"
-                            "用 reply_schema JSON 格式输出（replies/fav/calls/face/mood/action）。\n"
-                            "replies 3-5 句，每句一个事实要点。"
-                        )
+                        # Phase 20 Hotfix C：不再硬编码"你是幻梦，一只猫娘助手"，
+                        # 复用当前 persona system（含 PERSONA::: 私聊人格注入），
+                        # 保持人格与格式约束一致。
+                        from services.llm import _build_system_text
+                        _follow_persona = system_prompt_for_llm
+                        _follow_custom = None
+                        if _follow_persona.startswith("PERSONA:::"):
+                            _pp = _follow_persona.split(":::", 2)
+                            if len(_pp) == 3:
+                                import json as _j
+                                try:
+                                    _follow_custom = _j.loads(_pp[1])
+                                except Exception:
+                                    _follow_custom = None
+                                _follow_persona = _pp[2]
+                        follow_sys = _build_system_text(cfg.bot_name, _follow_persona, is_group,
+                                                       custom_persona=_follow_custom)
                     if is_call_error:
+                        # Phase 20 Hotfix C：错误分支同样复用 persona system，避免 NameError
+                        from services.llm import _build_system_text
+                        follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
                         err_detail = effective_result.replace("[CALL错误]", "").strip()
                         prompt = (
                             "系统调用的功能执行失败。请用你的语气告诉用户操作失败，然后**原样附上**下面的报错信息（含堆栈）。\n"
@@ -1147,9 +1162,33 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         await send_by_chat_type(f_text, chat_id if is_group else chat_id,
                                                is_group=True if is_group else False,
                                                user_id=user_id if not is_group else None)
+                    else:
+                        # Phase 20 Hotfix C：最终总结 LLM 失败/为空时，
+                        # 若工具本身已成功（如 write_code 已发送文件），
+                        # 直接把工具的成功结果反馈给用户，绝不静默，
+                        # 也不让用户误以为任务失败。
+                        logger.warning("CALL follow LLM 为空，工具结果直发: %s", effective_result[:60])
+                        _ok_text = str(effective_result).strip()
+                        if _ok_text and not _ok_text.startswith("[CALL错误]"):
+                            ctx.append_to_context(chat_id, f"{cfg.bot_name}: {_ok_text[:200]}")
+                            await send_by_chat_type(_ok_text[:3000], chat_id if is_group else chat_id,
+                                                   is_group=True if is_group else False,
+                                                   user_id=user_id if not is_group else None)
                 except Exception as e:
                     import traceback
                     logger.error("追加回复失败:\n%s", traceback.format_exc())
+                    # Phase 20 Hotfix C：follow 抛异常（超时/网络等）时同样直发工具成功结果，
+                    # 避免"文件已发出但用户只看到沉默/失败提示"。
+                    try:
+                        _ok_text = str(effective_result).strip()
+                        if _ok_text and not _ok_text.startswith("[CALL错误]") \
+                                and not any(k in _ok_text for k in ("失败", "出错", "超时")):
+                            await send_by_chat_type(_ok_text[:3000], chat_id if is_group else chat_id,
+                                                   is_group=True if is_group else False,
+                                                   user_id=user_id if not is_group else None)
+                            ctx.append_to_context(chat_id, f"{cfg.bot_name}: {_ok_text[:200]}")
+                    except Exception:
+                        pass
         asyncio.create_task(_send_call_results())
 
     # ------好感度------

@@ -779,6 +779,7 @@ async def generate_multi_reply_with_tools(
     bot_qq: int = 0,
     system_text_override: str | None = None,
     tools_override: Optional[list] = None,
+    detail_hint: str = "",
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -786,13 +787,16 @@ async def generate_multi_reply_with_tools(
 
     Phase 10：tools_override 非空时，只把「当前请求相关」的工具 Schema 给模型，
     不再每次注入全部工具（CapabilityLoader 按需加载）。
+
+    Phase 20 Hotfix C：detail_hint 非空（用户要求"详细/展开/完整/一次说完"）
+    时，fmt_reminder 放宽句数/字数限制，允许结构化长回答。
     """
     if tools_override is not None:
         tools = tools_override
     else:
         from core.tools import get_tool_schemas
         tools = get_tool_schemas()
-    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, system_text_override)
+    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, system_text_override, detail_hint=detail_hint)
 
     # 长消息（题目/长文/网页阅读）→ 扩大输出 token
     has_long_context = len(current_msg) > 2000
@@ -895,7 +899,7 @@ async def generate_multi_reply_with_tools(
             if len(tool_text) > 500:
                 max_tokens = max(max_tokens or 0, 8000)
 
-            if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
+            if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text or "超时" in tool_text:
                 errors.append(tool_text)
             elif tc["name"] in ("wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
                 data_results.append(tool_text)
@@ -957,11 +961,18 @@ async def generate_multi_reply_with_tools(
         # 保证「Permission DENY → 结构化 ToolResult → LLM → Persona 风格回复」。
         return await _reply_from_error(msgs, errors[0], reply_model, speaker_name)
     if data_results:
+        # Phase 20 Hotfix C：复用 msgs[0] 的 persona system（不再硬编码另一套人格），
+        # 并放宽为"按数据如实回答"，保留 Persona 风格。
+        _persona_sys = msgs[0]["content"] if msgs and msgs[0].get("role") == "system" else ""
         wrap_msgs = [
-            {"role": "system", "content": "你是幻梦，一个可爱的QQ机器人。用自然语气回复，加个喵或颜文字。1句，≤40字。"},
-            {"role": "user", "content": f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n请用一句话自然回复。"},
+            {"role": "system", "content": _persona_sys or _build_system_text(bot_name, system_prompt, is_group)},
+            {"role": "user", "content": (
+                f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n"
+                "请用你一贯的人格语气，直接、具体地回答用户（列出地名/数字/时间等事实），"
+                "不要只说'查到啦'这类空话。按 reply_schema JSON 格式输出（replies/fav/calls/face/mood/action）。"
+            )},
         ]
-        raw = await call_llm(reply_model, wrap_msgs, max_tokens=80, temperature=0.4)
+        raw = await call_llm(reply_model, wrap_msgs, max_tokens=400, temperature=0.4)
         if raw:
             return _parse_reply(
                 json.dumps({"replies": [raw.strip()], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
@@ -1205,6 +1216,7 @@ def _build_messages(
     is_group: bool,
     extra_info: str,
     system_text_override: str | None = None,
+    detail_hint: str = "",
 ) -> list[dict]:
     """构建 messages 列表（与 generate_multi_reply 相同的格式）
 
@@ -1253,14 +1265,34 @@ def _build_messages(
     else:
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "12"
-    fmt_reminder = (
-        "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
-        f"{ctx_hint}\n"
-        "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
-        "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
-        f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
-        f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
+    # ★ 详细度约束：detail_hint 非空（用户要求"详细/展开/完整/一次说完"等）
+    # 或 extra_info 含知识类展开要求时，放宽句数/字数限制，允许结构化长回答。
+    # 默认（普通闲聊/简单问答）仍保持 1~3 句短回，不牺牲简单场景的轻快。
+    _want_detail = bool(detail_hint) or (
+        extra_info and "知识/讲解类问题" in extra_info and "不受'回复1~3句" in extra_info
     )
+    if _want_detail:
+        fmt_reminder = (
+            "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
+            f"{ctx_hint}\n"
+            "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
+            "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
+            f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
+            "本条为**详细/展开类请求**，不受'回复1~3句、每句≤40字'限制："
+            "可输出 3~8 句，每句 60~200 字，把要点讲全讲透。\n"
+            "排版：小标题用 **加粗** 独占一行，分点用 - 或 1.，段落间用换行分隔；"
+            "保持你已设定的人格语气（喵~/颜文字/口癖），不要变成干巴巴的百科条目。\n"
+            "fav -5~+5。严格按照这个 JSON 格式输出！"
+        )
+    else:
+        fmt_reminder = (
+            "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
+            f"{ctx_hint}\n"
+            "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
+            "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
+            f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
+            f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
+        )
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
     msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")

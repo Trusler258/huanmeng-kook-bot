@@ -52,10 +52,13 @@ async def try_handle_with_agent(
 
     # Phase 20 Part8：续说（"继续/再详细/一次说完/全部整理"）→ 基于上次已收集信息补全，
     # 不重复规划/工具，仅一次 LLM 总结，避免重复 LLM/Tool。
-    if (constraints.is_continuation or constraints.is_one_shot) \
+    # Phase 20 Hotfix C：detail_level=high（"详细说说/展开讲"）也视为续说意图——
+    # 继承上一任务上下文并修改输出深度，而不是当作新问题重新规划。
+    if (constraints.is_continuation or constraints.is_one_shot or constraints.detail_level == "high") \
             and has_continuation(chat_id, user_id):
         continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
-        result = await get_executor().try_continue_task(continuation_ctx)
+        result = await get_executor().try_continue_task(continuation_ctx,
+                                                        constraints=constraints)
         if result is not None and result.final_text:
             await _deliver(result.final_text, chat_id, is_group, user_id,
                            sender_name, bot_qq)
