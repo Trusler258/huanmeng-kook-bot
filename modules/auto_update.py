@@ -11,10 +11,40 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+
 import httpx
 
+from core.logger import get_logger
 from modules._auto_update.engine import check_and_update, GITHUB_API, GITHUB_REPO, GITHUB_BRANCH
 from modules._auto_update.safe_update import safe_check_and_update
+
+logger = get_logger("auto_update")
+
+
+async def _restart_after(delay: float):
+    """延迟后强退进程。依赖 systemd Restart=always 自动拉起新进程加载新代码。"""
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        logger.warning("自动重启任务被取消，请手动重启使更新生效")
+        return
+    except Exception:
+        logger.exception("自动重启任务异常")
+        return
+    logger.info("更新完成，自动重启进程...")
+    os._exit(0)
+
+
+def _schedule_restart(delay: float = 5.0) -> bool:
+    """安排延迟自动重启；失败返回 False（调用方回退为仅提示手动重启）。"""
+    try:
+        asyncio.create_task(_restart_after(delay))
+        return True
+    except Exception:
+        logger.exception("安排自动重启失败")
+        return False
 
 
 async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -79,7 +109,12 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
             await send_raw_user(card, user_id)
         return None
     if result and ("已更新" in result or "已安全更新" in result) and "个文件" in result:
-        result += "\n\n建议重启 bot 使更新生效"
+        # 更新成功 → 延迟自动重启，由上层先发出提示消息，再让 systemd 拉起新进程
+        if _schedule_restart(5.0):
+            logger.info("更新成功，已安排 5 秒后自动重启")
+            result += "\n\n✅ 更新成功，5 秒后自动重启机器人，请稍候…"
+        else:
+            result += "\n\n建议重启 bot 使更新生效"
     return result
 
 
