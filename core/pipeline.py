@@ -342,6 +342,21 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     _cx_level = _complexity.level if _complexity else "chat"
     _context_scale = _complexity.context_scale if _complexity else 1.0
     _detail_hint = _complexity.detail_hint if _complexity else ""
+    # Phase 20 Hotfix E：命令行/指令查询——即使未被归为 knowledge，也注入
+    # "一轮直接给出具体命令"提示，避免模型只回"让我先看看格式"却从不交命令。
+    # 搜索已自动触发并注入结果（见 _fast_search 逻辑），这里强制模型直接实答。
+    try:
+        from core.router import is_command_lookup
+        if is_command_lookup(msg_content) and not _detail_hint:
+            _detail_hint = (
+                "\n【本次是'要指令/命令/写法'的查询，必须在一轮内直接给出具体可用的命令/代码/步骤】"
+                "1. 若上下文已有搜索结果，直接基于它引用并给出最终命令，不要只说要'先看看/去找找'。"
+                "2. 不要只说一句'我来帮主人找'然后停住——请在本条消息里就把完整命令/写法/参数贴出来。"
+                "3. 若确实搜不到，给一个最合理的版本并说明版本差异，明确告知这是估计值而非编造。"
+                "4. 保持人格语气（如猫娘的'喵~'），命令本身要有代码块标注，方便主人直接复制。"
+            )
+    except Exception:
+        pass
     if _complexity and not _complexity.is_chat:
         logger.info("复杂度: level=%s score=%d scale=%.1f", _cx_level,
                     _complexity.score, _context_scale)

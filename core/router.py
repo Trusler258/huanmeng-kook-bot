@@ -157,3 +157,15 @@ def resolve_intent(msg: str, *, is_group: bool = True,
     except Exception:
         pass
     return intent
+
+
+def is_command_lookup(msg: str) -> bool:
+    """是否"命令行/指令查询"（给X指令/命令/tellraw/怎么写/怎么配等）。
+
+    用于 pipeline 注入"一轮直接实答、别只口头预告"的提示，避免模型只回
+    "让我先看看"却不给具体命令。
+    """
+    if not msg:
+        return False
+    low = msg.lower().strip()
+    return any(w in low for w in _SEARCH_CMD)
