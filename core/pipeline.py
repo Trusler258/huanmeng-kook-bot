@@ -1009,6 +1009,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         for i in range(len(sentences)):
             sentences[i] = sentences[i].replace(at_text, at_met)
 
+    # ------Phase 20 Hotfix D：真正走 KMD 链路------
+    # 发送前把残留 Markdown 结构归一化为 KOOK KMD 可渲染形式（# 标题→**加粗**，
+    # 代码块围栏内原样保留）。确保用户要求 KMD/结构化排版时内容真的以 KMD 语法
+    # 发出，而不是 LLM 口头承诺"我会用KMD"。
+    try:
+        from utils.kmd import normalize_kmd_text
+        sentences = [normalize_kmd_text(s) for s in sentences]
+    except Exception:
+        pass  # KMD 归一化失败不阻塞发送（原样发出）
+
     # ------mode切换------
     if mode_switch and mode_switch in ("normal", "sleeping", "narrative"):
         try:
@@ -1201,6 +1211,31 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     await maybe_save_memory(msg_content, sentences[0] if sentences else "", sender_name, chat_id, user_id, buffer_snapshot)
 
     logger.info("✅ 管道处理完成: %d句 sent chat=%d", len(sentences), chat_id)
+
+    # ------Phase 20 Hotfix D: Fast Path 主题记录（供裸续说继承）------
+    # 普通聊天（未走 Agent）讨论的主题也写入 continuation，这样用户随后说
+    # "详细说说/继续/再详细点"（纯续说词、无新主题）时能继承**最近一次讨论的话题**，
+    # 而不是更早的 Agent 任务。
+    # 过滤：纯闲聊（哈哈/谢谢/嗯）不成为话题；短于 2 字不记录；指令/续说词本身不记录。
+    try:
+        from core.agent.executor import set_continuation
+        from core.agent.planner import TaskConstraints
+        from core.agent.gateway import _CONTINUATION_MARKERS as _cont_markers
+        from core.complexity import _is_mostly_casual as _mostly_casual
+        _topic = msg_content.strip()
+        _compact = re.sub(r"[\s，。！？、,.!?~～…\-—_]+", "", _topic).lower()
+        _looks_cont = any(m in _topic for m in _cont_markers) and len(_topic) <= 14
+        if _topic and len(_topic) >= 2 and not _mostly_casual(_compact) and not _looks_cont:
+            set_continuation(chat_id, user_id, {
+                "goal": _topic,
+                "accumulated": [],
+                "constraints": TaskConstraints(),
+                "plan_steps": [],
+            })
+            logger.debug("Fast Path 主题已记录: chat=%d topic='%s'",
+                         chat_id, _topic[:30])
+    except Exception:
+        pass  # 主题记录失败不影响主流程
 
     # ── 后台提取用户画像（不阻塞）──
     asyncio.ensure_future(_async_extract_profile(user_id, sender_name, msg_content))

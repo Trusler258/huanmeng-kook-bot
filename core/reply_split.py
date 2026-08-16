@@ -19,6 +19,18 @@ _SECTION_HEADER_RE = re.compile(
     r'|[\u4e00-\u9fa5A-Za-z]{1,12}（[0-9]{2,4}[-~—]?[0-9]{0,4}）'
     r')'
 )
+# 围栏代码块起始/结束（``` 或 ```python 等）
+_FENCE_RE = re.compile(r'^\s*```')
+
+
+def _in_code_fence(lines: list[str], idx: int) -> bool:
+    """判断第 idx 行是否处于 ``` 围栏代码块内部（含边界行）。"""
+    fence = 0
+    for i in range(0, min(idx, len(lines)) + 1):
+        if _FENCE_RE.match(lines[i]):
+            fence += 1
+    # 奇数个 ``` 前缀 → 当前处于代码块内
+    return fence % 2 == 1
 
 
 def split_knowledge_sentences(text: str) -> list[str]:
@@ -26,11 +38,17 @@ def split_knowledge_sentences(text: str) -> list[str]:
 
     仅当文本里出现 >=2 个阶段标记时才拆分，普通短回复不受影响。
     这样即使 LLM 把整个知识回答塞进一条，也能按每一代/每个阶段分条发出。
+
+    Phase 20 Hotfix D：**绝不拆分代码块**。``` 围栏内的行（无论长得像
+    **加粗** / 1. / 第X代）一律不作为阶段标题切分，保证代码结构完整。
     """
     if not text:
         return []
     lines = text.replace("\r\n", "\n").split("\n")
-    heads = [i for i, ln in enumerate(lines) if ln.strip() and _SECTION_HEADER_RE.search(ln)]
+    heads = [
+        i for i, ln in enumerate(lines)
+        if ln.strip() and _SECTION_HEADER_RE.search(ln) and not _in_code_fence(lines, i)
+    ]
     if len(heads) < 2:
         return [text]
 
@@ -38,8 +56,9 @@ def split_knowledge_sentences(text: str) -> list[str]:
     # 这样开头的引导语（如"喵~...分为四个阶段"）也会单独成段，不会丢失。
     segs = []
     cur = []
-    for ln in lines:
-        if ln.strip() and _SECTION_HEADER_RE.search(ln) and cur:
+    for i, ln in enumerate(lines):
+        if ln.strip() and _SECTION_HEADER_RE.search(ln) and cur \
+                and not _in_code_fence(lines, i):
             segs.append("\n".join(cur).strip())
             cur = []
         cur.append(ln)

@@ -11,6 +11,7 @@ Phase 7 Agent 适配层 gateway（Huanmeng 2.0）
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional
 
@@ -26,6 +27,31 @@ from core.logger import get_logger
 from core.trace import set_plan_summary, get_trace_id
 
 logger = get_logger("agent.gateway")
+
+# Phase 20 Hotfix D：续说意图的"纯命令词"。这些词单独出现（或只带极短修饰）
+# 时才继承上一话题；若消息里还有实质内容（如"详细说说缓存命中率"），
+# 说明用户明确给出了新主题，应优先绑定新主题而不是旧 continuation。
+_CONTINUATION_MARKERS: tuple[str, ...] = (
+    "继续", "再详细", "讲完", "说全", "说完整", "接着讲", "接着说",
+    "继续说", "全部整完", "继续说完", "详细说说", "详细讲",
+    "展开讲", "展开说说", "说详细点", "详细一点说", "多讲讲",
+    "再展开", "详细展开", "展开一下", "一次说完", "一次给我",
+    "全部整理", "全部给我", "一步到位", "全部一次", "一次说",
+    "一次讲完", "一次性", "再讲讲", "详细点", "具体点", "展开来",
+)
+
+
+def _has_new_topic(msg: str) -> bool:
+    """去掉续说意图词后，消息里是否还剩下实质内容（视为显式新主题）。
+
+    例："详细说说缓存命中率" → 去掉"详细说说"剩"缓存命中率" → True；
+        "继续" / "详细说说" → 剩空 → False（应继承旧话题）。
+    """
+    text = msg or ""
+    for marker in sorted(_CONTINUATION_MARKERS, key=len, reverse=True):
+        text = text.replace(marker, "")
+    text = re.sub(r"[\s，。！？、,.!?~～…\-—_【】（）()<>《》\"'\"'「」]+", "", text)
+    return len(text) >= 2
 
 
 async def try_handle_with_agent(
@@ -54,8 +80,12 @@ async def try_handle_with_agent(
     # 不重复规划/工具，仅一次 LLM 总结，避免重复 LLM/Tool。
     # Phase 20 Hotfix C：detail_level=high（"详细说说/展开讲"）也视为续说意图——
     # 继承上一任务上下文并修改输出深度，而不是当作新问题重新规划。
+    # Phase 20 Hotfix D：仅当消息是**纯续说词**（去掉"详细说说/继续/展开讲"等后
+    # 无实质内容）才继承旧话题；若用户明确给出新主题（如"详细说说缓存命中率"），
+    # 不继承旧 continuation，走正常规划绑定新主题，避免跳回更早的话题。
     if (constraints.is_continuation or constraints.is_one_shot or constraints.detail_level == "high") \
-            and has_continuation(chat_id, user_id):
+            and has_continuation(chat_id, user_id) \
+            and not _has_new_topic(msg):
         continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
         result = await get_executor().try_continue_task(continuation_ctx,
                                                         constraints=constraints)
@@ -133,6 +163,14 @@ async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,
         normalized = json_parse_fallback()
     final_text = normalized
 
+    # Phase 20 Hotfix D：Agent 回复同样走 KMD 归一化（# 标题→**加粗**，代码块内原样），
+    # 与 Fast Path 保持一致的"真正 KMD"行为。
+    try:
+        from utils.kmd import normalize_kmd_text
+        final_text = normalize_kmd_text(final_text)
+    except Exception:
+        pass  # KMD 归一化失败不阻塞发送
+
     # 拆成可发送的句子（按换行/句号），避免一次性超长
     sentences = _split_sentences(final_text)
     if not sentences:
@@ -166,16 +204,32 @@ async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,
 
 
 def _split_sentences(text: str, max_len: int = 3000) -> list[str]:
-    """把长文本拆成可发送的多句（按换行优先，再按句号）。"""
+    """把长文本拆成可发送的多句（按换行优先，再按句号）。
+
+    Phase 20 Hotfix D：保留行内缩进（不再 strip 行），且不在 ``` 代码块
+    围栏内部切分——代码块整体归属同一条消息，保证代码结构不被拆碎。
+    """
     text = (text or "").strip()
     if not text:
         return []
     if len(text) <= max_len:
         return [text]
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    lines = text.split("\n")
     out: list[str] = []
     buf = ""
+    in_fence = False
     for ln in lines:
+        stripped = ln.strip()
+        is_fence_line = stripped.startswith("```")
+        if is_fence_line:
+            # 围栏标记行永远并入当前 buf（避免把 ``` 单独切成一段）
+            in_fence = not in_fence
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
+        if in_fence:
+            # 代码块内部：完整累积，绝不按长度切分
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
         if len(buf) + len(ln) + 1 > max_len:
             if buf:
                 out.append(buf)

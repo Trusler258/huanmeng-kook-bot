@@ -507,6 +507,16 @@ def get_continuation(chat_id: int, user_id: int) -> Optional[dict]:
     return _CONTINUATION.get((int(chat_id or 0), int(user_id or 0)))
 
 
+def set_continuation(chat_id: int, user_id: int, state: dict) -> None:
+    """写入/覆盖续说状态。
+
+    Phase 20 Hotfix D：Fast Path（非 Agent）讨论的话题也记录进 continuation，
+    让裸"详细说说/继续"能继承**最近一次明确讨论的主题**，而不是更早的 Agent 任务。
+    state 形如 {"goal","accumulated","constraints","plan_steps"}。
+    """
+    _CONTINUATION[(int(chat_id or 0), int(user_id or 0))] = state
+
+
 def clear_continuation(chat_id: int, user_id: int) -> None:
     _CONTINUATION.pop((int(chat_id or 0), int(user_id or 0)), None)
 
