@@ -308,6 +308,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if not should_reply:
         return
 
+    # ------专用翻译能力：识别翻译意图 → 优先翻引用消息 → 一次简明译文------
+    # 命中即直接回复并结束，不进入泛聊/Agent（避免只问不译、回复啰嗦）。
+    try:
+        from modules.translate import handle_translate_request
+        _tr_reply = await handle_translate_request(
+            msg_content, quoted_msg, chat_id, user_id, is_group)
+        if _tr_reply is not None:
+            await send_by_chat_type(_tr_reply, chat_id, is_group=is_group, user_id=user_id)
+            return
+    except Exception:
+        pass  # 翻译模块异常不阻断正常流程
+
     # ------Phase 6 Part2: 轻量意图分类（非 AI）------
     # 走完整 Agent 路径前先记录意图；普通聊天可据此跳过多余 search 判断。
     try:
@@ -442,15 +454,22 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         _bx("system", arch_context)
 
     if is_group:
+        # ★ 认主修复：只有真正的主人(admin_qq)才以"主人"称呼；
+        #    OP/群管理员是次要身份，绝不能当作"主人"对待。
+        #    且"身份提示"只在当前发言人是主人或本群 OP 时才注入，
+        #    避免误注入到普通用户对话、误导 LLM 把普通用户/OP 当主人称呼。
         group_ops = cfg.group_owners.get(chat_id, [])
-        if group_ops:
-            op_names = [cfg.get_display_name(q, chat_id) for q in group_ops]
-            op_list = "、".join(f"{n}({q})" for n, q in zip(op_names, group_ops))
-            master_name = cfg.get_display_name(cfg.admin_qq)
+        master_name = cfg.get_display_name(cfg.admin_qq)
+        if user_id == cfg.admin_qq:
             _bx("system",
-                f"【主人提示】你的真正主人是{master_name}，"
-                f"同时{op_list}也在这个群拥有主人权限。对他们要用对主人一样的语气和态度。"
-            )
+                f"【身份提示】当前与你对话的是你的主人{master_name}，"
+                f"请用对主人的语气与态度。")
+        elif group_ops and user_id in group_ops:
+            op_name = cfg.get_display_name(user_id, chat_id)
+            _bx("system",
+                f"【身份提示】当前与你对话的是本群管理员/OP {op_name}，"
+                f"请给予管理员应有的礼貌与尊重；但只有你的主人{master_name}才算'主人'，"
+                f"不要称呼管理员为'主人'。")
 
     try:
         from modules.op import get_mode, get_sleep_prompt_rule, get_narrative_prompt_rule
