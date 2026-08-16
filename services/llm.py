@@ -764,6 +764,45 @@ def _build_history_messages(msg_history: list[str], bot_name: str) -> list[dict]
 
 # ── Function Calling 增强版生成 ──────────────────────────
 
+# Phase 20 Hotfix F：纯承诺回复拦截词（模型只说要做、不交付实质内容的口头预告）
+_PROMISE_MARKERS: tuple[str, ...] = (
+    "先看看", "先找找", "去找找", "帮你找", "帮主人找", "来找找", "来帮主人找",
+    "再发一遍", "再给你发", "重新发一遍", "稍等", "等一下", "这就给", "这就发",
+    "马上给", "马上去", "这就去", "去查", "我先查", "我这就帮",
+)
+# 强制实答指令：插入 user 消息，要求本轮直接给出实质内容
+_PROMISE_KILLER_MSG = (
+    "（重要提示）你上一条回复只说了要做什么、却没给出任何实质内容（既没有命令/代码/步骤，"
+    "也没有具体解释），这不是一次有效回答。请立即在本条里直接给出完整的、可直接使用的最终内容："
+    "命令/代码用代码块标注，解释要具体。严禁再说「先看看 / 去找找 / 再发一遍 / 稍等 / 这就去」"
+    "这类预告后就停住——你没有第二轮，必须一次性交付。保持你原有的人格语气。"
+)
+
+
+def _is_promise_only_reply(content: str | None) -> bool:
+    """是否"纯承诺死结"回复：仅含承诺词、无代码块、且很短（说明只有口头预告，没给实质内容）。
+
+    仅在模型本轮未调用工具、内容为最终回复时使用；命中则强制再生成一轮实答。
+    """
+    if not content:
+        return False
+    try:
+        data = json.loads(content)
+    except Exception:
+        return False
+    replies = data.get("replies") if isinstance(data, dict) else None
+    if not isinstance(replies, list) or not replies:
+        return False
+    replies = [str(r) for r in replies if isinstance(r, str)]
+    if not replies:
+        return False
+    text = "\n".join(replies)
+    if "```" in text:  # 有代码块 = 已交付实质内容
+        return False
+    if len(text) > 150:  # 足够长大概率真有内容
+        return False
+    return any(m in text for m in _PROMISE_MARKERS)
+
 async def generate_multi_reply_with_tools(
     msg_history: list[str],
     speaker_name: str,
@@ -864,6 +903,12 @@ async def generate_multi_reply_with_tools(
                     if json_raw and json_raw.startswith("{"):
                         result.content = json_raw
                         logger.info("json_mode 重试成功: %s...", json_raw[:80])
+            # Phase 20 Hotfix F：纯承诺"只说不做"死结——无工具调用却只回预告(先看看/去找找/再发一遍)。
+            # 拦截后向对话注入"立刻实答"指令，再生成一轮；第二轮仍如此则保留（有界，不过度消耗）。
+            if round_idx == 0 and _is_promise_only_reply(result.content):
+                logger.warning("回复疑似纯承诺(只说不做)，强制再生成一轮要求直接实答: %s", (result.content or "")[:60])
+                msgs.append({"role": "user", "content": _PROMISE_KILLER_MSG})
+                continue
             break
 
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
