@@ -23,12 +23,15 @@ _HEADING_RE = re.compile(r'^\s*#{1,6}\s+(.+?)\s*$')
 # 围栏代码块起始/结束（可带语言标记，如 ```python）
 _FENCE_RE = re.compile(r'^\s*```')
 
-# 字面转义序列（LLM 在 JSON 字符串里输出 \\n / \\r\\n / \\t / \\` 等，
-# json.loads 只还原一层，剩余字面两字符会原样发给用户）。仅块外还原。
+# 字面转义序列（LLM 在 JSON 字符串里输出 \\n / \\r\\n / \\t / \\` / \\~ / \\" 等，
+# json.loads 只还原合法 JSON 转义：\\n→换行；而 \\~ / \\` 是**非法 JSON 转义**，
+# loads 会失败走 fallback，字面两字符原样保留。此处统一在块外还原）。仅块外还原。
 _LITERAL_NL = "\\n"
 _LITERAL_CRLF = "\\r\\n"
 _LITERAL_TAB = "\\t"
 _LITERAL_BACKTICK = "\\`"
+_LITERAL_TILDE = "\\~"
+_LITERAL_QUOTE = "\\\""
 
 
 def _unescape_literal_outside_fence(lines: list[str]) -> list[str]:
@@ -37,7 +40,10 @@ def _unescape_literal_outside_fence(lines: list[str]) -> list[str]:
     - \\r\\n / \\n → 真实换行
     - \\t → 真实制表符
     - \\` → 反引号（如 `\\`\\`\\`python` → ```python）
+    - \\~ → 波浪线（LLM 输出 \\~ 时多为误转义，还原为普通 ~）
+    - \\" → 双引号（LLM 输出 \\" 时还原为普通 "）
     代码块围栏内部**不还原**，保护 Python 字符串 / 正则 / 转义序列中的合法反斜杠。
+    正常 KMD 字符（** 加粗、` 反引号、~ 波浪线）不带反斜杠，原样保留、不加转义。
     """
     out: list[str] = []
     in_fence = False
@@ -53,6 +59,8 @@ def _unescape_literal_outside_fence(lines: list[str]) -> list[str]:
         ln = ln.replace(_LITERAL_CRLF, "\n").replace(_LITERAL_NL, "\n")
         ln = ln.replace(_LITERAL_TAB, "\t")
         ln = ln.replace(_LITERAL_BACKTICK, "`")
+        ln = ln.replace(_LITERAL_TILDE, "~")
+        ln = ln.replace(_LITERAL_QUOTE, '"')
         out.append(ln)
     return out
 

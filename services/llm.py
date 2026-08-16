@@ -1055,6 +1055,25 @@ async def _reply_from_error(msgs: list[dict], err_text: str,
     return [], 0, [], _fallback_msg, "", None, "", None, None, "user", {}, None
 
 
+def _restore_literal_escapes(text: str) -> str:
+    """还原 LLM 输出的字面转义序列（Phase 20 Hotfix D4）。
+
+    仅用于 JSON 解析失败后的 fallback 路径：此时 json.loads 未成功，
+    字符串里的 \\n / \\r\\n / \\t / \\` / \\~ / \\" 都是字面两字符。
+    按序替换为真实字符；正常字符（** 加粗、` 反引号、~ 波浪线）不带
+    反斜杠，不受影响；不做任何 JSON/Unicode 二次序列化。
+    """
+    if not text:
+        return text
+    return (text
+            .replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\`", "`")
+            .replace("\\~", "~")
+            .replace('\\"', '"'))
+
+
 def _parse_reply(
     raw: str,
     speaker_name: str = "",
@@ -1174,6 +1193,9 @@ def _parse_reply(
                     if parts:
                         fm = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                         fv = int(fm.group(1)) if fm else 0
+                        # Phase 20 Hotfix D4：非法转义（\\~ / \\` / \\"）导致 loads 失败
+                        # 走手工提取时字面转义原样保留，这里统一还原。
+                        parts = [_restore_literal_escapes(p) for p in parts]
                         return parts, fv, [], "", "", None, "", None, None, "user", {}, None
         except Exception:
             pass
@@ -1509,12 +1531,16 @@ async def generate_multi_reply(
                         if parts:
                             fav_m = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                             fav_change = max(-5, min(5, int(fav_m.group(1)) if fav_m else 0))
+                            # Phase 20 Hotfix D4：非法转义（\\~ / \\` / \\"）导致 loads 失败
+                            # 走手工提取时，字面转义序列原样保留；这里统一还原。
+                            parts = [_restore_literal_escapes(p) for p in parts]
                             logger.info("修复提取: %d句 fav=%+d", len(parts), fav_change)
                             return parts, fav_change, [], "", "", None, "", None, None, "user", {}
         except Exception:
             pass
         logger.warning("修复也失败，回退旧格式: %s...", raw[:80])
-        raw = raw.replace("\\n", "\n")
+        # Phase 20 Hotfix D4：旧格式 fallback 统一还原字面转义（\\n/\\r\\n/\\t/\\`/\\~/\\"）
+        raw = _restore_literal_escapes(raw)
         raw_cleaned, fav_change = _extract_fav_change(raw)
         sentences = _clean_sentences(raw_cleaned)
         logger.info("多句回复生成完成(旧格式): %d句 fav=%+d", len(sentences), fav_change)
