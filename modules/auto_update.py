@@ -47,10 +47,35 @@ def _schedule_restart(delay: float = 5.0) -> bool:
         return False
 
 
+def _parse_update_args(args):
+    """解析 .update 的 bash 风格参数。
+
+    支持 -y/--yes（跳过高风险二次确认直接装）、-q/--quiet（静默，只提示完成+重启），
+    以及子命令 check/force/test/resend/approve/deny。
+    返回 (yes, quiet, sub, rest)。
+    """
+    yes = quiet = False
+    sub = None
+    rest = []
+    for a in (args or []):
+        al = str(a).lower()
+        if al in ("-y", "--yes", "-yes", "yes"):
+            yes = True
+        elif al in ("-q", "--quiet", "-quiet", "quiet"):
+            quiet = True
+        elif sub is None and al in ("check", "force", "test", "resend", "notify", "补发", "approve", "deny"):
+            sub = al
+        else:
+            rest.append(a)
+    return yes, quiet, sub, rest
+
+
 async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.update [check|force|test|resend]"""
+    """.update [check|force|test|resend] [-y] [-q]"""
+    yes, quiet, sub, rest = _parse_update_args(args)
+
     # test 模式无需权限，任何人可用
-    if args and args[0].lower() == "test":
+    if sub == "test":
         return await _test_connectivity()
 
     try:
@@ -63,39 +88,41 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
         pass
 
     # 补发被顶掉的 git 更新通知（需权限，绕过去重）
-    if args and args[0].lower() in ("resend", "notify", "补发"):
+    if sub in ("resend", "notify", "补发"):
         from services.notify_system import resend_github_update
-        sha_arg = args[1] if len(args) > 1 else ""
+        sha_arg = rest[0] if rest else ""
         return await resend_github_update(sha_arg)
 
     # 高风险更新人工审批：点击卡片「确认/取消更新」按钮后回传
-    if args and args[0].lower() in ("approve", "deny"):
+    if sub in ("approve", "deny"):
         from services.notify_system import resolve_approval
-        token = args[1] if len(args) > 1 else ""
-        return resolve_approval(token, args[0].lower() == "approve")
+        token = rest[0] if rest else ""
+        return resolve_approval(token, sub == "approve")
 
-    check_only = args and args[0].lower() == "check"
-    force = args and args[0].lower() == "force"
+    check_only = sub == "check"
+    force = sub == "force"
 
     # Phase 16：默认走安全代码级更新流水线（含 Snapshot/Test/Health/Rollback）
     from core.eventbus import get_event_bus, EVENT_UPDATE_STARTED, EVENT_UPDATE_COMPLETED
     get_event_bus().emit(EVENT_UPDATE_STARTED, {
         "user_id": user_id, "check_only": check_only, "force": force,
+        "yes": yes, "quiet": quiet,
     })
 
-    # 注入进度回调：更新应用期间实时上报进度到原频道
+    # 注入进度回调：更新应用期间实时上报进度到原频道；-q 静默时不推送进度
     from services.sender import send_by_chat_type
     async def _progress(msg: str):
         await send_by_chat_type(f"**[更新进度]** {msg}", group_id, is_group,
                                 user_id=user_id if not is_group else None)
 
     result = await safe_check_and_update(
-        check_only=check_only, force=force, progress=None if check_only else _progress,
+        check_only=check_only, force=force, require_approval=not yes,
+        progress=None if (check_only or quiet) else _progress,
     )
 
     get_event_bus().emit(EVENT_UPDATE_COMPLETED, {
         "user_id": user_id, "check_only": check_only, "force": force,
-        "result": result[:200],
+        "yes": yes, "quiet": quiet, "result": result[:200],
     })
 
     if check_only:
@@ -112,6 +139,8 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
         # 更新成功 → 延迟自动重启，由上层先发出提示消息，再让 systemd 拉起新进程
         if _schedule_restart(5.0):
             logger.info("更新成功，已安排 5 秒后自动重启")
+            if quiet:
+                return "✅ 更新完成，正在重启…"
             result += "\n\n✅ 更新成功，5 秒后自动重启机器人，请稍候…"
         else:
             result += "\n\n建议重启 bot 使更新生效"
