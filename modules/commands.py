@@ -3326,6 +3326,38 @@ COMMAND_MAP: dict[str, callable] = {
 }
 
 
+class _PluginMsg(dict):
+    """插件命令 handler 收到的消息对象。
+
+    同时支持 dict 访问（echo 插件用 msg.get("args")）与属性访问
+    （Lua 插件用 msg.args），两种插件书写风格都能兼容。"""
+
+    def __getattr__(self, key: str):
+        return self.get(key)
+
+
+def _find_plugin_command(cmd_name: str):
+    """在 CapabilityRegistry 里查找插件动态注册的命令（Phase 13 插件系统）。
+
+    插件通过 ctx.capability.register_command 注册进 CapabilityRegistry
+    （cap.source 以 "plugin:" 开头，handler 经 bind_handler(cap.id, handler) 绑定），
+    这些命令不进静态 COMMAND_MAP，因此分发时在此动态解析。找不到返回 None。
+    """
+    try:
+        from core.capability import get_capability_registry, CATEGORY_COMMAND
+        reg = get_capability_registry()
+        for cap in reg.all():
+            if (cap.category == CATEGORY_COMMAND
+                    and cap.name == cmd_name
+                    and cap.source and cap.source.startswith("plugin:")):
+                handler = reg.get_handler(cap.id)
+                if handler is not None:
+                    return handler
+    except Exception:
+        pass
+    return None
+
+
 async def handle_command(
     text: str,
     user_id: int,
@@ -3364,11 +3396,34 @@ async def handle_command(
     logger.debug("指令解析: prefix=%s cmd=%s args=%s user=%d", prefix, cmd_name, args, user_id)
 
     handler = COMMAND_MAP.get(cmd_name)
-    if not handler:
+    plugin_handler = _find_plugin_command(cmd_name) if not handler else None
+    if not handler and plugin_handler is None:
         logger.warning("未知指令: '%s%s'", prefix, cmd_name)
         return format_lang("error.unknown_command", prefix=prefix, cmd=cmd_name)
 
-    # 执行处理器
+    # 插件动态命令：handler 是 async (msg) -> str|None，构造消息对象直接调用
+    if plugin_handler is not None:
+        msg = _PluginMsg(
+            args=args,
+            text=raw_message,
+            author=user_id,
+            sender=sender_name,
+            is_group=is_group,
+            chat_id=group_id,
+        )
+        try:
+            result = await plugin_handler(msg)
+        except Exception as e:
+            err_type = type(e).__name__
+            logger.error("插件指令执行异常 [%s]: %s: %s", cmd_name, err_type, e, exc_info=True)
+            return format_lang("error.command_error_detail", cmd=cmd_name, err=err_type, msg=str(e))
+        if result is not None:
+            logger.info("插件指令执行完成 [%s]: 返回%d字符", cmd_name, len(str(result)))
+        else:
+            logger.info("插件指令执行完成 [%s]: 无返回值（已自行发送）", cmd_name)
+        return result
+
+    # 执行处理器（普通指令）
     try:
         # 按需传入 raw_message / raw_event
         import inspect
