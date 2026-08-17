@@ -1,9 +1,9 @@
 {
-  "name": "checkin",
+  "name": "points",
   "version": "1.0.0",
   "runtime": "python",
   "entrypoint": "main.py",
-  "description": "每日签到 + 积分系统 + 积分商店（签到得积分，积分可兑换商店物品，管理员可维护余额与商品）",
+  "description": "每日签到 + 积分系统：签到得积分，管理员可维护每人积分余额（数据存 plugins/points/data.json，供商店插件共享）",
   "author": "huanmeng",
   "dependencies": [],
   "permissions": ["message.read", "message.send"],
