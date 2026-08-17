@@ -161,34 +161,75 @@ def unpack_hmp(hmp_path: Path) -> tuple[bool, str]:
 
 
 # ── 从聊天提取 .hmp URL ────────────────────────────────
-def extract_hmp_url(raw_event) -> Optional[str]:
-    """从 KOOK 消息（当前回复或引用消息）的 attachments / (file) 标记里找到一个 .hmp URL。"""
-    urls: list[str] = []
 
-    def _collect(src):
-        if src is None:
-            return
-        for att_key in ("attachments", "images", "image_list"):
-            atts = getattr(src, att_key, None) or []
-            if not isinstance(atts, (list, tuple)):
+# .hmp 可能以纯 URL 出现（含 query 参数），也可能以 KOOK (file) 标签出现
+_HMP_URL_RE = re.compile(r"https?://[^\s\"<>]+?\.hmp(?:\?[^\s\"<>]*)?", re.I)
+_FILE_TAG_RE = re.compile(r"\(file\)\s*([^\s\"<>]+)", re.I)
+
+
+def _walk_strings(obj, depth: int = 0, out: Optional[list[str]] = None) -> list[str]:
+    """递归收集对象内的所有字符串（去重保序），深度受限避免递归爆炸。
+
+    兼容 dict / list / 常见对象字段（url/name/content/extra/file/files/
+    attachments/images/image_list/quote/data），覆盖 KOOK 文件消息附件藏在
+    extra 或 data 里的情况。
+    """
+    if out is None:
+        out = []
+    if depth > 5 or obj is None:
+        return out
+    if isinstance(obj, str):
+        if obj not in out:
+            out.append(obj)
+        return out
+    if isinstance(obj, (int, float, bool)):
+        return out
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _walk_strings(v, depth + 1, out)
+        return out
+    if isinstance(obj, (list, tuple, set)):
+        for i in obj:
+            _walk_strings(i, depth + 1, out)
+        return out
+    # 其它对象：只探测常见字段，避免遍历整个对象图
+    for f in ("url", "name", "content", "extra", "file", "files",
+              "attachments", "images", "image_list", "quote", "data"):
+        try:
+            if not hasattr(obj, f):
                 continue
-            for a in atts:
-                if isinstance(a, dict):
-                    u = a.get("url") or a.get("name") or ""
-                else:
-                    u = getattr(a, "url", "") or getattr(a, "name", "")
-                if u:
-                    urls.append(str(u))
-        content = getattr(src, "content", "") or ""
-        for mm in re.finditer(r"\(file\)(\S+)", content):
-            urls.append(mm.group(1))
+            v = getattr(obj, f)
+            if isinstance(v, str):
+                if v not in out:
+                    out.append(v)
+            elif isinstance(v, (dict, list, tuple)):
+                _walk_strings(v, depth + 1, out)
+        except Exception:
+            pass
+    return out
 
-    _collect(raw_event)
-    _collect(getattr(raw_event, "quote", None) if raw_event is not None else None)
 
-    for u in urls:
-        if str(u).lower().endswith(HMP_EXT):
-            return str(u)
+def extract_hmp_url(raw_event) -> Optional[str]:
+    """从 KOOK 消息（当前消息 / 引用消息）里递归找一个 .hmp 文件 URL。
+
+    兼容：attachments/images 里的 url/name、正文里的 (file)URL、带 query 的裸
+    路径以及藏在 extra/data 里的 URL。找不到返回 None。
+    """
+    if raw_event is None:
+        return None
+    candidates: list[str] = []
+    _walk_strings(raw_event, out=candidates)
+    _walk_strings(getattr(raw_event, "quote", None), out=candidates)
+
+    # 1) 整串就是 `.hmp` 结尾的 URL（最直接）
+    for c in candidates:
+        if str(c).lower().endswith(HMP_EXT):
+            return str(c)
+    # 2) 从各字符串里再正则抠 `.hmp` URL 或 (file)URL
+    for c in candidates:
+        m = _HMP_URL_RE.search(c) or _FILE_TAG_RE.search(c)
+        if m:
+            return m.group(1) if m.lastindex else m.group(0)
     return None
 
 

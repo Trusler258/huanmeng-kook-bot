@@ -3225,7 +3225,8 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
 
         # 从聊天附件/引用里找 .hmp
         url = PS.extract_hmp_url(raw_event) if raw_event is not None else None
-        missing_attach = "没找到 .hmp 附件。请把 .hmp 发到聊天并引用（或让本消息携带附件）后，再发命令。"
+        missing_attach = ("没找到 .hmp 附件。请对 `points.hmp`/`shop.hmp` 那条文件消息点「回复」，"
+                          "在回复框里输入命令再发送。")
 
         # -down 或 -down -load（带附件）：下载到 _down，-load 时顺带解包+加载
         if "down" in flags:
