@@ -25,7 +25,8 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def _root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent
+    # 本文件位于 modules/ 下，向上两层即项目根（同 commands.py 等约定）
+    return Path(__file__).resolve().parent.parent
 
 
 def _plugins_root() -> Path:
