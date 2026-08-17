@@ -3324,7 +3324,10 @@ async def _plugin_load_hmp(fname: str) -> str:
             ok2, err2 = await mgr.enable(name)
             return (f"✅ 检测到已存在 `{name}`，已重新启用" if ok2
                     else f"❌ 启用失败: {err2}")
-        return "❌ " + msg
+        # 目录在但注册表无记录（刚 unload）→ 走 discover + load + init + enable
+        ok3, msg3 = await PS.load_local_plugin(name)
+        return (f"✅ 检测到已存在 `{name}`，已重新加载启用" if ok3
+                else f"❌ 加载失败: {msg3}")
     ok2, msg2 = await PS.load_local_plugin(name)
     if not ok2:
         return f"❌ 解包成功但加载失败: {msg2}"
