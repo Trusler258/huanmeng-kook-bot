@@ -3209,12 +3209,19 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
                 return "plugins/_down/ 还没有下载的 .hmp"
             return "已下载的 .hmp（在 plugins/_down/）：\n" + "\n".join("  " + n for n in names)
 
-        # -pack <本地插件名>
+        # -pack <本地插件名>：打包并把 .hmp 发到当前聊天
         if "pack" in flags:
             if not non_flags:
                 return "用法：`.plugin -pack <本地插件名>`"
-            ok, msg = PS.pack_plugin(non_flags[0])
-            return ("✅ " + msg) if ok else ("❌ " + msg)
+            ok, msg, hmp_path = PS.pack_plugin(non_flags[0])
+            if not ok:
+                return "❌ " + msg
+            if hmp_path:
+                from services.sender import send_file
+                chat_id = group_id if is_group else user_id
+                if await send_file(str(hmp_path), chat_id, is_group):
+                    return "✅ " + msg + "\n已将 .hmp 发到聊天，他人可引用后用 `.plugin -down -load` 导入"
+            return "✅ " + msg
 
         # 从聊天附件/引用里找 .hmp
         url = PS.extract_hmp_url(raw_event) if raw_event is not None else None

@@ -58,22 +58,25 @@ def _sanitize_member(member: str) -> Optional[str]:
 
 
 # ── 打包 ───────────────────────────────────────────────
-def pack_plugin(name: str) -> tuple[bool, str]:
-    """把 plugins/<name>/ 打成 plugins/_down/<manifest.name>.hmp（ZIP_STORED）。"""
+def pack_plugin(name: str) -> tuple[bool, str, Optional[Path]]:
+    """把 plugins/<name>/ 打成 plugins/_down/<manifest.name>.hmp（ZIP_STORED）。
+
+    成功时第三位返回生成的 .hmp 绝对路径（供上层直接发送到聊天），失败为 None。
+    """
     src = _plugins_root() / name
     if not src.is_dir():
-        return False, f"插件目录不存在: {name}"
+        return False, f"插件目录不存在: {name}", None
     mf = src / "manifest.json"
     if not mf.is_file():
-        return False, "缺少 manifest.json"
+        return False, "缺少 manifest.json", None
 
     try:
         manifest = json_load(mf)
     except Exception as e:
-        return False, f"manifest 解析失败: {e}"
+        return False, f"manifest 解析失败: {e}", None
     pname = (manifest.get("name") or "").strip()
     if pname and not validate_name(pname):
-        return False, f"manifest.name 非法: {pname}"
+        return False, f"manifest.name 非法: {pname}", None
     pname = pname or name
 
     out = _down_dir() / f"{pname}{HMP_EXT}"
@@ -88,8 +91,8 @@ def pack_plugin(name: str) -> tuple[bool, str]:
                     z.writestr(rel, f.read_bytes())
                     n += 1
     except Exception as e:
-        return False, f"打包失败: {e}"
-    return True, f"已打包 {pname}{HMP_EXT}（{out.stat().st_size} 字节，{n} 个文件）"
+        return False, f"打包失败: {e}", None
+    return True, f"已打包 {pname}{HMP_EXT}（{out.stat().st_size} 字节，{n} 个文件）", out
 
 
 # ── 解包 ───────────────────────────────────────────────
