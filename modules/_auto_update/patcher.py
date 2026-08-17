@@ -148,12 +148,43 @@ def apply_hunks(
     Returns:
         (merged_lines, apply_ok, skipped)
     """
+    merged, apply_ok, skipped, _ = apply_hunks_detailed(
+        local_lines, hunks, protected_ranges
+    )
+    return merged, apply_ok, skipped
+
+
+def apply_hunks_detailed(
+    local_lines: list[str],
+    hunks: list[PatchHunk],
+    protected_ranges: list[tuple[int, int]] | None = None,
+) -> tuple[list[str], int, int, list[dict]]:
+    """
+    将 hunks 应用到本地文件内容，返回 (合并结果, 成功数, 跳过数, 跳过明细)。
+
+    跳过明细为 list[dict]，每个跳过项形如：
+        {"old_start": int, "reason": str}
+    reason 取值:
+        "protected"     与保护区重叠
+        "no_context"    上下文滑动匹配不到本地内容
+        "out_of_range"  替换目标行号超出文件范围
+        "no_payload"    新文件模式下块为空
+
+    Args:
+        local_lines: 本地文件所有行 (0-indexed)
+        hunks: 解析后的 hunk 列表
+        protected_ranges: 保护区 [(start_line_0idx, end_line_0idx), ...]
+
+    Returns:
+        (merged_lines, apply_ok, skipped, skip_details)
+    """
     if protected_ranges is None:
         protected_ranges = []
 
     result = local_lines[:]
     apply_ok = 0
     skipped = 0
+    skip_details: list[dict] = []
     offset = 0  # 累积行号偏移（插入/删除导致）
 
     for hunk in hunks:
@@ -166,6 +197,9 @@ def apply_hunks(
                 result = block[:]
                 offset = len(block)
                 apply_ok += 1
+            else:
+                skipped += 1
+                skip_details.append({"old_start": hunk.old_start, "reason": "no_payload"})
             continue
 
         # 计算在已调整的本地文件中的位置
@@ -176,18 +210,21 @@ def apply_hunks(
             adjusted_start, adjusted_start + hunk.old_count, protected_ranges
         ):
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "protected"})
             continue
 
         # 滑动匹配上下文
         match_pos = _find_context_match(result, adjusted_start, hunk)
         if match_pos < 0:
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "no_context"})
             continue
 
         # 应用替换
         old_end = match_pos + hunk.old_count
         if old_end > len(result):
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "out_of_range"})
             continue
 
         # 应用替换：用完整重建的新块替换旧块
@@ -197,7 +234,7 @@ def apply_hunks(
         offset += delta
         apply_ok += 1
 
-    return result, apply_ok, skipped
+    return result, apply_ok, skipped, skip_details
 
 
 def _find_context_match(

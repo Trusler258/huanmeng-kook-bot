@@ -156,8 +156,10 @@ def _health_check(files: list[dict], root: Path) -> list[str]:
             continue
         fpath = root / rel
         if not fpath.exists():
-            # 本次应存在而缺失 → 视为写失败
-            errors.append(f"[健康检查] 文件缺失: {rel}")
+            # 文件缺失：_apply_production 已尽力下载/合并，仍未落地说明该文件本次
+            # 无法同步。降级为"跳过该文件"而非整体回滚，避免单文件缺失连累其他更新
+            # （用户诉求：缺失了跳过即可，不影响其他内容更新，tests/ 本就不同步）。
+            logger.warning("健康检查: %s 仍缺失，跳过该文件（不阻断本次更新）", rel)
             continue
         try:
             content = fpath.read_text(encoding="utf-8")
@@ -303,7 +305,7 @@ async def safe_check_and_update(
     snap = _snap.create_snapshot(actionable, head)
 
     # 10. Production Apply（走 Diff + 最小 Patch，沿用现有 patcher）
-    ok, skip = await _apply_production(actionable, root, head, state, progress)
+    ok, skip, skip_details = await _apply_production(actionable, root, head, state, progress)
 
     # 11. Health Check（应用后轻量校验；失败则回滚）
     await _report(progress, "正在健康检查…")
@@ -317,6 +319,8 @@ async def safe_check_and_update(
     _eng.save_state(root, state)
     await _report(progress, "更新完成")
     parts = [f"已安全更新 {len(actionable)} 个文件（{ok} hunks 成功, {skip} hunks 跳过）"]
+    if skip_details:
+        parts.append(_format_skip_details(skip_details))
     if commit_log:
         parts.append(commit_log)
     return "\n".join(parts)
@@ -333,12 +337,43 @@ def _rebuild_baseline(state: dict, files: list[dict], head: str) -> None:
             state["files"].pop(rel, None)
 
 
+async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool:
+    """全量下载并落盘一个文件（本地缺失 / 无 patch 时使用）。成功返回 True。
+
+    已有本地内容时避免整体覆盖，仅用于本地缺失文件，保证安全更新不丢本地改动。
+    """
+    rel = item.get("filename", "")
+    raw_url = item.get("raw_url", "")
+    if not raw_url:
+        return False
+    try:
+        async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
+            resp = await dl.get(raw_url)
+            resp.raise_for_status()
+        _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
+        try:
+            blob = await _eng._get_blob_sha(rel, head)
+            _eng.set_file_blob(state, rel, blob, 1, 0)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.warning("下载 %s 失败: %s", rel, e)
+        return False
+
+
 async def _apply_production(
     files: list[dict], root: Path, head: str, state: dict, progress=None,
-) -> tuple[int, int]:
-    """逐文件应用 patch/diff 到生产（沿用现有 patcher 行级合并）。"""
+) -> tuple[int, int, list[dict]]:
+    """逐文件应用 patch/diff 到生产（沿用现有 patcher 行级合并）。
+
+    Returns:
+        (成功hunks数, 跳过hunks数, 跳过明细)
+        跳过明细为 list[dict]：{"file": rel, "old_start": int, "reason": str}
+    """
     ok = 0
     skip = 0
+    skip_details: list[dict] = []
     total = len(files)
     for idx, item in enumerate(files, start=1):
         rel = item.get("filename", "")
@@ -352,28 +387,26 @@ async def _apply_production(
                 local.unlink()
             continue
 
+        # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
+        # 空文件上除 new-file（@@ -0,0 +1,N @@）外会全体 skip → 永不落盘
+        # （历史更新曾因此让 music_status.py 一直缺失，/listening 报 ModuleNotFoundError）。
+        # 缺失文件无本地内容可保留 → 直接全量下载保证文件落地。
+        if not (root / rel).exists():
+            if await _download_full(root, item, state, head):
+                ok += 1
+            continue
+
         if not patch_text:
-            raw_url = item.get("raw_url", "")
-            if raw_url:
-                try:
-                    async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
-                        resp = await dl.get(raw_url)
-                        resp.raise_for_status()
-                    _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
-                    try:
-                        blob = await _eng._get_blob_sha(rel, head)
-                        _eng.set_file_blob(state, rel, blob, 1, 0)
-                    except Exception:
-                        pass
-                    ok += 1
-                except Exception as e:
-                    logger.warning("下载 %s 失败: %s", rel, e)
+            if await _download_full(root, item, state, head):
+                ok += 1
             continue
 
         hunks = patcher.parse_patch(patch_text)
         if not hunks:
             continue
-        merged, aok, sk = patcher.apply_hunks(_eng._read_local(root, rel), hunks)
+        merged, aok, sk, skd = patcher.apply_hunks_detailed(
+            _eng._read_local(root, rel), hunks
+        )
         if aok > 0:
             _eng._write_local(root, rel, merged)
             try:
@@ -383,4 +416,32 @@ async def _apply_production(
                 pass
         ok += aok
         skip += sk
-    return ok, skip
+        for d in skd:
+            skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
+                                 "reason": d.get("reason", "unknown")})
+    return ok, skip, skip_details
+
+
+def _format_skip_details(skip_details: list[dict], limit: int = 8) -> str:
+    """把跳过明细格式化为人类可读文本。
+
+    每项形如 "- <file> 第 <old_start> 行: <原因>"，最多展示 limit 项，
+    超出折叠为「… 其余 N 项已折叠」。
+    """
+    reason_map = {
+        "protected": "与保护区重叠",
+        "no_context": "上下文不匹配（本地改动较大）",
+        "out_of_range": "目标行号超出文件范围",
+        "no_payload": "新文件块为空",
+        "unknown": "未知原因",
+    }
+    if not skip_details:
+        return "跳过明细: 无"
+    lines = [f"跳过 hunks 明细（共 {len(skip_details)} 项）:"]
+    shown = skip_details[:limit]
+    for d in shown:
+        reason = reason_map.get(d.get("reason", ""), d.get("reason", "未知原因"))
+        lines.append(f"- {d.get('file', '?')} 第 {d.get('old_start', 0)} 行: {reason}")
+    if len(skip_details) > limit:
+        lines.append(f"… 其余 {len(skip_details) - limit} 项已折叠")
+    return "\n".join(lines)
