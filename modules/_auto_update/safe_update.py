@@ -229,7 +229,7 @@ async def _ensure_dependencies(files: list[dict], root: Path) -> list[str]:
     if not raw_url:
         return ["requirements.txt 无 raw_url，无法安装依赖"]
     try:
-        async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False, follow_redirects=True) as dl:
             resp = await dl.get(_eng._normalize_raw_url(raw_url))
             resp.raise_for_status()
         req_text = resp.text
