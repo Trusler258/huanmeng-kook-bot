@@ -218,13 +218,45 @@ def _classify_path(rel: str) -> str:
     return "MEDIUM" if is_python_path(rel) else "LOW"
 
 
-def resolve_project_module(root: Path, module_name: str) -> Optional[Path]:
-    """把 import 模块名解析到项目内应在的文件路径。
+def _package_defines(pkg: Path, name: str) -> bool:
+    """判断包目录 pkg 的 __init__.py 是否定义了符号 name（import/赋值/定义均可）。
 
-    - 顶层段若不在项目根（stdlib / 三方库）→ 返回 None，表示非本地模块。
-    - 顶层段在项目根 → 按包/文件逐层解析，返回期望存在的路径
-      （可能不存在，由调用方据此判定"缺失本地模块"）。
-    例如 modules/cmd_cards → root/modules/cmd_cards.py。
+    用于区分 `core.plugin.get_plugin_manager` 中的 get_plugin_manager 是
+    "包 __init__ 里 re-export 的符号"（不应判缺失）还是"真缺失的子模块"。"""
+    init = pkg / "__init__.py"
+    if not init.is_file():
+        return False
+    try:
+        tree = ast.parse(init.read_text(encoding="utf-8"))
+    except (SyntaxError, OSError):
+        return False
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                names.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                names.add(a.asname or a.name)
+        elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            tgt = node.targets[0] if isinstance(node, ast.Assign) else node.target
+            if isinstance(tgt, ast.Name):
+                names.add(tgt.id)
+    return name in names
+
+
+def resolve_project_module(root: Path, module_name: str) -> Optional[Path]:
+    """把 import 模块名解析到项目内应在的文件路径（模块边界）。
+
+    规则：
+    - 顶层段不在项目根（stdlib / 三方库）→ 返回 None，表示非本地模块。
+    - 只解析到"真实存在的模块边界"（文件 X.py 或含 __init__.py 的包目录）。
+      越过边界之后的段（如 core.plugin.get_plugin_manager 的 get_plugin_manager）是
+      包内符号，不作为嵌套文件路径；若父包 __init__.py 定义了该符号则视为存在，
+      否则判定为真缺失子模块（返回期望路径）。
+    例如 modules/cmd_cards → root/modules/cmd_cards.py（缺失时由调用方判定）。
     """
     parts = module_name.replace("-", "_").split(".")
     if not parts:
@@ -232,21 +264,29 @@ def resolve_project_module(root: Path, module_name: str) -> Optional[Path]:
     root = Path(root)
     top = root / parts[0]
     top_file = top.with_suffix(".py")
-    if not (top_file.exists() or top.is_dir()):
-        return None  # 非项目本地模块
-    if top_file.exists():
+    if top_file.is_file():
         return top_file
+    if not top.is_dir():
+        return None  # 非项目本地模块
     path = top
     for seg in parts[1:]:
         cand_file = path / f"{seg}.py"
-        if cand_file.exists():
-            return cand_file
         cand_pkg = path / seg
+        if cand_file.is_file():
+            return cand_file  # 命中模块文件 → 边界，余下段视为符号
         if cand_pkg.is_dir():
             path = cand_pkg
             continue
-        return cand_file  # 期望但缺失 → 交由调用方判断
-    return path / "__init__.py"
+        # 该段文件/包均不存在：包内符号 or 真缺失子模块。
+        # 父包 __init__ 定义了该符号 → 视为符号，模块边界仍在父包。
+        if _package_defines(path, seg):
+            init = path / "__init__.py"
+            return init if init.is_file() else path
+        # 真缺失（例如 cmd_cards 直接作为某包子模块）→ 返回期望路径供判定
+        return cand_file
+    # 全程命中包目录 → 模块即该包
+    init = path / "__init__.py"
+    return init if init.is_file() else path
 
 
 def analyze_dependencies(files: list[dict], root: Optional[Path] = None) -> list[DependencyIssue]:
