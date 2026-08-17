@@ -328,6 +328,34 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
 
         local_lines = _read_local(root, rel)
         merged, aok, sk = apply_hunks(local_lines, hunks)
+
+        # 该文件有 patch 但一个 hunk 都没落地（上下文全对不上，即
+        # "hash/内容与远程基准脱节"）→ 行级合并无法完成。
+        # 自动回退全量下载 raw_url 强行对齐 HEAD，并重建 blob，避免
+        # "永久跳过 + 漏更新"。保护文件 (.bot_protect) 不受此影响。
+        if aok == 0 and sk > 0:
+            raw_url = item.get("raw_url", "")
+            if raw_url:
+                try:
+                    async with httpx.AsyncClient(timeout=15, verify=False) as dl:
+                        dl_resp = await dl.get(raw_url)
+                        dl_resp.raise_for_status()
+                    _write_local(root, rel, dl_resp.text)
+                    try:
+                        blob = await _get_blob_sha(rel, head)
+                        set_file_blob(state, rel, blob, 1, 0)
+                    except Exception:
+                        pass
+                    updated_files.append(f"[强制对齐] {rel}")
+                    ok += 1
+                    logger.warning("文件 %s patch 全部跳过，已回退全量下载对齐 HEAD", rel)
+                    continue
+                except Exception as e:
+                    logger.warning("文件 %s patch 全跳过且下载失败: %s", rel, e)
+            ok += aok
+            skip += sk
+            continue
+
         if aok > 0:
             _write_local(root, rel, merged)
             blob = await _get_blob_sha(rel, head)
@@ -336,8 +364,14 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
         ok += aok
         skip += sk
 
-    # 7. 保存状态
-    state["remote_sha"] = head
+    # 7. 保存状态：严格事务——仅当没有任何 hunk 跳过时才推进 remote_sha
+    #    （GitHub HEAD 已完整落地）；存在跳过说明本地与远程未对齐，
+    #    保留旧 remote_sha，下次 .update 仍会重试，杜绝永久漏更新。
+    if skip == 0:
+        state["remote_sha"] = head
+    else:
+        logger.warning("存在 %d 个跳过 hunk，本轮不推进 remote_sha，保留 %s",
+                       skip, state.get("remote_sha"))
     save_state(root, state)
 
     # 8. 返回结果
