@@ -16,6 +16,7 @@ import fnmatch
 import os
 import httpx
 from pathlib import Path
+from urllib.parse import urlparse, quote
 
 from core.logger import get_logger
 from modules._auto_update.patcher import parse_patch, apply_hunks
@@ -54,6 +55,28 @@ RAW_MIRRORS = [
     "https://raw.gitmirror.com",
     "https://gh-proxy.com/raw.githubusercontent.com",
 ]
+
+
+def _normalize_raw_url(raw_url: str) -> str:
+    """对 raw_url 中的路径部分做 URL 编码，处理文件名的中文/空格等非 ASCII 字符。
+
+    safe='/%' 保证已存在的百分号编码（如 GitHub API 返回的 %E5%B9%BB）不被二次编码，
+    仅对空格、中文等未编码字符做转义，适配含中文/空格的文件名下载。
+    """
+    try:
+        parsed = urlparse(raw_url)
+        encoded_path = quote(parsed.path, safe="/%")
+        return parsed._replace(path=encoded_path).geturl()
+    except Exception:
+        return raw_url
+
+
+def _normalize_rel_path(rel_path: str) -> str:
+    """对仓库内相对路径做 URL 编码，用于拼进 API/raw 的 URL 路径。"""
+    try:
+        return quote(rel_path, safe="/")
+    except Exception:
+        return rel_path
 
 
 def _root() -> Path:
@@ -171,9 +194,10 @@ async def _fetch_all_files(head_sha: str) -> list[dict] | None:
             files = []
             for item in tree_data.get("tree", []):
                 if item["type"] == "blob":
-                    file_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{item['path']}"
+                    rel = item["path"]
+                    file_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{_normalize_rel_path(rel)}"
                     files.append({
-                        "filename": item["path"],
+                        "filename": rel,
                         "status": "added",
                         "raw_url": file_url,
                     })
@@ -186,7 +210,7 @@ async def _fetch_all_files(head_sha: str) -> list[dict] | None:
 async def _get_blob_sha(rel_path: str, commit_sha: str) -> str:
     """获取某个文件在指定 commit 中的 blob SHA"""
     try:
-        url = f"{GITHUB_API}/contents/{rel_path}?ref={commit_sha}"
+        url = f"{GITHUB_API}/contents/{_normalize_rel_path(rel_path)}?ref={commit_sha}"
         headers = _gh_headers()
         async with httpx.AsyncClient(timeout=5, verify=False) as client:
             resp = await client.get(url, headers=headers)
@@ -295,7 +319,7 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
 
         # 无 patch → 全量下载（首次/force-push 场景）
         if not patch_text:
-            raw_url = item.get("raw_url", "")
+            raw_url = _normalize_raw_url(item.get("raw_url", ""))
             if raw_url and not check_only:
                 try:
                     async with httpx.AsyncClient(timeout=15, verify=False) as dl:
@@ -334,7 +358,7 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
         # 自动回退全量下载 raw_url 强行对齐 HEAD，并重建 blob，避免
         # "永久跳过 + 漏更新"。保护文件 (.bot_protect) 不受此影响。
         if aok == 0 and sk > 0:
-            raw_url = item.get("raw_url", "")
+            raw_url = _normalize_raw_url(item.get("raw_url", ""))
             if raw_url:
                 try:
                     async with httpx.AsyncClient(timeout=15, verify=False) as dl:

@@ -71,7 +71,7 @@ async def _diff_stats(item: dict, root: Path) -> tuple[int, int]:
         return 0, 0
     try:
         async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
-            resp = await dl.get(raw_url)
+            resp = await dl.get(_eng._normalize_raw_url(raw_url))
             resp.raise_for_status()
         remote = resp.text.splitlines(keepends=True)
     except Exception:
@@ -230,7 +230,7 @@ async def _ensure_dependencies(files: list[dict], root: Path) -> list[str]:
         return ["requirements.txt 无 raw_url，无法安装依赖"]
     try:
         async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
-            resp = await dl.get(raw_url)
+            resp = await dl.get(_eng._normalize_raw_url(raw_url))
             resp.raise_for_status()
         req_text = resp.text
     except Exception as e:
@@ -515,7 +515,7 @@ async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool
         return False
     try:
         async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
-            resp = await dl.get(raw_url)
+            resp = await dl.get(_eng._normalize_raw_url(raw_url))
             resp.raise_for_status()
         _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
         try:
