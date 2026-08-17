@@ -223,23 +223,42 @@ def _action_button(text: str, value: str, theme: str = "primary") -> dict:
 
 
 def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[str]) -> str:
-    """普通更新提示卡片（保留了，但普通级现在默认不发，仅 P0 用）"""
+    """普通更新提示卡片：信息层次化 + 新功能简介 + 操作按钮。
+
+    布局：标题 → 版本概览(section) → 本次更新要点(含中文简介) → 提交明细 →
+          操作按钮(查看/确认) → 时间戳。
+    """
+    from modules._auto_update.severity import classify_commits, name as lvl_name
+    level = classify_commits(commits)
     color = "#f0ad4e"  # 黄
+    if level == "P0":
+        color = "#d9534f"
+
     modules = [_header("KOOK BOT · 检测到新版本")]
-    rows = [("远程版本", remote_sha[:7])]
+    rows = [("更新等级", f"**{lvl_name(level)}** [`[{level}]`]")]
+    if remote_sha:
+        rows.append(("远程版本", f"`{remote_sha[:7]}`"))
     if local_sha:
-        rows.append(("本地版本", local_sha[:7]))
+        rows.append(("本地版本", f"`{local_sha[:7]}`"))
     if commits:
         rows.append(("新增提交", f"{len(commits)} 个"))
     modules.append(_section(rows))
-    if commits:
-        modules.append(_divider())
-        modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**更新内容**"}})
-        for c in commits[:6]:
-            modules.append(_context(f"`{c}`"))
-        if len(commits) > 6:
-            modules.append(_context(f"… 共 {len(commits)} 个提交"))
     modules.append(_divider())
+
+    if commits:
+        # 新功能简介：从提交里提取人话要点
+        pts = _summary_points(commits)
+        if pts:
+            modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**本次改动**"}})
+            modules.append(_context("\n".join(f"· {p}" for p in pts)))
+            modules.append(_divider())
+        modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**更新内容**"}})
+        for c in commits[:8]:
+            modules.append(_context(f"`{c}`"))
+        if len(commits) > 8:
+            modules.append(_context(f"… 共 {len(commits)} 个提交"))
+        modules.append(_divider())
+
     # 操作按钮：先查看更新，再确认应用（确认仅 admin 点击才生效）
     modules.append({
         "type": "action-group",
@@ -248,13 +267,13 @@ def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[st
             _action_button("确认更新", ".update", theme="danger"),
         ],
     })
-    modules.append(_context("确认更新仅 admin 可触发生效"))
+    modules.append(_context("查看更新可先预览 diff；确认更新仅 admin 点击可生效"))
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
     return _card_obj(color, modules)
 
 
 def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
-    """P0 级核心漏洞修复提醒卡片：高优先级 + 操作按钮。
+    """P0 级核心漏洞修复提醒卡片：高优先级 + 新功能简介 + 操作按钮。
 
     按钮 value 按指令回传：
       .update check  → 先检查并展示待更新 diff
@@ -264,10 +283,13 @@ def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
     color = "#d9534f"  # 红（P0 高优先级）
     modules = [_header("KOOK BOT · P0 核心漏洞修复")]
 
-    rows = [("远程版本", remote_sha[:7])]
+    rows = []
+    if remote_sha:
+        rows.append(("远程版本", f"`{remote_sha[:7]}`"))
     if commits:
         rows.append(("涉及提交", f"{len(commits)} 个"))
-    modules.append(_section(rows))
+    if rows:
+        modules.append(_section(rows))
     modules.append(_divider())
 
     modules.append({"type": "section", "text": {
@@ -276,6 +298,11 @@ def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
                    "（非强制，但涉及安全/核心漏洞，请优先处理）",
     }})
     if commits:
+        pts = _summary_points(commits)
+        if pts:
+            modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**本次改动**"}})
+            modules.append(_context("\n".join(f"· {p}" for p in pts)))
+            modules.append(_divider())
         modules.append({"type": "section", "text": {"type": "kmarkdown", "content": "**更新内容**"}})
         for c in commits[:5]:
             modules.append(_context(f"`{c}`"))
@@ -293,6 +320,31 @@ def _render_p0_update_card(remote_sha: str, commits: list[str]) -> str:
     })
     modules.append(_context(f"检测时间 {time.strftime('%H:%M')}"))
     return _card_obj(color, modules)
+
+
+def _summary_points(commits: list[str]) -> list[str]:
+    """从 commit messages 提取人话要点（去前缀代号、去短SHA、去冗词）。
+
+    例：`[FEAT] 插件分享: 新增.hmp打包/下载/解包/加载` → `新增.hmp打包/下载/解包/加载`
+    """
+    import re as _re
+    pts = []
+    for c in commits:
+        text = (c or "").strip()
+        if not text:
+            continue
+        # 去掉开头的短 SHA（如 "82321c4 "）
+        text = _re.sub(r"^\s*[0-9a-f]{7}\s+", "", text)
+        # 去掉 [FEAT] 等前缀代号（含中文冒号后的冗余重复）
+        text = _re.sub(r"^(\[[^\]]*\]|其他)\s*[:：]?\s*", "", text)
+        # 去掉重复前缀如 "插件分享: " 前的 "新增"
+        text = text.strip().strip(":：，,。.")
+        if text and text not in pts:
+            pts.append(text[:60])
+    # 去重并保序
+    seen = set()
+    out = [p for p in pts if not (p in seen or seen.add(p))]
+    return out[:6]
 
 
 def render_update_check_card(text: str) -> str:
@@ -600,18 +652,20 @@ async def check_github_update() -> None:
     if cfg.get("last_notified_sha") == remote:
         return  # 已处理过这个版本
 
-    from modules._auto_update.severity import classify_commits, is_p0
+    from modules._auto_update.severity import classify_commits
     pending = _git_pending_commits(local, remote)
     level = classify_commits(pending)
 
-    if is_p0(level):
+    # 普通级与 P0 级都发卡片；P0 走红色高优卡片，其余走黄色普通卡片
+    if level == "P0":
         card = _render_p0_update_card(remote, pending)
         await _send_to_targets(card)
         logger.warning("P0 更新通知已发: local=%s remote=%s commits=%d",
                        local[:7], remote[:7], len(pending))
     else:
-        # 普通级：仅记录，不发卡片（用户 .update 时再应用）
-        logger.info("检测到普通级更新(%s): local=%s remote=%s commits=%d，不主动通知",
+        card = _render_update_card(local, remote, pending)
+        await _send_to_targets(card)
+        logger.info("更新通知已发(%s): local=%s remote=%s commits=%d",
                     level, local[:7], remote[:7], len(pending))
 
     cfg["last_notified_sha"] = remote
@@ -622,9 +676,9 @@ async def notify_github_update(remote_sha: str, commits: list[str] | None = None
     """GitHub Action webhook 触发的即时更新通知（推送即发，无需轮询）
 
     remote_sha: 远程新版本 SHA；commits: 新增提交的一行摘要列表（纯 message，不含作者）。
-    按更新分级处理：
-      - 普通级（FEAT/BUGFIX/CORE）：仅记录，不主动发卡片。
-      - P0 级：发「P0 核心漏洞修复」卡片 + 按钮（先 check 再确认）。
+    普通级与 P0 级都会发卡片：
+      - 普通级（FEAT/BUGFIX/CORE）：发「检测到新版本」黄色卡片 + 查看/确认按钮。
+      - P0 级：发「P0 核心漏洞修复」红色卡片 + 按钮（先 check 再确认）。
     去重：last_notified_sha 相同则不重复处理。
     返回 True=已发送/已记录，False=跳过/失败。
     """
@@ -636,15 +690,17 @@ async def notify_github_update(remote_sha: str, commits: list[str] | None = None
     if cfg.get("last_notified_sha") == remote_sha:
         return False  # 已处理过这个版本
 
-    from modules._auto_update.severity import classify_commits, is_p0
+    from modules._auto_update.severity import classify_commits
     level = classify_commits(commits or [])
-    if is_p0(level):
+    if level == "P0":
         card = _render_p0_update_card(remote_sha, commits or [])
         await _send_to_targets(card)
         logger.warning("P0 更新通知已发(webhook): remote=%s commits=%d",
                        remote_sha[:7], len(commits or []))
     else:
-        logger.info("检测到普通级更新(%s)(webhook): remote=%s commits=%d，不主动通知",
+        card = _render_update_card(None, remote_sha, commits or [])
+        await _send_to_targets(card)
+        logger.info("更新通知已发(%s)(webhook): remote=%s commits=%d",
                     level, remote_sha[:7], len(commits or []))
 
     cfg["last_notified_sha"] = remote_sha
