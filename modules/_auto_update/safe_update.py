@@ -582,9 +582,17 @@ async def _apply_production(
             skip += 1
             continue
 
-        merged, aok, sk, skd = patcher.apply_hunks_detailed(
-            _eng._read_local(root, rel), hunks
-        )
+        try:
+            merged, aok, sk, skd = patcher.apply_hunks_detailed(
+                _eng._read_local(root, rel), hunks
+            )
+        except AttributeError:
+            # 兼容旧版 patcher.py（服务器尚未同步 apply_hunks_detailed）：
+            # 退化为 apply_hunks，仅得到 (merged, aok, sk)，跳过明细记为空。
+            merged, aok, sk = patcher.apply_hunks(
+                _eng._read_local(root, rel), hunks
+            )
+            skd = []
         if aok > 0:
             _eng._write_local(root, rel, merged)
             try:
