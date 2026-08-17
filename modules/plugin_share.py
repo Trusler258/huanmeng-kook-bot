@@ -234,6 +234,45 @@ def extract_hmp_url(raw_event) -> Optional[str]:
     return None
 
 
+async def fetch_hmp_url(raw_event) -> Optional[str]:
+    """先走同步遍历；拿不到时用引用消息(id)调 khl MessageAPI.view 取回完整消息再抠 URL。
+
+    KOOK 的文件消息 content 通常是文件 URL（走 img.kookapp.cn 通道），但引用消息
+    (QuotedMessage) 里常不带上 content，需按 id 重新拉取。
+    """
+    url = extract_hmp_url(raw_event)
+    if url:
+        return url
+    if raw_event is None:
+        return None
+    quote = getattr(raw_event, "quote", None)
+    qid = getattr(quote, "id", None) if quote is not None else None
+    if not qid:
+        return None
+    try:
+        from khl import api
+        from services.delivery import kook_transport
+        bot = kook_transport._bot
+        client = getattr(bot, "client", None) if bot is not None else None
+        gate = getattr(client, "gate", None) if client is not None else None
+        if gate is None:
+            return None
+        body = await gate.exec_req(api.Message.view(msg_id=qid))
+        candidates: list[str] = []
+        _walk_strings(body, out=candidates)
+        for c in candidates:
+            s = str(c)
+            if s.lower().startswith(("http://", "https://")) and s.lower().endswith(HMP_EXT):
+                return s
+        for c in candidates:
+            m = _HMP_URL_RE.search(c) or _FILE_TAG_RE.search(c)
+            if m:
+                return m.group(1) if m.lastindex else m.group(0)
+    except Exception as e:
+        logger.warning("fetch_hmp_url MessageAPI.view 失败: %s", e)
+    return None
+
+
 def local_filename_for(url: str) -> str:
     """从 .hmp URL 推导 _down 里的本地文件名（与 download_hmp 落盘名一致）。"""
     import urllib.parse

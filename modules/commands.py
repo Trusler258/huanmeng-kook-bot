@@ -3224,7 +3224,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
             return "✅ " + msg
 
         # 从聊天附件/引用里找 .hmp
-        url = PS.extract_hmp_url(raw_event) if raw_event is not None else None
+        url = await PS.fetch_hmp_url(raw_event) if raw_event is not None else None
         missing_attach = ("没找到 .hmp 附件。请对 `points.hmp`/`shop.hmp` 那条文件消息点「回复」，"
                           "在回复框里输入命令再发送。")
 
