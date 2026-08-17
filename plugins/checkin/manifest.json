@@ -1,0 +1,18 @@
+{
+  "name": "checkin",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "每日签到 + 积分系统 + 积分商店（签到得积分，积分可兑换商店物品，管理员可维护余额与商品）",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {
+    "base_reward": 100,
+    "streak_bonus": 20,
+    "streak_bonus_cap": 5,
+    "tz_hours": 8,
+    "currency": "积分",
+    "admins": []
+  }
+}
