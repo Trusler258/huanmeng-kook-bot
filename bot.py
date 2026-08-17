@@ -58,7 +58,7 @@ class HuanmengBot:
     4. 支持优雅关闭
     """
 
-    VERSION = "2.0.1fix"
+    VERSION = "2.0.2"
 
     def __init__(self):
         self.cfg: object = None          # type: ignore (BotConfig)
