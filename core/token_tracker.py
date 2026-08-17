@@ -164,12 +164,10 @@ async def cmd_cost(args, user_id, group_id, sender_name, is_group, bot_qq):
     data = calc_cost(today_only=False)
     t = data["today"]
     total = data["total"]
-    
-    lines = ["【Token 消耗统计】"]
-    lines.append(f"  今日: {t['calls']}次调用 {t['prompt']+t['completion']} tokens = ¥{t['cost']:.4f}")
-    lines.append(f"    输入 {t['prompt']:,} (缓存{t['cached']:,}) + 输出 {t['completion']:,}")
-    lines.append(f"  累计: {total['calls']}次调用 {total['prompt']+total['completion']:,} tokens = ¥{total['cost']:.2f}")
-    return "\n".join(lines)
+    from modules.cmd_cards import build_cost
+    return "__CARD__:" + __import__("json").dumps(build_cost({
+        "today": t, "total": total,
+    }), ensure_ascii=False)
 
 
 async def cmd_tokens(args, user_id, group_id, sender_name, is_group, bot_qq):

@@ -1324,11 +1324,47 @@ async def _handle_command_route(text, user_id, group_id, sender_name, is_group, 
         else:
             await send_by_chat_type(cq, group_id, is_group=False, user_id=user_id)
         return
+    if isinstance(result, str) and result.startswith("__CARD__:"):
+        # 原生 KOOK 卡片（指令 builder 产出），失败回退纯文本
+        await _send_cmd_card(result[len("__CARD__:"):], group_id if is_group else user_id,
+                             is_group, user_id, fallback=None)
+        return
     clean_result = re.sub(r'\[(admin|friend|群友)\]', '', result)
     if is_group:
         await send_by_chat_type(clean_result, group_id, is_group=True)
     else:
         await send_by_chat_type(clean_result, group_id, is_group=False, user_id=user_id)
+
+
+# ------指令原生卡片发送------
+async def _send_cmd_card(card_json: str, chat_id, is_group: bool, user_id, fallback=None):
+    """发送指令 builder 产出的原生 KOOK 卡片。
+
+    解析 card JSON，校验通过后走 send_raw；失败时若给出 fallback 纯文本则发送之，
+    否则静默（不阻塞进程）。
+    """
+    try:
+        import json as _json
+        from services.delivery.card_formatter import validate_and_repair_card_json
+        card_json = card_json.strip()
+        ok, fixed_json, detail = validate_and_repair_card_json(card_json)
+        if not ok:
+            logger.warning("指令卡片 JSON 不合法: %s", detail)
+            if fallback:
+                await send_by_chat_type(fallback, chat_id, is_group, user_id if not is_group else None)
+            return
+        cards = _json.loads(fixed_json)
+        if is_group:
+            await send_raw_group(cards, chat_id)
+        else:
+            await send_raw_user(cards, user_id)
+    except Exception as e:
+        logger.warning("指令卡片发送异常: %s", e, exc_info=True)
+        if fallback:
+            try:
+                await send_by_chat_type(fallback, chat_id, is_group, user_id if not is_group else None)
+            except Exception:
+                pass
 
 
 # ------测试卡片------

@@ -284,54 +284,53 @@ async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_qq):
     if not fav_data:
         return format_lang("favlist.empty")
 
-    lines = [format_lang("favlist.header")]
+    rows = []
     for key, val in sorted(fav_data.items(), key=lambda x: x[1], reverse=True):
         # 从 key 中提取 user_id: "g123:456" -> "456", "p:456" -> "456"
         uid = key.split(":")[-1] if ":" in key else key
         name = cfg.qq_name_map.get(uid, uid)
-        lines.append(format_lang("favlist.item_format", name=name, value=val))
-    return "\n".join(lines)
+        rows.append((name, uid, val))
+
+    from modules.cmd_cards import build_favlist
+    return "__CARD__:" + json.dumps(build_favlist(rows), ensure_ascii=False)
 
 
 async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
     """返回系统和运行状态"""
     import platform
     import time as _time
-    
+
     cfg = get_config()
     name = cfg.bot_name
     logger.info("指令 .info 触发 user=%d", user_id)
 
-    lines: list[str] = []
-    lines.append(f"--- {name} 运行状态 ---")
-    lines.append("")
+    d: dict = {
+        "name": name,
+        "system": {"os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+                   "python": platform.python_version()},
+        "runtime": {}, "connection": {}, "config": {}, "models": {}, "token": {},
+    }
 
     # ── 系统 ──
-    lines.append("[System]")
-    lines.append(f"  OS     : {platform.system()} {platform.release()} ({platform.machine()})")
-    lines.append(f"  Python : {platform.python_version()}")
     try:
         import psutil
         mem = psutil.virtual_memory()
         total_mb = mem.total // (1024**2)
         used_mb = mem.used // (1024**2)
-        lines.append(f"  Memory : {used_mb}MB / {total_mb}MB ({mem.percent}%)")
+        d["system"]["memory"] = f"{used_mb}MB / {total_mb}MB ({mem.percent}%)"
         cpu_name = platform.processor() or "Unknown"
         cpu_count = psutil.cpu_count(logical=True)
         cpu_percent = psutil.cpu_percent(interval=0.3)
-        lines.append(f"  CPU    : {cpu_name} ({cpu_count}c) [{cpu_percent}%]")
+        d["system"]["cpu"] = f"{cpu_name} ({cpu_count}c) [{cpu_percent}%]"
         disk = psutil.disk_usage('/')
         disk_gb = disk.used / (1024**3)
         disk_total = disk.total / (1024**3)
-        lines.append(f"  Disk   : {disk_gb:.1f}GB / {disk_total:.1f}GB ({disk.percent}%)")
+        d["system"]["disk"] = f"{disk_gb:.1f}GB / {disk_total:.1f}GB ({disk.percent}%)"
     except ImportError:
-        lines.append(f"  Memory : unavailable (install psutil)")
-        lines.append(f"  Disk   : unavailable")
-
-    lines.append("")
+        d["system"]["memory"] = "unavailable (install psutil)"
+        d["system"]["disk"] = "unavailable"
 
     # ── 运行 ──
-    lines.append("[Runtime]")
     try:
         import psutil
         proc = psutil.Process()
@@ -339,68 +338,59 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
         uptime_sec = int(_time.time() - create_time)
         hours = uptime_sec // 3600
         mins = (uptime_sec % 3600) // 60
-        lines.append(f"  Uptime : {hours}h {mins}m")
+        d["runtime"]["uptime"] = f"{hours}h {mins}m"
     except Exception:
-        lines.append(f"  Uptime : unknown")
+        d["runtime"]["uptime"] = "unknown"
 
     from core.dispatcher import get_current_dispatcher
     from core.context_manager import get_context_mgr
     disp = get_current_dispatcher()
     ctx = get_context_mgr()
     stats = ctx.get_stats()
-    lines.append(f"  Msgs   : {disp.msg_count if disp else '?'} processed")
-    lines.append(f"  Chats  : {stats.get('active_chats', 0)} active")
-    lines.append(f"  Tasks  : {stats.get('active_tasks', 0)} pending")
+    d["runtime"]["msgs"] = disp.msg_count if disp else "?"
+    d["runtime"]["chats"] = stats.get('active_chats', 0)
+    d["runtime"]["tasks"] = stats.get('active_tasks', 0)
 
-    from modules.judge import get_cache_stats
-    cache_s = get_cache_stats()
-    lines.append(f"  S-Cache: {cache_s.get('entries', 0)} entries")
-
-    lines.append("")
+    d["runtime"]["scache"] = get_cache_stats().get('entries', 0)
 
     # ── 连接 ──
-    lines.append("[Connection]")
     from services.sender import _bot as _khl_bot
-    lines.append(f"  KOOK   : {'connected' if _khl_bot is not None else 'not init'}")
     from services.sender import _channel_cache
-    lines.append(f"  Cache  : {len(_channel_cache)} channels")
-
-    lines.append("")
+    d["connection"]["kook"] = 'connected' if _khl_bot is not None else 'not init'
+    d["connection"]["cache"] = len(_channel_cache)
 
     # ── 配置 ──
-    lines.append("[Config]")
-    lines.append(f"  Reply Threshold : {cfg.reply_interest}")
-    lines.append(f"  Context Length  : {cfg.context_length}")
-    lines.append(f"  Private Chat    : {'ON' if cfg.enable_private else 'OFF'}")
-    lines.append(f"  Image Recog     : {'ON' if cfg.image_model.switch else 'OFF'}")
-    lines.append(f"  Groups          : {len(cfg.group_list)} whitelisted")
-    lines.append(f"  Debug           : {'ON' if cfg.debug_mode else 'OFF'}")
-
-    lines.append("")
+    d["config"]["reply_threshold"] = cfg.reply_interest
+    d["config"]["context_length"] = cfg.context_length
+    d["config"]["private_chat"] = bool(cfg.enable_private)
+    d["config"]["image_recog"] = bool(cfg.image_model.switch)
+    d["config"]["groups"] = len(cfg.group_list)
+    d["config"]["debug"] = bool(cfg.debug_mode)
 
     # ── 模型 ──（从运行时配置读取，不写死）
-    lines.append("[Models]")
-    lines.append(f"  Reply  : {cfg.reply_model.name} @ {cfg.reply_model.provider}")
-    lines.append(f"  Cheap  : {cfg.cheap_model.name} @ {cfg.cheap_model.provider}")
-    lines.append(f"  Judge  : {cfg.judge_model.name} @ {cfg.judge_model.provider}")
-    img_enabled = "ON" if cfg.image_model.switch else "DISABLED"
-    lines.append(f"  Vision : {cfg.image_model.name} @ {cfg.image_model.provider} ({img_enabled})")
-
-    lines.append("")
+    d["models"]["reply"] = {"name": cfg.reply_model.name, "provider": cfg.reply_model.provider}
+    d["models"]["cheap"] = {"name": cfg.cheap_model.name, "provider": cfg.cheap_model.provider}
+    d["models"]["judge"] = {"name": cfg.judge_model.name, "provider": cfg.judge_model.provider}
+    d["models"]["vision"] = {"name": cfg.image_model.name, "provider": cfg.image_model.provider,
+                             "enabled": bool(cfg.image_model.switch)}
 
     # ── Token 消耗 ──
-    lines.append("[Token]")
     try:
         from core.token_tracker import calc_cost
         cost = calc_cost(today_only=False)
         t = cost["today"]
         total = cost["total"]
-        lines.append(f"  Today  : {t['calls']} calls, {t['prompt']+t['completion']:,} tokens = ¥{t['cost']:.4f}")
-        lines.append(f"  Total  : {total['calls']} calls, {total['prompt']+total['completion']:,} tokens = ¥{total['cost']:.2f}")
+        d["token"]["today_calls"] = t['calls']
+        d["token"]["today_tokens"] = t['prompt'] + t['completion']
+        d["token"]["today_cost"] = t['cost']
+        d["token"]["total_calls"] = total['calls']
+        d["token"]["total_tokens"] = total['prompt'] + total['completion']
+        d["token"]["total_cost"] = total['cost']
     except Exception:
-        lines.append("  (unavailable)")
+        pass
 
-    return "\n".join(lines)
+    from modules.cmd_cards import build_info
+    return "__CARD__:" + json.dumps(build_info(d), ensure_ascii=False)
 
 
 async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):

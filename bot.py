@@ -226,7 +226,13 @@ class HuanmengBot:
                     f"- 按钮值：`{value}`\n"
                     f"- 按钮返回内容：`{result or '(无)'}`"
                 )
-                if result:
+                # 原生卡片返回：优先发卡片，再发点击记录；否则照旧拼接发送
+                if isinstance(result, str) and result.startswith("__CARD__:"):
+                    from core.pipeline import _send_cmd_card
+                    await _send_cmd_card(result[len("__CARD__:"):],
+                                         chat_id, is_group, user_id if not is_group else None)
+                    await send_by_chat_type(detail, chat_id, is_group, user_id if not is_group else None)
+                elif result:
                     await send_by_chat_type(f"{detail}\n\n---\n{result}", chat_id, is_group, user_id if not is_group else None)
                 else:
                     await send_by_chat_type(detail, chat_id, is_group, user_id if not is_group else None)
