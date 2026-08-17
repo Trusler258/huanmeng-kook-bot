@@ -338,6 +338,35 @@ KOOK 发 .plugin status 确认状态
 | `error` 或 error 非空 | 🔴 错误 | 加载/启用/运行出错，附错误信息 |
 | 其它（如 `disabled`） | 🔴 未生效 | 已发现但未启用 |
 
+### 4.4 插件打包与分享（.hmp）
+
+插件可打包成后缀 `.hmp` 的压缩包（`zip` **仅储存**模式）分享给其它装了这个 Bot 的服务器。所有操作通过 `.plugin` 的 CLI 风格参数完成，下载的包统一保存在 `plugins/_down/`。
+
+| 指令 | 作用 | 权限 |
+|------|------|------|
+| `.plugin -pack <本地插件名>` | 把 `plugins/<本地插件名>/` 打包为 `plugins/_down/<manifest.name>.hmp` | 管理员 |
+| `.plugin -down` | 引用聊天里的 `.hmp`，下载保存到 `_down/` | 管理员 |
+| `.plugin -down -load` | 下载并**加载**引用的 `.hmp` | 管理员 |
+| `.plugin -load <xxx.hmp>` | 解包+加载 `_down/xxx.hmp` | 管理员 |
+| `.plugin -load`（带附件） | 从聊天附件下载并加载 | 管理员 |
+| `.plugin -load -list` / `.plugin -down -list` | 列出 `_down/` 里已下载的 `.hmp` | 管理员 |
+
+从聊天加载 `.hmp` 的姿势：**先 `.hmp` 文件发到聊天**，然后**引用该消息**发 `.plugin -down -load`；机器人会自动下载→解包到 `plugins/<名字>/`→`load→init→enable` 接入运行时，无需重启。
+
+说明：
+
+- 下载/解包带严格安全限制：`.hmp` 上限 10MB、单文件下载上限 50MB、拒绝 zip-slip（路径穿越）；插件名只允许 `字母/数字/_/-`。
+- `_down/` 目录本身没有 `manifest.json`，不会出现在 `.plugin status` 里，也不会被 discover 误加载。
+- 若解包时发现同名插件已存在：未启用会自动补启用；已运行则提示先 `.plugin unload`。
+
+```bash
+# 快速分享示例（在你自己的机器上）
+#   plugins/echo → plugins/_down/echo.hmp
+# 把 echo.hmp 发给有人装了同一 Bot 的群
+# 对方引用该文件后发：
+.plugin -down -load
+```
+
 ---
 
 ## 5. 调试与最佳实践
@@ -365,7 +394,7 @@ A：服务器缺 `lupa`。`pip install lupa` 后重启。
 **Q：命令 handler 返回字符串但机器人没回复？**
 A：确认 manifest `runtime=python`、入口类名为 `Plugin`、且 `.plugin status` 显示 🟢。字符串返回值由命令分发层转成回复。
 
-**Q：如何让命令带多个参数（如 `.weather beijing today`）？**
+**如何让命令带多个参数（如 `.weather beijing today`）？**
 A：`msg.args` 按空格拆好，`msg.args[0]`、`msg.args[1]` 直接取；要合并全部参数用 `" ".join(str(a) for a in msg.get("args"))`。
 
 **Q：想永久停用插件但没有卸载指令怎么办？**

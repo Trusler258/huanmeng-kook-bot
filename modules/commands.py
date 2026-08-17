@@ -3178,21 +3178,78 @@ async def _plugin_action_result(ok: bool, err: str, ok_msg: str) -> str:
     return ok_msg if ok else f"❌ {err}"
 
 
-async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.plugin — 插件管理：status卡片 / list列表 / reload / enable / disable / unload"""
-    sub = (args[0].lower() if args else "status")
+async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw_event=None):
+    """.plugin — 插件管理：状态/启停/分享
+    旧式: status|list|reload|enable|disable|unload
+    CLI: -pack|-down|-load|-list"""
+    flags = [a.lower().lstrip("-") for a in args if a.startswith("-")]
+    non_flags = [a for a in args if not a.startswith("-")]
+    sub = (non_flags[0].lower() if non_flags else "")
 
     # ── 查看（任何人均可）──
-    if sub in ("status", "状态"):
-        return await _plugin_status_card()
-    if sub in ("list", "列表"):
-        return await _plugin_status_text()
+    if not flags:
+        if sub in ("status", "状态"):
+            return await _plugin_status_card()
+        if sub in ("list", "列表"):
+            return await _plugin_status_text()
 
     # ── 以下为管理操作，仅管理员 ──
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id):
         return _plugin_admin_denied()
 
+    # ── CLI 风格（分享/打包/下载/加载）──
+    if flags:
+        from modules import plugin_share as PS
+
+        # -list：列出 _down 已下载的 .hmp
+        if "list" in flags:
+            _, names = PS.list_downloads()
+            if not names:
+                return "plugins/_down/ 还没有下载的 .hmp"
+            return "已下载的 .hmp（在 plugins/_down/）：\n" + "\n".join("  " + n for n in names)
+
+        # -pack <本地插件名>
+        if "pack" in flags:
+            if not non_flags:
+                return "用法：`.plugin -pack <本地插件名>`"
+            ok, msg = PS.pack_plugin(non_flags[0])
+            return ("✅ " + msg) if ok else ("❌ " + msg)
+
+        # 从聊天附件/引用里找 .hmp
+        url = PS.extract_hmp_url(raw_event) if raw_event is not None else None
+        missing_attach = "没找到 .hmp 附件。请把 .hmp 发到聊天并引用（或让本消息携带附件）后，再发命令。"
+
+        # -down 或 -down -load（带附件）：下载到 _down，-load 时顺带解包+加载
+        if "down" in flags:
+            if not url:
+                return missing_attach
+            ok, msg = PS.download_hmp(url)
+            if not ok:
+                return "❌ " + msg
+            if "load" not in flags:
+                return "✅ " + msg
+            return await _plugin_load_hmp(PS.local_filename_for(url))
+
+        # -load [-list] [xxx.hmp] 或 -load（带附件）
+        if "load" in flags:
+            if non_flags:
+                return await _plugin_load_hmp(non_flags[0])
+            if url:
+                ok, msg = PS.download_hmp(url)
+                if not ok:
+                    return "❌ " + msg
+                return await _plugin_load_hmp(PS.local_filename_for(url))
+            return missing_attach
+
+        return ("CLI 用法：\n"
+                "`.plugin -pack <本地插件名>`  打包为 .hmp\n"
+                "`.plugin -down`   引用聊天中的 .hmp 下载保存到 _down\n"
+                "`.plugin -down -load` 下载并加载\n"
+                "`.plugin -load <xxx.hmp>` 解包+加载 _down 内的插件\n"
+                "`.plugin -load -list` / `.plugin -down -list` 查看已下载")
+
+    # ── 旧式管理子命令 ──
     if sub == "reload" and len(args) >= 2:
         name = args[1]
         ok, err = await (await _plugin_mgr()).reload(name)
@@ -3231,7 +3288,39 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
             "`.plugin reload <名字>`  热重载\n"
             "`.plugin enable <名字>`  启用\n"
             "`.plugin disable <名字>` 禁用\n"
-            "`.plugin unload <名字>`  卸载（需二次确认）")
+            "`.plugin unload <名字>`  卸载（需二次确认）\n"
+            "`.plugin -pack/-down/-load` 插件打包/下载/加载")
+
+
+async def _plugin_load_hmp(fname: str) -> str:
+    """解包 _down 里的 .hmp 并加载到运行时。"""
+    from modules import plugin_share as PS
+    if fname.lower().endswith("/"):
+        return "❌ 请传入 .hmp 文件名"
+    p = PS._down_dir() / fname
+    if not p.is_file():
+        return f"❌ _down 里没有 `{fname}`，可用 `.plugin -load -list` 查看"
+
+    name = PS.peek_hmp_name(p)
+    if not name:
+        ok, msg = PS.unpack_hmp(p)
+        return "❌ 无法识别插件名" if not ok else "❌ manifest 无效"
+    ok, msg = PS.unpack_hmp(p)
+    if not ok:
+        # 已存在：若未启用则补加载，否则提示
+        mgr = await _plugin_mgr()
+        cur = {x.get("name"): x for x in mgr.list()}.get(name)
+        if cur and cur.get("state") == "enabled":
+            return "❌ " + msg + "（该插件已在运行）"
+        if cur and cur.get("state") != "enabled":
+            ok2, err2 = await mgr.enable(name)
+            return (f"✅ 检测到已存在 `{name}`，已重新启用" if ok2
+                    else f"❌ 启用失败: {err2}")
+        return "❌ " + msg
+    ok2, msg2 = await PS.load_local_plugin(name)
+    if not ok2:
+        return f"❌ 解包成功但加载失败: {msg2}"
+    return f"✅ {msg} | {msg2}"
 
 
 def _plugin_cards_data() -> list[dict]:
