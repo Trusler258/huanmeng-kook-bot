@@ -3104,6 +3104,56 @@ async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"❌ 设置失败：{msg}"
 
 
+async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.playing <游戏名> [-o] — 设置机器人"正在玩"状态
+
+    通过 KOOK API /api/v3/game/activity 设置 data_type=1 的游戏状态。
+    用法：
+      .playing 原神                   设置"正在玩 原神"（游戏库查不到会自动创建）
+      .playing off | -o               结束"正在玩"状态
+      .playing | -q | -s              查看当前状态
+    """
+    from services.music_status import set_game, clear_game, current_game
+
+    parts = list(args or [])
+    off = show = False
+    positional = []
+    i = 0
+    while i < len(parts):
+        low = parts[i].lower()
+        if low in ("-o", "--off", "--stop", "--clear"):
+            off = True; i += 1; continue
+        if low in ("-q", "--status", "--state", "--show", "--query", "-s"):
+            show = True; i += 1; continue
+        if parts[i].startswith("-") and parts[i] != "-":
+            i += 1; continue          # 未知 flag：忽略
+        positional.append(parts[i]); i += 1
+
+    game = " ".join(positional).strip()
+    _g = game.lower()
+
+    # 结束
+    if off or (game and _g in ("off", "close", "stop", "0", "结束", "关闭")):
+        ok, msg = clear_game()
+        return ("✅ 已结束" + ("正在玩" if ok else f"（{msg}）") if ok
+                else f"❌ 结束状态失败：{msg}")
+
+    # 查看
+    if show or not game or _g in ("status", "state", "?", "查看", "状态", "query"):
+        cur = current_game()
+        if not cur:
+            return "🎮 当前没有正在玩的状态。用 `.playing <游戏名>` 设置。"
+        return (f"🎮 机器人当前状态：**正在玩 {cur.get('name', '')}**\n"
+                f"用 `.playing off` 结束。")
+
+    # 设置
+    ok, msg = await set_game(game)
+    if ok:
+        return (f"🎮 已设置机器人状态：**正在玩 {game}**\n"
+                f"用 `.playing off` 结束。")
+    return f"❌ 设置失败：{msg}"
+
+
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     """.sys [card|shot|shotdesk] — PC 状态/截屏"""
     from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
@@ -3248,6 +3298,8 @@ COMMAND_MAP: dict[str, callable] = {
     "lyric":      cmd_lyric,
     "listening":  cmd_listening,   # ★ 设置机器人"正在听"状态
     "正在听":      cmd_listening,
+    "playing":    cmd_playing,     # ★ 设置机器人"正在玩"状态
+    "正在玩":      cmd_playing,
 }
 
 

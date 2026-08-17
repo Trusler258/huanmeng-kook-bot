@@ -11,6 +11,7 @@ khl.py 未暴露该接口，这里直接复用 bot 的 token 走 HTTP（与 serv
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import Optional
 
@@ -21,8 +22,14 @@ logger = get_logger("music_status")
 API = "https://www.kookapp.cn/api/v3/game/activity"
 API_DELETE = "https://www.kookapp.cn/api/v3/game/delete-activity"
 
-# 最近一次设置的 payload（供 status 查询）
+# "正在玩"（游戏）相关端点
+API_GAME = "https://www.kookapp.cn/api/v3/game"
+API_GAME_CREATE = "https://www.kookapp.cn/api/v3/game/create"
+
+# 最近一次设置的 payload（供 status 查询）· 音乐
 _last: dict = {}
+# 最近一次设置的"正在玩"状态 · 游戏
+_last_game: dict = {}
 
 # KOOK software 字段的别名表（写别名 → 归一化后的正式值）。用户可能打 kugoumusic /
 # kugou / 酷狗 / 网易云 / netease / qq等，统统归一化到 KOOK 认识的标识符。
@@ -91,7 +98,81 @@ def _post(url: str, payload: dict) -> tuple[bool, str]:
         return False, f"请求异常: {e}"
 
 
-async def set_music(music_name: str, singer: str = "", software: str = "cloudmusic") -> tuple[bool, str]:
+def _get_json(url: str, params: dict) -> tuple[Optional[dict], str]:
+    """GET 请求 KOOK 接口，返回 (data, err)。err 为空表示成功。"""
+    import requests
+    token = _get_token()
+    if not token:
+        return None, "KOOK token 未找到"
+    try:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bot {token}"},
+            params=params,
+            timeout=6,
+        )
+        data = resp.json() if resp.content else {}
+        code = data.get("code", -1)
+        if resp.status_code == 200 and code == 0:
+            return data.get("data"), ""
+        return None, f"HTTP {resp.status_code} code={code} {data.get('message', resp.text[:100])}"
+    except Exception as e:
+        return None, f"请求异常: {e}"
+
+
+def find_game_id(game_name: str) -> tuple[Optional[int], str]:
+    """在 KOOK 游戏库里按名称查游戏 id；找不到返回 (None, "")。
+
+    游戏列表接口无 name 搜索参数，只能拉全部后在本地匹配。"""
+    data, err = _get_json(API_GAME, {"type": 0})
+    if err:
+        return None, err
+    for g in (data or {}).get("items", []):
+        if (g.get("name") or "").strip() == (game_name or "").strip():
+            try:
+                return int(g.get("id")), ""
+            except (TypeError, ValueError):
+                return None, f"游戏 {game_name} 的 id 非法"
+    return None, ""
+
+
+async def set_game(game_name: str) -> tuple[bool, str]:
+    """设置"正在玩 <game_name>"（data_type=1）。
+
+    游戏库中找不到同名游戏时自动创建（KOOK 单日最多创建 5 个）。"""
+    name = (game_name or "").strip()
+    if not name:
+        return False, "游戏名不能为空"
+    gid, err = find_game_id(name)
+    if err:
+        return False, f"查询游戏失败: {err}"
+    if gid is None:
+        ok, msg = _post(API_GAME_CREATE, {"name": name})
+        if not ok:
+            return False, f"创建游戏失败: {msg}"
+        gid, err = find_game_id(name)
+        if err or gid is None:
+            return False, "已创建游戏但未能取到游戏 id"
+    ok, msg = _post(API, {"id": gid, "data_type": 1})
+    if ok:
+        _last_game.clear()
+        _last_game.update({"name": name, "game_id": gid, "set_at": time.time()})
+        logger.info("已设置正在玩: %s", name)
+    return ok, msg
+
+
+def clear_game() -> tuple[bool, str]:
+    """结束"正在玩"状态。"""
+    ok, msg = _post(API_DELETE, {"data_type": 1})
+    if ok:
+        _last_game.clear()
+        logger.info("已结束正在玩状态")
+    return ok, msg
+
+
+def current_game() -> dict:
+    """返回最近一次设置的"正在玩"状态（未设置返回空 dict）。"""
+    return dict(_last_game)
     """设置"正在听 <music_name>"。music_name 必填。"""
     if not music_name or not music_name.strip():
         return False, "歌曲名不能为空"
