@@ -124,16 +124,59 @@ def find_game_id(game_name: str) -> tuple[Optional[int], str]:
     """在 KOOK 游戏库里按名称查游戏 id；找不到返回 (None, "")。
 
     游戏列表接口无 name 搜索参数，只能拉全部后在本地匹配。"""
-    data, err = _get_json(API_GAME, {"type": 0})
-    if err:
-        return None, err
-    for g in (data or {}).get("items", []):
-        if (g.get("name") or "").strip() == (game_name or "").strip():
-            try:
-                return int(g.get("id")), ""
-            except (TypeError, ValueError):
-                return None, f"游戏 {game_name} 的 id 非法"
+    target = (game_name or "").strip()
+    if not target:
+        return None, ""
+    page = 1
+    while page <= 100:  # 防御性上限，避免异常响应导致死循环
+        data, err = _get_json(API_GAME, {"type": 0, "page": page, "page_size": 50})
+        if err:
+            return None, err
+        for g in (data or {}).get("items", []):
+            if (g.get("name") or "").strip() == target:
+                try:
+                    return int(g.get("id")), ""
+                except (TypeError, ValueError):
+                    return None, f"游戏 {game_name} 的 id 非法"
+        # 分页结束判断
+        meta = (data or {}).get("meta") or {}
+        page_total = meta.get("page_total") or meta.get("total_page") or 1
+        try:
+            page_total = int(page_total)
+        except (TypeError, ValueError):
+            page_total = 1
+        if page >= page_total:
+            break
+        page += 1
     return None, ""
+
+
+def _create_game(game_name: str) -> tuple[Optional[int], str]:
+    """创建游戏，直接从创建接口响应返回新建游戏 id.
+
+    不依赖重新搜索分页列表（新建游戏可能在首页之外，重新搜索取不到 id）。"""
+    import requests
+    token = _get_token()
+    if not token:
+        return None, "KOOK token 未找到"
+    try:
+        resp = requests.post(
+            API_GAME_CREATE,
+            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+            json={"name": (game_name or "").strip()},
+            timeout=6,
+        )
+        data = resp.json() if resp.content else {}
+        code = data.get("code", -1)
+        if resp.status_code != 200 or code != 0:
+            return None, f"HTTP {resp.status_code} code={code} {data.get('message', resp.text[:100])}"
+        gid = (data.get("data") or {}).get("id")
+        try:
+            return int(gid), ""
+        except (TypeError, ValueError):
+            return None, "创建成功但响应中无有效游戏 id"
+    except Exception as e:
+        return None, f"请求异常: {e}"
 
 
 async def set_game(game_name: str) -> tuple[bool, str]:
@@ -147,11 +190,10 @@ async def set_game(game_name: str) -> tuple[bool, str]:
     if err:
         return False, f"查询游戏失败: {err}"
     if gid is None:
-        ok, msg = _post(API_GAME_CREATE, {"name": name})
-        if not ok:
-            return False, f"创建游戏失败: {msg}"
-        gid, err = find_game_id(name)
-        if err or gid is None:
+        gid, err = _create_game(name)
+        if err:
+            return False, f"创建游戏失败: {err}"
+        if gid is None:
             return False, "已创建游戏但未能取到游戏 id"
     ok, msg = _post(API, {"id": gid, "data_type": 1})
     if ok:
