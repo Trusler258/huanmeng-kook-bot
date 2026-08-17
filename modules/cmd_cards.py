@@ -230,3 +230,45 @@ def build_favlist(rows: list[tuple[str, str, int]], header: str = "💗 好感�
 def _two_col_fields(rows: list[tuple[str, str]]) -> dict:
     """两列键值对（info 内部用，兼容空值）。"""
     return fields(rows)
+
+
+def build_plugin_status(plugins: list[dict]) -> list[dict]:
+    """.plugin status 插件状态卡片。
+
+    plugins: 每个元素含 name/version/runtime/state/error/ok
+        ok=True        → 生效（绿）
+        state==error   → 错误（红，附错误信息）
+        其余            → 未生效（红）
+    整体主题：全生效=success(绿)，全失败/异常=danger(红)，部分=warning(黄)。
+    """
+    modules = [header("🧩 插件状态")]
+    if not plugins:
+        modules.append(kmd("当前没有已发现的插件。"))
+        return card("secondary", "lg", modules)
+
+    ok_count = 0
+    for p in plugins:
+        ok = bool(p.get("ok"))
+        name = p.get("name", "?")
+        ver = p.get("version", "?")
+        state = p.get("state", "?")
+        err = (p.get("error") or "").strip()
+
+        if ok:
+            mark = "🟢"
+            state_txt = "生效"
+            ok_count += 1
+        elif state == "error" or err:
+            mark = "🔴"
+            state_txt = f"错误·{err}" if err else "错误"
+        else:
+            mark = "🔴"
+            state_txt = f"未生效（{state}）"
+
+        modules.append(kmd(f"{mark} **{name}** · v{ver}\n  {state_txt}"))
+
+    total = len(plugins)
+    theme = "success" if ok_count == total else ("danger" if ok_count == 0 else "warning")
+    modules.append(div())
+    modules.append(kmd(f"**合计：{ok_count}/{total} 个插件生效**"))
+    return card(theme, "lg", modules)

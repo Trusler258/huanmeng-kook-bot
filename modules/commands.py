@@ -3154,6 +3154,28 @@ async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"❌ 设置失败：{msg}"
 
 
+async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """.plugin [status|list] — 查看插件状态（卡片，绿=生效，红=未生效/错误）"""
+    sub = (args[0] if args else "status").lower()
+    if sub not in ("status", "list", "状态", "列表"):
+        return "用法：`.plugin status`"
+
+    try:
+        from core.plugin import get_plugin_manager
+        mgr = get_plugin_manager()
+        plugins = mgr.list()
+    except Exception as e:
+        return f"插件系统未就绪：{e}"
+
+    for p in plugins:
+        p["ok"] = bool(p.get("state") == "enabled" and not p.get("error"))
+        p["error"] = p.get("error") or ""
+
+    import json as _json
+    from modules.cmd_cards import build_plugin_status
+    return "__CARD__:" + _json.dumps(build_plugin_status(plugins), ensure_ascii=False)
+
+
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     """.sys [card|shot|shotdesk] — PC 状态/截屏"""
     from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
@@ -3300,6 +3322,7 @@ COMMAND_MAP: dict[str, callable] = {
     "正在听":      cmd_listening,
     "playing":    cmd_playing,     # ★ 设置机器人"正在玩"状态
     "正在玩":      cmd_playing,
+    "plugin":     cmd_plugin,      # ★ 查看插件状态（卡片，绿=生效/红=错误）
 }
 
 
