@@ -235,11 +235,11 @@ def _render_update_card(local_sha: str | None, remote_sha: str, commits: list[st
         color = "#d9534f"
 
     modules = [_header("KOOK BOT · 检测到新版本")]
-    rows = [("更新等级", f"**{lvl_name(level)}** [`[{level}]`]")]
+    rows = [("更新等级", f"{lvl_name(level)} [{level}]")]
     if remote_sha:
-        rows.append(("远程版本", f"`{remote_sha[:7]}`"))
+        rows.append(("远程版本", str(remote_sha[:7])))
     if local_sha:
-        rows.append(("本地版本", f"`{local_sha[:7]}`"))
+        rows.append(("本地版本", str(local_sha[:7])))
     if commits:
         rows.append(("新增提交", f"{len(commits)} 个"))
     modules.append(_section(rows))
