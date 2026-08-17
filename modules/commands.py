@@ -3036,55 +3036,80 @@ async def cmd_lyric(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.listening <歌名> [歌手|软件] | .listening off | .listening — 设置 KOOK 机器人"正在听"动态状态
+    """.listening <歌名> [-s 歌手] [-p 软件] [-o] — bash 风格 + 兼容旧式
 
     通过 KOOK API /api/v3/game/activity 设置 data_type=2 的音乐状态。
-    用法：
-      .listening 有点甜 汪苏泷、BY2     设置"正在听 有点甜"
-      .listening 有点甜 cloudmusic      指定播放软件（默认 cloudmusic）
-      .listening off                    结束"正在听"状态
-      .listening                        查看当前状态
+    用法（bash 风格 flag + 旧式位置参数都支持）：
+      .listening 有点甜 汪苏泷、BY2           旧式：歌名 + 歌手
+      .listening 有点甜 kugoumusic           旧式：歌名 + 软件（自动归一化别名）
+      .listening -s 幻梦 -p kugoumusic 请输入文本
+                                                bash 风格
+      .listening -n 有点甜 --software qqmusic   bash 风格
+      .listening off | -o                       结束"正在听"状态
+      .listening | -q                           查看当前状态
+    软件别名自动归一化（网易云/netease/163/cloudmusic、qq/qqmusic、酷狗/kugou/kugoumusic…）。
     """
-    from services.music_status import set_music, clear_music, current_status
+    from services.music_status import set_music, clear_music, current_status, normalize_software
 
-    sub = (args[0] if args else "").strip()
+    parts = list(args or [])
+    song, singer, software = "", "", ""
+    off = show = False
+    positional = []
+    i = 0
+    while i < len(parts):
+        low = parts[i].lower()
+        if low in ("-s", "--singer", "--artist") and i + 1 < len(parts):
+            singer = parts[i + 1]; i += 2; continue
+        if low in ("-p", "--software", "--soft", "--platform", "--source") and i + 1 < len(parts):
+            software = parts[i + 1]; i += 2; continue
+        if low in ("-n", "--name", "--song", "--title") and i + 1 < len(parts):
+            song = parts[i + 1]; i += 2; continue
+        if low in ("-o", "--off", "--stop", "--clear"):
+            off = True; i += 1; continue
+        if low in ("-q", "--status", "--state", "--show", "--query"):
+            show = True; i += 1; continue
+        if parts[i].startswith("-") and parts[i] != "-":
+            i += 1; continue          # 未知 flag：忽略
+        positional.append(parts[i]); i += 1
 
-    # 结束状态
-    if sub.lower() in ("off", "close", "stop", "0", "结束", "关闭"):
+    # 旧式位置参数：歌名 [歌手] [软件]
+    if not song and positional:
+        song = positional[0]
+    if not singer and len(positional) >= 2:
+        singer = positional[1]
+    if not software and len(positional) >= 3:
+        # 第三位若能归一化为软件则录用，否则是多余的杂质，忽略
+        if normalize_software(positional[2]) != positional[2].strip() \
+                or positional[2].lower() in ("cloudmusic", "qqmusic", "kugou"):
+            software = positional[2]
+
+    only_one = len(positional) == 1 and not off and not singer and not software
+    _so = song.strip().lower()
+
+    # 结束
+    if off or (only_one and _so in ("off", "close", "stop", "0", "结束", "关闭")):
         ok, msg = clear_music()
         return ("✅ 已结束" + ("正在听" if ok else f"（{msg}）") if ok
                 else f"❌ 结束状态失败：{msg}")
 
-    # 查看状态
-    if sub == "" or sub.lower() in ("status", "state", "?", "状态", "查看"):
+    # 查看
+    if show or (not song and not off) or (only_one and _so in ("status", "state", "?", "查看", "状态", "query")):
         cur = current_status()
         if not cur:
-            return "📻 当前没有正在听的状态。用 `.listening <歌名> [歌手]` 设置。"
+            return "📻 当前没有正在听的状态。用 `.listening <歌名> [-s 歌手] [-p 软件]` 设置。"
         return (f"📻 机器人当前状态：**正在听 {cur.get('music_name', '')}**\n"
                 f"  - 歌手：{cur.get('singer', '') or '未指定'}\n"
-                f"  - 软件：{cur.get('software', 'cloudmusic')}\n"
+                f"  - 软件：{cur.get('software', 'cloudmusic') or 'cloudmusic'}\n"
                 f"用 `.listening off` 结束。")
 
-    # 设置：歌名 [歌手|软件]
-    music_name = sub
-    singer = ""
-    software = "cloudmusic"
-    if len(args) >= 2:
-        second = args[1].strip()
-        if second in ("cloudmusic", "qqmusic", "kugou"):
-            software = second
-        else:
-            singer = second
-    if len(args) >= 3:
-        third = args[2].strip()
-        if third in ("cloudmusic", "qqmusic", "kugou"):
-            software = third
-
-    ok, msg = await set_music(music_name, singer=singer, software=software)
+    # 设置：歌名必填
+    if not song:
+        return "❌ 请先给出歌名，如 `.listening 有点甜 -s 幻梦 -p kugoumusic`"
+    ok, msg = await set_music(song, singer=singer, software=software)
     if ok:
-        return (f"🎵 已设置机器人状态：**正在听 {music_name}**\n"
+        return (f"🎵 已设置机器人状态：**正在听 {song}**\n"
                 + (f"  - 歌手：{singer}\n" if singer else "")
-                + f"  - 软件：{software}\n"
+                + f"  - 软件：{software.strip() or 'cloudmusic'}\n"
                 f"用 `.listening off` 结束。")
     return f"❌ 设置失败：{msg}"
 

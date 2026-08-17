@@ -24,6 +24,26 @@ API_DELETE = "https://www.kookapp.cn/api/v3/game/delete-activity"
 # 最近一次设置的 payload（供 status 查询）
 _last: dict = {}
 
+# KOOK software 字段的别名表（写别名 → 归一化后的正式值）。用户可能打 kugoumusic /
+# kugou / 酷狗 / 网易云 / netease / qq等，统统归一化到 KOOK 认识的标识符。
+SOFTWARE_ALIASES: dict[str, set[str]] = {
+    "cloudmusic": {
+        "cloudmusic", "netease", "163", "网易", "网易云", "网易云音乐", "网抑云",
+        "wangyi", "wangyiyun", "netease_cloud", "cloud",
+    },
+    "qqmusic": {"qqmusic", "qq", "qq音乐"},
+    "kugou": {"kugou", "kugoumusic", "kugou_music", "kg", "酷狗", "酷狗音乐"},
+}
+
+
+def normalize_software(raw: str) -> str:
+    """把用户输入的软件名归一化为 KOOK 认识的标识符；无法识别时原样回传。"""
+    s = (raw or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+    for canonical, keys in SOFTWARE_ALIASES.items():
+        if s in keys:
+            return canonical
+    return (raw or "").strip()
+
 
 def _get_token() -> str:
     """从 khl.py Bot 实例取 token，失败回退启动配置。"""
@@ -75,6 +95,7 @@ async def set_music(music_name: str, singer: str = "", software: str = "cloudmus
     """设置"正在听 <music_name>"。music_name 必填。"""
     if not music_name or not music_name.strip():
         return False, "歌曲名不能为空"
+    software = normalize_software(software) or "cloudmusic"
     payload = {
         "id": 0,                 # 音乐类型 id 填 0
         "data_type": 2,
