@@ -218,6 +218,37 @@ def _classify_path(rel: str) -> str:
     return "MEDIUM" if is_python_path(rel) else "LOW"
 
 
+def resolve_project_module(root: Path, module_name: str) -> Optional[Path]:
+    """把 import 模块名解析到项目内应在的文件路径。
+
+    - 顶层段若不在项目根（stdlib / 三方库）→ 返回 None，表示非本地模块。
+    - 顶层段在项目根 → 按包/文件逐层解析，返回期望存在的路径
+      （可能不存在，由调用方据此判定"缺失本地模块"）。
+    例如 modules/cmd_cards → root/modules/cmd_cards.py。
+    """
+    parts = module_name.replace("-", "_").split(".")
+    if not parts:
+        return None
+    root = Path(root)
+    top = root / parts[0]
+    top_file = top.with_suffix(".py")
+    if not (top_file.exists() or top.is_dir()):
+        return None  # 非项目本地模块
+    if top_file.exists():
+        return top_file
+    path = top
+    for seg in parts[1:]:
+        cand_file = path / f"{seg}.py"
+        if cand_file.exists():
+            return cand_file
+        cand_pkg = path / seg
+        if cand_pkg.is_dir():
+            path = cand_pkg
+            continue
+        return cand_file  # 期望但缺失 → 交由调用方判断
+    return path / "__init__.py"
+
+
 def analyze_dependencies(files: list[dict], root: Optional[Path] = None) -> list[DependencyIssue]:
     """
     依赖分析：
