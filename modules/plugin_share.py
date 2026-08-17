@@ -325,6 +325,8 @@ async def load_local_plugin(name: str) -> tuple[bool, str]:
     """把已解包的插件通过 PluginManager load→init→enable 接入运行时。"""
     from core.plugin import get_plugin_manager
     mgr = get_plugin_manager()
+    # 刚解包/新增的插件目录还没登记进注册表，先重新扫描，再走 load→init→enable
+    mgr.discover()
     ok, err = await mgr.load(name)
     if not ok:
         return False, err
