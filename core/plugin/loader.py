@@ -20,6 +20,9 @@ logger = get_logger("plugin.loader")
 
 MANIFEST_FILE = "manifest.json"
 
+# 目录名前缀：带此前缀的插件文件夹会被跳过（改名即停用，重启后不再加载）
+DISABLE_PREFIX = "[DISABLE]"
+
 
 def discover_plugins(plugins_dir: str) -> list[PluginManifest]:
     """扫描目录，返回所有合法插件的 manifest。非法插件跳过并告警。"""
@@ -33,6 +36,10 @@ def discover_plugins(plugins_dir: str) -> list[PluginManifest]:
 
     for child in sorted(base.iterdir()):
         if not child.is_dir():
+            continue
+        # [DISABLE] 前缀：视为已停用，跳过加载
+        if child.name.startswith(DISABLE_PREFIX):
+            logger.debug("跳过 %s：目录名带 [DISABLE] 禁用前缀", child.name)
             continue
         mf_path = child / MANIFEST_FILE
         if not mf_path.is_file():

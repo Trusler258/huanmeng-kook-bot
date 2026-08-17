@@ -3154,26 +3154,124 @@ async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"❌ 设置失败：{msg}"
 
 
+# ── 插件管理：卸载二次确认暂存 ───────────────────────────
+# token -> (plugin_name, 过期时间戳)
+_plugin_unload_pending: dict[str, tuple[str, float]] = {}
+_PLUGIN_CONFIRM_TTL = 120  # 秒
+
+
+def _plugin_admin_denied():
+    return format_lang("error.permission_denied") or "无权限执行该指令"
+
+
+def _plugin_gen_token() -> str:
+    import secrets
+    return secrets.token_hex(4)
+
+
+async def _plugin_mgr():
+    from core.plugin import get_plugin_manager
+    return get_plugin_manager()
+
+
+async def _plugin_action_result(ok: bool, err: str, ok_msg: str) -> str:
+    return ok_msg if ok else f"❌ {err}"
+
+
 async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.plugin [status|list] — 查看插件状态（卡片，绿=生效，红=未生效/错误）"""
-    sub = (args[0] if args else "status").lower()
-    if sub not in ("status", "list", "状态", "列表"):
-        return "用法：`.plugin status`"
+    """.plugin — 插件管理：status卡片 / list列表 / reload / enable / disable / unload"""
+    sub = (args[0].lower() if args else "status")
 
-    try:
-        from core.plugin import get_plugin_manager
-        mgr = get_plugin_manager()
-        plugins = mgr.list()
-    except Exception as e:
-        return f"插件系统未就绪：{e}"
+    # ── 查看（任何人均可）──
+    if sub in ("status", "状态"):
+        return await _plugin_status_card()
+    if sub in ("list", "列表"):
+        return await _plugin_status_text()
 
+    # ── 以下为管理操作，仅管理员 ──
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return _plugin_admin_denied()
+
+    if sub == "reload" and len(args) >= 2:
+        name = args[1]
+        ok, err = await (await _plugin_mgr()).reload(name)
+        return await _plugin_action_result(ok, err, f"✅ 已热重载插件 `{name}`")
+
+    if sub == "enable" and len(args) >= 2:
+        name = args[1]
+        ok, err = await (await _plugin_mgr()).enable(name)
+        return await _plugin_action_result(ok, err, f"✅ 已启用插件 `{name}`")
+
+    if sub == "disable" and len(args) >= 2:
+        name = args[1]
+        ok, err = await (await _plugin_mgr()).disable(name)
+        return await _plugin_action_result(ok, err, f"✅ 已禁用插件 `{name}`")
+
+    if sub == "unload" and len(args) >= 2:
+        name = args[1]
+        token = _plugin_gen_token()
+        _plugin_unload_pending[token] = (name, time.time() + _PLUGIN_CONFIRM_TTL)
+        return (f"⚠️ 确定要卸载插件 `{name}` 吗？\n"
+                f"卸载会清理该插件的事件/定时器/命令注册，且需重启才能自动重新加载。\n"
+                f"输入 `.plugin confirm {token}` 确认执行（{_PLUGIN_CONFIRM_TTL} 秒内有效）。")
+
+    if sub == "confirm" and len(args) >= 2:
+        token = args[1]
+        pending = _plugin_unload_pending.pop(token, None)
+        if not pending:
+            return "❌ 确认令牌无效或已过期，请重新执行 `.plugin unload <名字>`"
+        name, expire = pending
+        if time.time() > expire:
+            return "❌ 确认已过期，请重新执行 `.plugin unload <名字>`"
+        ok, err = await (await _plugin_mgr()).unload(name)
+        return await _plugin_action_result(ok, err, f"✅ 已卸载插件 `{name}`")
+
+    return ("用法：`.plugin [status|list]`\n"
+            "`.plugin reload <名字>`  热重载\n"
+            "`.plugin enable <名字>`  启用\n"
+            "`.plugin disable <名字>` 禁用\n"
+            "`.plugin unload <名字>`  卸载（需二次确认）")
+
+
+def _plugin_cards_data() -> list[dict]:
+    mgr = get_plugin_manager()
+    plugins = mgr.list()
     for p in plugins:
         p["ok"] = bool(p.get("state") == "enabled" and not p.get("error"))
         p["error"] = p.get("error") or ""
+    return plugins
 
+
+async def _plugin_status_card() -> str:
     import json as _json
     from modules.cmd_cards import build_plugin_status
+    try:
+        plugins = _plugin_cards_data()
+    except Exception as e:
+        return f"插件系统未就绪：{e}"
     return "__CARD__:" + _json.dumps(build_plugin_status(plugins), ensure_ascii=False)
+
+
+async def _plugin_status_text() -> str:
+    try:
+        plugins = _plugin_cards_data()
+    except Exception as e:
+        return f"插件系统未就绪：{e}"
+    if not plugins:
+        return "当前未加载任何插件"
+    lines: list[str] = []
+    for p in plugins:
+        state = p.get("state", "unknown")
+        icon = "🟢" if p.get("ok") else "🔴"
+        ver = p.get("version", "")
+        entry = f"{icon} {p['name']} v{ver}  [{state}]"
+        if p.get("error"):
+            entry += f" — {p['error']}"
+        lines.append(entry)
+    ok_n = sum(1 for p in plugins if p.get("ok"))
+    lines.append(f"— 共 {len(plugins)} 个，生效 {ok_n} 个 ——")
+    return "\n".join(lines)
 
 
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -3322,7 +3420,7 @@ COMMAND_MAP: dict[str, callable] = {
     "正在听":      cmd_listening,
     "playing":    cmd_playing,     # ★ 设置机器人"正在玩"状态
     "正在玩":      cmd_playing,
-    "plugin":     cmd_plugin,      # ★ 查看插件状态（卡片，绿=生效/红=错误）
+    "plugin":     cmd_plugin,      # ★ 插件管理（status卡片/list/reload/enable/disable/unload）
 }
 
 
