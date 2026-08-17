@@ -221,10 +221,11 @@ def extract_hmp_url(raw_event) -> Optional[str]:
     _walk_strings(raw_event, out=candidates)
     _walk_strings(getattr(raw_event, "quote", None), out=candidates)
 
-    # 1) 整串就是 `.hmp` 结尾的 URL（最直接）
+    # 1) 整串就是带协议、`.hmp` 结尾的 URL（最直接）；纯文件名会被跳过
     for c in candidates:
-        if str(c).lower().endswith(HMP_EXT):
-            return str(c)
+        s = str(c)
+        if s.lower().startswith(("http://", "https://")) and s.lower().endswith(HMP_EXT):
+            return s
     # 2) 从各字符串里再正则抠 `.hmp` URL 或 (file)URL
     for c in candidates:
         m = _HMP_URL_RE.search(c) or _FILE_TAG_RE.search(c)
