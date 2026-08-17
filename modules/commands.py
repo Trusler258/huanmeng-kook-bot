@@ -3324,6 +3324,7 @@ async def _plugin_load_hmp(fname: str) -> str:
 
 
 def _plugin_cards_data() -> list[dict]:
+    from core.plugin import get_plugin_manager
     mgr = get_plugin_manager()
     plugins = mgr.list()
     for p in plugins:
