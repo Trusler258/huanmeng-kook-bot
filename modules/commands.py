@@ -3214,6 +3214,11 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
             if not non_flags:
                 return "用法：`.plugin -import <直链URL>`\n示例：`.plugin -import https://example.com/xxx.hmp`"
             raw_url = " ".join(non_flags)
+            # KOOK 客户端会把 URL 自动渲染成 [url](url) Markdown 链接，
+            # 先剥离包裹再校验（否则 is_hmp_url 会因 []() 字符判失败）。
+            _m = re.search(r"https?://[^\s)\]]+", raw_url)
+            if _m:
+                raw_url = _m.group(0)
             if not PS.is_hmp_url(raw_url):
                 return ("❌ 不是有效的 .hmp 直链（需 http/https 且以 .hmp 结尾）。\n"
                         "若你是引用聊天里的文件，请用 `.plugin -down -load`")
