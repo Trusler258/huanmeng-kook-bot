@@ -132,7 +132,12 @@ class Plugin:
             modules.append({"type": "header",
                             "text": {"type": "plain-text", "content": header}})
         if img:
-            modules.append({"type": "image", "src": img})
+            # KOOK 卡片没有顶层 image 模块，头像必须用 image-group + elements
+            modules.append({
+                "type": "image-group",
+                "elements": [{"type": "image", "src": img,
+                              "alt": "", "circle": True, "size": "sm"}],
+            })
         modules.append({"type": "section",
                         "text": {"type": "kmarkdown", "content": md}})
         if footer:

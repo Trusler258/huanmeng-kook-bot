@@ -91,8 +91,10 @@ async def main():
     assert r is None and _sent["cards"], f"me 失败: {r}"
     card = _sent["cards"][-1][0]
     assert "Jipper" in str(card), f"me 卡片缺名字: {card}"
-    has_img = any(m.get("type") == "image" for m in card.get("modules", []))
-    print(f"OK me → 卡片含头像: {has_img}")
+    has_img = any(m.get("type") == "image-group"
+                  and any(e.get("type") == "image" for e in m.get("elements", []))
+                  for m in card.get("modules", []))
+    print(f"OK me → 卡片含头像(image-group): {has_img}")
 
     # player（带 ID）
     _sent["cards"].clear()
@@ -100,8 +102,10 @@ async def main():
     assert r is None and _sent["cards"], f"player 失败: {r}"
     card = _sent["cards"][-1][0]
     assert "Jipper" in str(card)
-    has_img = any(m.get("type") == "image" for m in card.get("modules", []))
-    print(f"OK player 25 → 卡片含头像: {has_img}")
+    has_img = any(m.get("type") == "image-group"
+                  and any(e.get("type") == "image" for e in m.get("elements", []))
+                  for m in card.get("modules", []))
+    print(f"OK player 25 → 卡片含头像(image-group): {has_img}")
 
     # lb（排行榜 → KOOK 卡片，含名字）
     _sent["cards"].clear()
