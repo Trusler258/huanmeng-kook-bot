@@ -169,7 +169,8 @@ class PluginCapability:
     def register_tool(self, name: str, description: str = "",
                       schema: Optional[dict] = None,
                       handler: Optional[Callable] = None,
-                      permissions: Optional[list[str]] = None) -> None:
+                      permissions: Optional[list[str]] = None,
+                      always_on: bool = False) -> None:
         """注册一个 Function Calling 工具能力，供 LLM 对话时自动发现并调用（无需指令）。
 
         - schema : 完整 OpenAI 工具定义 {"type":"function","function":{...}}。
@@ -179,6 +180,8 @@ class PluginCapability:
           缺省时只注册 schema 不绑定 handler（如仅想暴露给 LLM 语义）。
         - description 里的触发关键词会被 CapabilityRouter 用来精准路由：
           只在用户消息命中相关语义时才把该工具 Schema 交给 LLM。
+        - always_on: True 时该工具成为核心常驻能力，普通聊天也会把它的 Schema
+          交给 LLM，让模型始终知道插件拥有这项能力（如"能运行代码"）。
         """
         if not schema:
             schema = {"type": "function", "function": {
@@ -194,6 +197,7 @@ class PluginCapability:
             runtime=RUNTIME_FC,
             permissions=permissions or ["message.read", "message.send"],
             source=f"plugin:{self._plugin}",
+            always_on=always_on,
         )
         self._registry.register(cap)
         self._registry.bind_tool_schema(cap.id, schema)

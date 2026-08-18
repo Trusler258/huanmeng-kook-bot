@@ -181,23 +181,6 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "run_code",
-            "description": "在沙箱中真实运行代码并返回运行输出与产物文件。当用户要求「创建/生成/打包文件」「运行/执行代码」「bash/终端/shell 命令」时调用，不要只在回复里假装执行。python/cpp 会真实运行，shell 执行系统命令（如 cd / && ls -l）。必须基于工具返回的真实输出回复，禁止编造结果。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "language": {"type": "string", "enum": ["python", "cpp", "shell"], "description": "运行语言：python=Python 代码, cpp=C++ 代码, shell=系统命令"},
-                    "code": {"type": "string", "description": "要运行的代码（shell 时为命令字符串）。可留空只给 description 由系统生成代码"},
-                    "description": {"type": "string", "description": "需求描述（code 留空时用于生成代码，如'创建10个markdown文件并打包zip'）"},
-                    "stdin": {"type": "string", "description": "运行时的标准输入（可选）"},
-                },
-                "required": ["language"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "calc",
             "description": "Python 计算验证。遇到方程/算术/代数题，先写 print() 代码跑出真实结果再回答，不要瞎猜。",
             "parameters": {
