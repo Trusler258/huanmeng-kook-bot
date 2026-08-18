@@ -529,6 +529,37 @@ async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool
         return False
 
 
+async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) -> bool:
+    """用 new-file patch 在空内容上重建本地缺失文件（纯本地，不依赖网络下载）。
+
+    仅处理 @@ -0,0 +1,N @@ 新增文件 hunk：本地无旧内容可保留，直接整块写入。
+    成功落地返回 True（已写盘并更新 blob 追踪）；无新增 hunk 或全部 skip 返回 False，
+    由调用方回退到全量下载。这样 raw 下载被墙/超时时新增文件仍能通过 patch 落地。
+    """
+    rel = item.get("filename", "")
+    patch_text = item.get("patch", "")
+    if not patch_text:
+        return False
+    hunks = patcher.parse_patch(patch_text)
+    new_hunks = [h for h in hunks if h.old_start == 0 and h.old_count == 0]
+    if not new_hunks:
+        return False
+    try:
+        merged, aok, sk, _skd = patcher.apply_hunks_detailed([], new_hunks)
+    except AttributeError:
+        # 兼容旧版 patcher.py（服务器尚未同步 apply_hunks_detailed）
+        merged, aok, sk = patcher.apply_hunks([], new_hunks)
+    if aok <= 0:
+        return False
+    _eng._write_local(root, rel, merged)
+    try:
+        blob = await _eng._get_blob_sha(rel, head)
+        _eng.set_file_blob(state, rel, blob, aok, sk)
+    except Exception:
+        pass
+    return True
+
+
 async def _apply_production(
     files: list[dict], root: Path, head: str, state: dict, progress=None,
 ) -> dict:
@@ -563,9 +594,12 @@ async def _apply_production(
         # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
         # 空文件上除 new-file（@@ -0,0 +1,N @@）外会全体 skip → 永不落盘
         # （历史更新曾因此让 music_status.py 一直缺失，/listening 报 ModuleNotFoundError）。
-        # 缺失文件无本地内容可保留 → 直接全量下载保证文件落地；失败记入 failed。
+        # 缺失文件无本地内容可保留 → 先用 new-file patch 本地重建（不依赖网络），
+        # 重建不了再全量下载兜底；两者都失败才记入 failed（触发整体回滚）。
         if not (root / rel).exists():
-            if await _download_full(root, item, state, head):
+            if await _rebuild_from_patch(root, item, state, head):
+                ok += 1
+            elif await _download_full(root, item, state, head):
                 ok += 1
             else:
                 failed.append(rel)
