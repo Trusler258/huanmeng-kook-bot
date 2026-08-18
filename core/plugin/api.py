@@ -11,6 +11,8 @@ Phase 13 Plugin API（Huanmeng 2.0）
 - timer    : 注册周期定时器（reload/unload 自动取消）
 - capability: 注册 Command / Skill / Tool 能力（走 CapabilityRegistry）
 - config   : 读取本插件 manifest 声明的静态配置
+- image    : 图片提取（复用 dispatcher 附件/卡片/表情/引用提取器 + 按引用 ID 拉消息捞图）
+- vision   : 图片识别（复用 services.image_api 视觉 LLM 描述）
 
 约束：
 - 不暴露 db、core 内部 Runtime、文件系统、网络、进程执行。
@@ -170,6 +172,106 @@ class PluginCapability:
         self._registered.clear()
 
 
+class PluginImage:
+    """图片提取能力：从消息/卡片/引用/文本里拿图片 URL。
+
+    提取器全部委托 core.dispatcher.EventDispatcher 的成熟实现
+    （_extract_image_urls / _extract_card_images / _extract_emote_urls /
+    _extract_quote_info），插件无需自造重复逻辑。
+    """
+
+    @staticmethod
+    def extract_attachments(attachments) -> list[str]:
+        """从 khl 附件列表（list[dict] / list[对象]）抽所有图片 URL。"""
+        from core.dispatcher import EventDispatcher
+        return EventDispatcher._extract_image_urls(attachments)
+
+    @staticmethod
+    def extract_card(payload) -> list[str]:
+        """从 KOOK 卡片 JSON（list / dict / JSON 字符串）递归提取所有图片 URL。"""
+        from core.dispatcher import EventDispatcher
+        return EventDispatcher._extract_card_images(payload)
+
+    @staticmethod
+    def extract_emotes(content) -> list[str]:
+        """从 KMarkdown 文本提取 KOOK 服务器自定义表情（图片型表情包）URL。"""
+        from core.dispatcher import EventDispatcher
+        return EventDispatcher._extract_emote_urls(content)
+
+    @staticmethod
+    def extract_quote(msg) -> tuple[str, list[str]]:
+        """从 khl 消息的 quote 提取 (引用正文, 引用图片 URL 列表)。"""
+        from core.dispatcher import EventDispatcher
+        return EventDispatcher._extract_quote_info(msg)
+
+    @staticmethod
+    def extract_urls(text: str) -> list[str]:
+        """从文本提取裸 http(s) URL（兼容反引号 / Markdown [text](url) 包裹）。"""
+        import re as _re
+        return [m.rstrip(")") for m in _re.findall(r"https?://[^\s)\]>\uFF09]+", text or "")]
+
+    @staticmethod
+    async def fetch_quote_images(quote_id: str) -> list[str]:
+        """按引用消息 ID 拉取被引用消息，返回其中所有图片 URL（无则空列表）。
+
+        KOOK 引用消息事件里 quote 常不带 content/attachments（图在别处），
+        此处走 khl MessageAPI.view 按 id 取回完整消息再递归捞图。
+        """
+        if not quote_id:
+            return []
+        try:
+            from khl import api
+            from modules.plugin_share import _walk_strings
+            from services.delivery import kook_transport
+            bot = kook_transport._bot
+            gate = getattr(getattr(bot, "client", None), "gate", None)
+            if not gate:
+                return []
+            body = await gate.exec_req(api.Message.view(msg_id=quote_id))
+            candidates: list[str] = []
+            _walk_strings(body, out=candidates)
+            seen: set[str] = set()
+            urls: list[str] = []
+            for c in candidates:
+                s = str(c)
+                low = s.lower()
+                if low.startswith(("http://", "https://")) and (
+                    "img.kookapp.cn" in low
+                    or "img.kaiheila.cn" in low
+                    or low.rstrip(")").endswith(
+                        (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+                ):
+                    u = s.rstrip(")")
+                    if u not in seen:
+                        seen.add(u)
+                        urls.append(u)
+            return urls
+        except Exception as e:
+            logger.warning("PluginImage 引用消息取图失败: %s", e)
+        return []
+
+
+class PluginVision:
+    """图片识别能力：用视觉 LLM 把图片内容描述成文字。"""
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    async def describe(self, image_url: str, chat_id: int = 0) -> str:
+        """识别图片内容，返回文字描述（视觉模型关闭/失败时返回空串）。"""
+        try:
+            from core.config import get_config
+            from services.image_api import recognize_image
+            cfg = get_config()
+            im = getattr(cfg, "image_model", None)
+            if im is None or not getattr(im, "switch", False):
+                return ""
+            return (await recognize_image(image_url, im, chat_id=chat_id) or "").strip()
+        except Exception as e:
+            logger.warning("Plugin %s 图片识别失败: %s", self._plugin, e)
+        return ""
+
+
 class PluginContext:
     """插件上下文：插件唯一的 API 入口。"""
 
@@ -182,6 +284,8 @@ class PluginContext:
         self.event = PluginEvent(plugin_name, self.bus)
         self.timer = PluginTimer(plugin_name)
         self.capability = PluginCapability(plugin_name)
+        self.image = PluginImage()
+        self.vision = PluginVision(plugin_name)
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""

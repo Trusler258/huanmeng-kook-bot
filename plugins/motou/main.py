@@ -7,13 +7,15 @@
   .摸头 引用一张图片消息    从被引用消息里取图片
   .摸头 <URL> bg=透明色      自定义背景，如 bg=transparent / bg=%23ffffff
 
+图片提取复用插件 API ctx.image（dispatcher 成熟实现）：
+  参数 URL / 引用消息 / 本消息文本逐级兜底，无需自造重复逻辑。
+
 实现：POST https://uapis.cn/api/v1/image/motou（multipart: image_url / bg_color）
 成功返回 image/gif 二进制，保存临时文件后经 send_file 上传 KOOK asset 发送。
 若 manifest.config.uapi_key 配置了 key，自动带上 Bearer 鉴权。
 """
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 
@@ -23,50 +25,6 @@ logger = get_logger("plugin.motou")
 
 _API_URL = "https://uapis.cn/api/v1/image/motou"
 _TMP_DIR = Path(__file__).resolve().parent / "tmp"
-
-# 匹配 KOOK (met)url(met) 图片 / 裸 http(s) URL / 反引号与 Markdown [text](url) 包裹的 URL
-_URL_RE = re.compile(
-    r"https?://[^\s)\]>\uFF09]+"
-)
-
-
-def _walk_strings(node, out):
-    """递归收集 dict/list/str 中所有字符串，用于从消息 API 返回里捞 URL。"""
-    if isinstance(node, str):
-        out.append(node)
-    elif isinstance(node, dict):
-        for v in node.values():
-            _walk_strings(v, out)
-    elif isinstance(node, (list, tuple)):
-        for v in node:
-            _walk_strings(v, out)
-
-
-async def _fetch_quote_image_url(quote_id: str) -> str:
-    """按引用消息 ID 拉取被引用消息，提取其中的图片 URL（无则空串）。"""
-    if not quote_id:
-        return ""
-    try:
-        from khl import api
-        from services.delivery import kook_transport
-        bot = kook_transport._bot
-        gate = getattr(getattr(bot, "client", None), "gate", None)
-        if not gate:
-            return ""
-        body = await gate.exec_req(api.Message.view(msg_id=quote_id))
-        candidates: list[str] = []
-        _walk_strings(body, out=candidates)
-        for c in candidates:
-            s = str(c)
-            low = s.lower()
-            if low.startswith(("http://", "https://")) and (
-                "img.kookapp.cn" in low
-                or low.rstrip(")").endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
-            ):
-                return s.rstrip(")")
-    except Exception as e:
-        logger.warning("引用消息取图失败: %s", e)
-    return ""
 
 
 class Plugin:
@@ -93,6 +51,7 @@ class Plugin:
         args = [str(a) for a in (msg.get("args") or [])]
         chat_id = msg.get("chat_id")
         is_group = bool(msg.get("is_group"))
+        image = self.ctx.image
 
         # 1) 解析参数：bg_color + 可能的 URL（允许被反引号/Markdown 包裹）
         image_url = ""
@@ -102,19 +61,20 @@ class Plugin:
             if low.startswith("bg="):
                 bg = a.split("=", 1)[1].strip()
             else:
-                m = re.search(_URL_RE, a)
-                if m:
-                    image_url = m.group(0).rstrip(")")
+                urls = image.extract_urls(a)
+                if urls:
+                    image_url = urls[0]
 
         # 2) 参数没给 URL → 引用消息里的图片
         if not image_url:
-            image_url = await _fetch_quote_image_url(str(msg.get("quote_id") or ""))
+            imgs = await image.fetch_quote_images(str(msg.get("quote_id") or ""))
+            if imgs:
+                image_url = imgs[0]
 
         # 3) 还没有 → 从本消息文本里提取图片
         if not image_url:
             text = str(msg.get("text") or "")
-            for m in _URL_RE.finditer(text):
-                u = m.group(0).rstrip(")")
+            for u in image.extract_urls(text):
                 if u and "uapis.cn" not in u:
                     image_url = u
                     break
