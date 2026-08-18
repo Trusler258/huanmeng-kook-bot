@@ -1,0 +1,11 @@
+{
+  "name": "tuf",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "TUF 谱面查询：.tuflevel/.tufsearch/.tufd/.tufpage（数据源 api.tuforums.com）",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}
