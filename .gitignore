@@ -39,3 +39,6 @@ backup/
 
 # 自更新模块运行时快照缓存
 .update_cache/
+
+# 插件（由服务器自行管理，不随 .update 推送）
+plugins/
