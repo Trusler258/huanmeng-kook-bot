@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -111,40 +112,74 @@ def peek_hmp_name(hmp_path: Path) -> Optional[str]:
         return None
 
 
-def unpack_hmp(hmp_path: Path) -> tuple[bool, str]:
-    """解包 .hmp 到 plugins/<manifest.name>/（扁平化，防 zip-slip）。"""
+def compare_versions(a: str, b: str) -> int:
+    """比较两个版本号字符串（支持 1.2.3 / v1.2 / 1.2.3-beta 等）。
+    返回：a>b → 1，a<b → -1，相等或无法解析 → 0。"""
+    def _nums(v: str) -> list[int]:
+        s = re.sub(r"^[vV]", "", (v or "").strip())
+        return [int(x) for x in re.findall(r"\d+", s)] or [0]
+
+    na, nb = _nums(a), _nums(b)
+    for x, y in zip(na, nb):
+        if x != y:
+            return 1 if x > y else -1
+    return 0 if len(na) == len(nb) else (1 if len(na) > len(nb) else -1)
+
+
+def unpack_hmp(hmp_path: Path, overwrite: bool = False) -> tuple[bool, str, Optional[dict]]:
+    """解包 .hmp 到 plugins/<manifest.name>/（扁平化，防 zip-slip）。
+
+    - overwrite=False 且目标目录已存在时：不落盘，第三位返回冲突信息
+      {"name", "local_version", "pkg_version"}，供上层做版本提示/覆盖确认；
+    - overwrite=True：先删除旧目录再解包，实现覆盖安装。
+    """
     if not hmp_path.is_file():
-        return False, f"文件不存在: {hmp_path}"
+        return False, f"文件不存在: {hmp_path}", None
     if hmp_path.suffix.lower() != HMP_EXT:
-        return False, "不是 .hmp 插件包"
+        return False, "不是 .hmp 插件包", None
 
     target: Optional[Path] = None
     size_in = 0
+    pname = ""
     try:
         size_in = hmp_path.stat().st_size
         if size_in > MAX_ZIP_SIZE:
-            return False, f"包过大（>{MAX_ZIP_SIZE//1024//1024}MB），拒绝解包"
+            return False, f"包过大（>{MAX_ZIP_SIZE//1024//1024}MB），拒绝解包", None
         with zipfile.ZipFile(hmp_path) as z:
             all_members = z.namelist()
             if len(all_members) > 2000:
-                return False, "包内文件过多，拒绝解包"
+                return False, "包内文件过多，拒绝解包", None
             # 定位真实 manifest（去掉插件目录前缀后的 manifest.json 或根 manifest.json）
             mf_members = [m for m in all_members
                           if _sanitize_member(m) and Path(m).name == "manifest.json"]
             if not mf_members:
-                return False, "包内没有 manifest.json"
+                return False, "包内没有 manifest.json", None
             mf_member = mf_members[0]
             try:
                 manifest = json_load(io.BytesIO(z.read(mf_member)))
             except Exception as e:
-                return False, f"manifest 解析失败: {e}"
+                return False, f"manifest 解析失败: {e}", None
             pname = (manifest.get("name") or "").strip()
             if not validate_name(pname):
-                return False, f"manifest.name 非法或缺失: {pname!r}"
+                return False, f"manifest.name 非法或缺失: {pname!r}", None
+            pkg_version = str(manifest.get("version") or "0.0.0")
 
             target = _plugins_root() / pname
+            if target.exists() and not overwrite:
+                local_ver = "0.0.0"
+                try:
+                    local_ver = str(json_load(target / "manifest.json").get("version") or "0.0.0")
+                except Exception:
+                    pass
+                conflict = {"name": pname,
+                            "local_version": local_ver,
+                            "pkg_version": pkg_version}
+                return False, (f"插件已存在: {pname}（本地 v{local_ver}，包 v{pkg_version}）\n"
+                               f"可用 .plugin unload 后重启，或按提示走覆盖安装"), conflict
+
+            # 覆盖模式：先清掉旧目录，避免残留旧文件
             if target.exists():
-                return False, f"插件已存在: {pname}（可先 .plugin unload {pname} 或用 [DISABLE] 前缀停用）"
+                shutil.rmtree(target, ignore_errors=True)
 
             # 只保留文件名段，扁平化释放，防目录穿越
             for m in all_members:
@@ -155,9 +190,9 @@ def unpack_hmp(hmp_path: Path) -> tuple[bool, str]:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(z.read(m))
     except Exception as e:
-        return False, f"解包失败: {e}"
+        return False, f"解包失败: {e}", None
 
-    return True, f"已解包插件 {pname} → plugins/{pname}/"
+    return True, f"已解包插件 {pname} → plugins/{pname}/", None
 
 
 # ── 从聊天提取 .hmp URL ────────────────────────────────

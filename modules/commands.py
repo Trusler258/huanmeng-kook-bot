@@ -3148,9 +3148,9 @@ async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"❌ 设置失败：{msg}"
 
 
-# ── 插件管理：卸载二次确认暂存 ───────────────────────────
-# token -> (plugin_name, 过期时间戳)
-_plugin_unload_pending: dict[str, tuple[str, float]] = {}
+# ── 插件管理：二次确认暂存（卸载 / 覆盖安装）─────────────
+# token -> {"action": "unload"|"overwrite", "name": str, "fname": str|None, "expire": float}
+_plugin_unload_pending: dict[str, dict] = {}
 _PLUGIN_CONFIRM_TTL = 120  # 秒
 
 
@@ -3289,7 +3289,8 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
     if sub == "unload" and len(args) >= 2:
         name = args[1]
         token = _plugin_gen_token()
-        _plugin_unload_pending[token] = (name, time.time() + _PLUGIN_CONFIRM_TTL)
+        _plugin_unload_pending[token] = {"action": "unload", "name": name, "fname": None,
+                                         "expire": time.time() + _PLUGIN_CONFIRM_TTL}
         return (f"⚠️ 确定要卸载插件 `{name}` 吗？\n"
                 f"卸载会清理该插件的事件/定时器/命令注册，且需重启才能自动重新加载。\n"
                 f"输入 `.plugin confirm {token}` 确认执行（{_PLUGIN_CONFIRM_TTL} 秒内有效）。")
@@ -3298,10 +3299,12 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
         token = args[1]
         pending = _plugin_unload_pending.pop(token, None)
         if not pending:
-            return "❌ 确认令牌无效或已过期，请重新执行 `.plugin unload <名字>`"
-        name, expire = pending
-        if time.time() > expire:
-            return "❌ 确认已过期，请重新执行 `.plugin unload <名字>`"
+            return "❌ 确认令牌无效或已过期，请重新执行相关命令"
+        if time.time() > pending["expire"]:
+            return "❌ 确认已过期，请重新执行相关命令"
+        if pending.get("action") == "overwrite":
+            return await _plugin_overwrite_confirm(pending)
+        name = pending["name"]
         ok, err = await (await _plugin_mgr()).unload(name)
         return await _plugin_action_result(ok, err, f"✅ 已卸载插件 `{name}`")
 
@@ -3314,7 +3317,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
 
 
 async def _plugin_load_hmp(fname: str) -> str:
-    """解包 _down 里的 .hmp 并加载到运行时。"""
+    """解包 _down 里的 .hmp 并加载到运行时；已存在时按版本提示升级/降级覆盖安装。"""
     from modules import plugin_share as PS
     if fname.lower().endswith("/"):
         return "❌ 请传入 .hmp 文件名"
@@ -3324,13 +3327,16 @@ async def _plugin_load_hmp(fname: str) -> str:
 
     name = PS.peek_hmp_name(p)
     if not name:
-        ok, msg = PS.unpack_hmp(p)
+        ok, msg, _ = PS.unpack_hmp(p)
         return "❌ 无法识别插件名" if not ok else "❌ manifest 无效"
-    ok, msg = PS.unpack_hmp(p)
+
+    ok, msg, conflict = PS.unpack_hmp(p)
     if not ok:
-        # 已存在：若未启用则补加载，否则提示
+        # 已存在：有版本冲突信息 → 版本提示 + 覆盖确认；否则沿用原“补加载”逻辑
         mgr = await _plugin_mgr()
         cur = {x.get("name"): x for x in mgr.list()}.get(name)
+        if conflict:
+            return _plugin_overwrite_prompt(name, fname, conflict, cur)
         if cur and cur.get("state") == "enabled":
             return "❌ " + msg + "（该插件已在运行）"
         if cur and cur.get("state") != "enabled":
@@ -3344,6 +3350,51 @@ async def _plugin_load_hmp(fname: str) -> str:
     ok2, msg2 = await PS.load_local_plugin(name)
     if not ok2:
         return f"❌ 解包成功但加载失败: {msg2}"
+    return f"✅ {msg} | {msg2}"
+
+
+def _plugin_overwrite_prompt(name: str, fname: str, conflict: dict, cur: Optional[dict]) -> str:
+    """插件目录已存在：按版本差生成升级/降级提示，并下发覆盖确认令牌。"""
+    from modules import plugin_share as PS
+    local_ver = conflict.get("local_version") or "0.0.0"
+    pkg_ver = conflict.get("pkg_version") or "0.0.0"
+    cmp = PS.compare_versions(pkg_ver, local_ver)
+    if cmp > 0:
+        kind = "升级"
+    elif cmp < 0:
+        kind = "降级"
+    else:
+        kind = "同版本覆盖"
+    running = "（该插件当前正在运行）" if (cur and cur.get("state") == "enabled") else "（当前未在运行）"
+    token = _plugin_gen_token()
+    _plugin_unload_pending[token] = {"action": "overwrite", "name": name, "fname": fname,
+                                     "expire": time.time() + _PLUGIN_CONFIRM_TTL}
+    return (f"⚠️ 插件 `{name}` 已存在，包内版本 v{pkg_ver}，本地 v{local_ver} → {kind} {running}\n"
+            f"说明：`.plugin unload` 只从内存卸载，磁盘目录仍在，重启后会自动重新加载，"
+            f"所以导入仍会提示已存在。\n"
+            f"输入 `.plugin confirm {token}` 确认覆盖安装（{_PLUGIN_CONFIRM_TTL} 秒内有效）。")
+
+
+async def _plugin_overwrite_confirm(pending: dict) -> str:
+    """确认覆盖安装：卸载旧实例 → 清缓存模块 → 覆盖解包 → 重新加载启用。"""
+    import sys as _sys
+    from modules import plugin_share as PS
+    name = pending["name"]
+    fname = pending["fname"]
+    mgr = await _plugin_mgr()
+    cur = {x.get("name"): x for x in mgr.list()}.get(name)
+    if cur:
+        # 清理事件/定时器/命令注册（记录不存在时 unload 安全返回失败，不阻断）
+        await mgr.unload(name)
+    # 弹出被缓存的旧模块，确保覆盖后加载到新代码
+    _sys.modules.pop(f"_hm_plugin_{name}", None)
+    p = PS._down_dir() / fname
+    ok, msg, _ = PS.unpack_hmp(p, overwrite=True)
+    if not ok:
+        return "❌ 覆盖解包失败: " + msg
+    ok2, msg2 = await PS.load_local_plugin(name)
+    if not ok2:
+        return f"❌ 已覆盖文件但加载失败: {msg2}"
     return f"✅ {msg} | {msg2}"
 
 
