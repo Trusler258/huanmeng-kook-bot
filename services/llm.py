@@ -870,6 +870,30 @@ def _calls_from_content(content: str | None) -> list[dict]:
     return _calls_to_tool_calls(calls)
 
 
+def _format_raw_output(raw: str, limit: int = 1500) -> str:
+    """把 run_code 的原始返回整理成给用户看的代码块，超长截断。"""
+    body = raw
+    if body.startswith("[运行输出]"):
+        body = body[len("[运行输出]"):].strip()
+    if len(body) > limit:
+        body = body[:limit] + "\n…(输出过长已截断)"
+    return f"【运行原始输出】\n```\n{body}\n```"
+
+
+def _append_raw_output_to_reply(parsed: tuple, raw_outputs: list[str]) -> tuple:
+    """在最终回复末尾追加 run_code 的原始输出（若存在），保证用户能看到真实数据。"""
+    if not parsed or not raw_outputs or not parsed[0]:
+        return parsed
+    try:
+        replies = list(parsed[0])
+        replies.append(_format_raw_output(raw_outputs[0]))
+        p = list(parsed)
+        p[0] = replies
+        return tuple(p)
+    except Exception:
+        return parsed
+
+
 async def generate_multi_reply_with_tools(
     msg_history: list[str],
     speaker_name: str,
@@ -914,6 +938,7 @@ async def generate_multi_reply_with_tools(
     errors = []
     data_results = []
     action_results = []
+    run_raw_outputs = []  # run_code 的真实原始返回（用于透传给用户）
 
     for round_idx in range(MAX_ROUNDS):
         result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
@@ -1012,6 +1037,9 @@ async def generate_multi_reply_with_tools(
         for tc, tool_text in tool_results:
             msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": tool_text})
             logger.info("FC: 工具 %s 返回 %d 字符", tc["name"], len(tool_text))
+            # 收集 run_code 的真实原始输出（成功返回带 [运行输出] 前缀），用于透传给用户
+            if tc["name"] == "run_code" and tool_text and tool_text.startswith("[运行输出]"):
+                run_raw_outputs.append(tool_text)
             # 工具返回长内容时扩大 max_tokens
             if len(tool_text) > 500:
                 max_tokens = max(max_tokens or 0, 8000)
@@ -1052,7 +1080,7 @@ async def generate_multi_reply_with_tools(
                     record_final_flag("final_reply_ok")
                 except Exception:
                     pass
-                return parsed
+                return _append_raw_output_to_reply(parsed, run_raw_outputs)
             # 工具已成功，但最终 LLM JSON 解析失败 → 用工具结果兜底，
             # 禁止让用户"再说一遍"覆盖已成功的工具执行。
             logger.warning("工具已成功执行，但最终 LLM JSON 解析失败，回退工具结果")
@@ -1063,12 +1091,15 @@ async def generate_multi_reply_with_tools(
             except Exception:
                 pass
             if action_results:
-                return _parse_reply(
-                    json.dumps({"replies": [action_results[0]], "fav": 0, "calls": [],
-                                "face": None, "mood": "开心", "action": "", "at": None,
-                                "mode": None, "origin": "user", "actor": {}},
-                               ensure_ascii=False),
-                    speaker_name,
+                return _append_raw_output_to_reply(
+                    _parse_reply(
+                        json.dumps({"replies": [action_results[0]], "fav": 0, "calls": [],
+                                    "face": None, "mood": "开心", "action": "", "at": None,
+                                    "mode": None, "origin": "user", "actor": {}},
+                                   ensure_ascii=False),
+                        speaker_name,
+                    ),
+                    run_raw_outputs,
                 )
 
     # ── 处理结果 ──
@@ -1102,9 +1133,12 @@ async def generate_multi_reply_with_tools(
 
     if action_results:
         reply_text = action_results[0]
-        return _parse_reply(
-            json.dumps({"replies": [reply_text], "fav": 0, "calls": [], "face": None, "mood": "开心", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}),
-            speaker_name,
+        return _append_raw_output_to_reply(
+            _parse_reply(
+                json.dumps({"replies": [reply_text], "fav": 0, "calls": [], "face": None, "mood": "开心", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}),
+                speaker_name,
+            ),
+            run_raw_outputs,
         )
 
     # 无工具调用 → 优先尝试 JSON，失败则按纯文本处理
