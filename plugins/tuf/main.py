@@ -127,16 +127,19 @@ class Plugin:
                          footer: str | None = None) -> None | str:
         """发送 KOOK 卡片，返回 None（成功）或回退文本（失败）。
 
-        格式严格对齐 khl.Card._repr 序列化输出（KOOK API 真正接受的格式）：
-        - header.text 是纯字符串（不是 {type,content} 对象）
-        - section: text {kmarkdown,content} + mode + accessory{image,src,size,circle}
-        - context: elements [{kmarkdown, content}]
-        - 无多余 elements:[]/emoji/expand/color 字段
+        结构严格对齐 services/notify_system.py 已验证成功发送的卡片
+        （.update check 卡片可正常显示）：
+        - 顶层: {"type":"card","theme":"secondary","color":"#...","size":"lg","modules":[...]}
+        - header: {"type":"header","text":{"type":"plain-text","content":"..."}}
+        - section: {"type":"section","text":{"type":"kmarkdown","content":"..."}}
+        - context: {"type":"context","elements":[{"type":"kmarkdown","content":"..."}]}
+        - 头像用 section 的 accessory {type:image, src, size, circle}
         """
         from services.sender import send_raw_group, send_raw_user
         modules = []
         if header:
-            modules.append({"type": "header", "text": header})
+            modules.append({"type": "header",
+                            "text": {"type": "plain-text", "content": header}})
         main_section = {"type": "section",
                         "text": {"type": "kmarkdown", "content": md}}
         if img:
@@ -149,8 +152,8 @@ class Plugin:
         if footer:
             modules.append({"type": "context",
                             "elements": [{"type": "kmarkdown", "content": footer}]})
-        card = [{"type": "card", "theme": theme, "size": "lg",
-                 "modules": modules}]
+        card = [{"type": "card", "theme": "secondary", "color": "#7289DA",
+                 "size": "lg", "modules": modules}]
         try:
             if msg.get("is_group"):
                 await send_raw_group(card, msg.get("chat_id"))
