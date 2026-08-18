@@ -391,7 +391,8 @@ async def _write_code(
 
 
 async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
-                         sender_name: str, is_group: bool, bot_qq: int) -> str:
+                         sender_name: str, is_group: bool, bot_qq: int,
+                         original_msg: str = "") -> str:
     """run_code 工具：在沙箱中真实执行代码，返回真实输出并发送产物文件。
 
     权限：管理员直接放行；非管理员走审批卡片（request_run_approval）。
@@ -407,7 +408,9 @@ async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
 
     language = (arguments.get("language") or "python").lower()
     code = (arguments.get("code") or "").strip()
-    description = (arguments.get("description") or "").strip()
+    # 描述缺省时回退用户原始消息（与 write_code 一致），确保 Agent 规划只给了 language
+    # 也能按真实需求生成代码，而不是落到"示例代码"。
+    description = (arguments.get("description") or "").strip() or (original_msg or "").strip()
     stdin_data = arguments.get("stdin") or ""
 
     cfg = get_config()
@@ -939,7 +942,7 @@ async def _execute_impl(
         )
     if tool_name == "run_code":
         return await _run_code_tool(
-            arguments, user_id, group_id, sender_name, is_group, bot_qq,
+            arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
         )
     if tool_name == "calc":
         return await _calc(arguments.get("code", ""))
