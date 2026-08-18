@@ -1,0 +1,11 @@
+{
+  "name": "pgr",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "Phigros 查询：.pgr login/me/top/song/new（迁移自 Core，需在插件文件夹配置 api_key）",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}

@@ -27,7 +27,6 @@ from utils.format_lang import format_lang
 from modules.fav import get_all_fav, FAV_FILE as FAV_FILE_REF, reset_all_fav
 from services.sender import send_group_msg, send_private_msg, send_raw_group, send_raw_user
 from modules.search import perform_search
-from modules.pgr import cmd_pgr
 from modules.earthquake import cmd_eq
 from modules.nasa import cmd_nasa
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
@@ -3501,7 +3500,6 @@ COMMAND_MAP: dict[str, callable] = {
     "analyze":    cmd_analyze,
     "owner":      cmd_owner,
     "memory":     cmd_memory,
-    "pgr":        cmd_pgr,
     "wzq":        cmd_wzq,
     "五子棋":     cmd_wzq,
     "xq":         cmd_xq,

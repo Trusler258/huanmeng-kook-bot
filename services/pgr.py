@@ -6,14 +6,35 @@ Auth: X-OpenApi-Token header
 """
 
 import json, os, urllib.request
+from pathlib import Path
 from typing import Optional
 
 BASE = "https://r0semi.xtower.site/api/v1/open"
 
+# 插件配置目录（plugins/pgr/config.json 可配置 api_key）
+_PLUGIN_CFG = Path(__file__).resolve().parent.parent / "plugins" / "pgr" / "config.json"
+
+
+def get_api_key() -> str:
+    """读取 PGR API Key：优先插件目录 plugins/pgr/config.json，其次环境变量 PGR_API_KEY。"""
+    try:
+        if _PLUGIN_CFG.exists():
+            cfg = json.loads(_PLUGIN_CFG.read_text(encoding="utf-8"))
+            key = str(cfg.get("api_key", "")).strip()
+            if key:
+                return key
+    except Exception:
+        pass
+    return os.getenv("PGR_API_KEY", "")
+
+
 def _api_key() -> str:
-    key = os.getenv("PGR_API_KEY", "")
+    key = get_api_key()
     if not key:
-        raise RuntimeError("PGR_API_KEY 未在 .env 中配置")
+        raise RuntimeError(
+            "PGR API Key 未配置：请编辑 plugins/pgr/config.json 填入 api_key "
+            "（或设置环境变量 PGR_API_KEY）"
+        )
     return key
 
 
