@@ -476,6 +476,58 @@ def resolve_approval(token: str, approved: bool) -> str:
     return "已确认更新" if approved else "已取消更新"
 
 
+# ── 沙箱执行人工审批（复用 _approval_pending 机制）─────────────
+
+def _render_run_approval_card(token: str, plan_desc: str) -> list:
+    """沙箱执行人工确认卡片：展示待执行内容 + 确认/取消按钮。"""
+    color = "#d9534f"  # 红
+    modules = [_header("KOOK BOT · 沙箱执行确认")]
+    modules.append(_section([
+        ("待执行", f"`{(plan_desc or '')[:60]}`"),
+    ]))
+    modules.append(_divider())
+    modules.append({
+        "type": "action-group",
+        "elements": [
+            _action_button("确认执行", f".run approve {token}", theme="danger"),
+            _action_button("取消执行", f".run deny {token}", theme="secondary"),
+        ],
+    })
+    modules.append(_context("审批有效期 2 分钟 · 仅 admin 点击生效"))
+    return _card_obj(color, modules)
+
+
+async def request_run_approval(plan_desc: str, timeout: float = 120.0) -> bool:
+    """沙箱执行人工审批回调（供 core.tools._run_code_tool 使用）。
+
+    发卡片到目标频道，等待 admin 点击「确认执行/取消执行」按钮，返回是否放行。
+    超时（默认 2 分钟）未处理则默认拒绝。
+    """
+    import uuid
+    token = uuid.uuid4().hex[:16]
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _approval_pending[token] = fut
+    try:
+        await _send_to_targets(_render_run_approval_card(token, plan_desc))
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("沙箱执行审批超时 token=%s", token)
+            return False
+    finally:
+        _approval_pending.pop(token, None)
+
+
+def resolve_run_approval(token: str, approved: bool) -> str:
+    """沙箱执行审批回调：点击按钮后把结果回传给等待中的请求。"""
+    fut = _approval_pending.get(token)
+    if not fut or fut.done():
+        return "审批已失效或已处理"
+    fut.set_result(approved)
+    return "已确认执行" if approved else "已取消执行"
+
+
 # ── 发送 ────────────────────────────────────────────────────
 
 async def _send_to_targets(content) -> None:

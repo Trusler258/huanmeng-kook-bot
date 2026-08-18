@@ -738,6 +738,34 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         except Exception as e:
             logger.warning("代码生成管道失败: %s，回退正常生成", e)
 
+    # ------文件创建/打包类请求 → 沙箱真实执行（根治"假装已打包"幻觉）------
+    # 用户要求"创建/生成 N 个文件并打包/压缩"时，直接走沙箱执行管道：
+    # LLM 生成脚本 → 沙箱真实运行 → 产物 zip 作为附件返回，绝不口头声称成功。
+    # 非管理员触发会走 _run_code_tool 内的审批卡片。
+    _FILE_OP_RES = [
+        _re.compile(r'创建\s*[0-9一-十]+\s*个?.*(文件|\.md|\.txt|\.json|\.csv|\.py)'),
+        _re.compile(r'生成\s*[0-9一-十]+\s*个?.*(文件|\.md|\.txt|\.json|\.csv|\.py)'),
+        _re.compile(r'(创建|生成|写).*(文件|\.md|\.txt|\.json|\.csv).*(打包|压缩|zip)'),
+        _re.compile(r'(打包|压缩).*\.(md|txt|json|csv|zip)'),
+    ]
+    if any(_r.search(msg_content) for _r in _FILE_OP_RES):
+        logger.info("文件操作检测: from=%s len=%d → 走沙箱执行管道", sender_name, len(msg_content))
+        try:
+            from core.tools import _run_code_tool
+            result = await _run_code_tool(
+                {"language": "python", "code": "", "description": msg_content[:3000]},
+                user_id, chat_id, sender_name, is_group, bot_qq,
+            )
+            from services.sender import send_group_msg, send_private_msg
+            if is_group:
+                await send_group_msg(result, chat_id)
+            else:
+                await send_private_msg(result, user_id)
+            logger.info("文件操作沙箱管道完成: chat=%d", chat_id)
+            return
+        except Exception as e:
+            logger.warning("文件操作沙箱管道失败: %s，回退正常生成", e)
+
     # ------自动搜索（用户说"搜索/查/搜"等关键词时，先搜再答）------
     # Phase 6 Part2 Fast Path：普通聊天（无搜索意图）跳过自动搜索判断，
     # 避免触发额外的模型判断 LLM 调用（这是简单聊天 5~10s 延迟的来源之一）。

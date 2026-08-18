@@ -181,6 +181,23 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_code",
+            "description": "在沙箱中真实运行代码并返回运行输出与产物文件。当用户要求「创建/生成/打包文件」「运行/执行代码」「bash/终端/shell 命令」时调用，不要只在回复里假装执行。python/cpp 会真实运行，shell 执行系统命令（如 cd / && ls -l）。必须基于工具返回的真实输出回复，禁止编造结果。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {"type": "string", "enum": ["python", "cpp", "shell"], "description": "运行语言：python=Python 代码, cpp=C++ 代码, shell=系统命令"},
+                    "code": {"type": "string", "description": "要运行的代码（shell 时为命令字符串）。可留空只给 description 由系统生成代码"},
+                    "description": {"type": "string", "description": "需求描述（code 留空时用于生成代码，如'创建10个markdown文件并打包zip'）"},
+                    "stdin": {"type": "string", "description": "运行时的标准输入（可选）"},
+                },
+                "required": ["language"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "calc",
             "description": "Python 计算验证。遇到方程/算术/代数题，先写 print() 代码跑出真实结果再回答，不要瞎猜。",
             "parameters": {
@@ -388,6 +405,120 @@ async def _write_code(
         send_msgs.append(f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败")
 
     return "\n".join(send_msgs)
+
+
+async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
+                         sender_name: str, is_group: bool, bot_qq: int) -> str:
+    """run_code 工具：在沙箱中真实执行代码，返回真实输出并发送产物文件。
+
+    权限：管理员直接放行；非管理员走审批卡片（request_run_approval）。
+    执行结果一律来自沙箱子进程真实输出，禁止 LLM 编造。
+    """
+    import re as _re
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    from core.config import get_config
+    logger = get_logger("tools")
+
+    language = (arguments.get("language") or "python").lower()
+    code = (arguments.get("code") or "").strip()
+    description = (arguments.get("description") or "").strip()
+    stdin_data = arguments.get("stdin") or ""
+
+    cfg = get_config()
+
+    # ── 权限：管理员直接放行；非管理员走审批卡片 ──
+    if not cfg.is_admin(user_id):
+        try:
+            from services.notify_system import request_run_approval
+        except Exception as e:
+            logger.warning("审批模块不可用: %s", e)
+            return "沙箱执行需管理员授权，但审批模块当前不可用"
+        plan_desc = f"[{language}] {description or code[:80]}"
+        approved = await request_run_approval(plan_desc)
+        if not approved:
+            return "已取消沙箱执行（需管理员审批通过才能运行）"
+
+    # ── 无代码 → 按 description 生成代码 ──
+    if not code:
+        if language == "shell":
+            code = description
+        else:
+            from services.llm import call_llm
+            prompt = {
+                "python": "写一段可独立运行的 Python 脚本，关键结果用 print() 输出，UTF-8，只输出代码不写注释。",
+                "cpp": "写一段可独立编译运行的 C++ 程序（含 #include <iostream>），关键结果用 cout 输出，只输出代码。",
+            }.get(language, "只输出可运行的代码。")
+            code = await call_llm(cfg.reply_model, [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": (description or "示例代码")[:3000]},
+            ], temperature=0.3, timeout=60.0)
+            if not code:
+                return "代码生成失败，请稍后重试"
+            code = code.strip()
+            if code.startswith("```"):
+                code = _re.sub(r'^```\w*\n?', '', code)
+                code = _re.sub(r'\n?```$', '', code)
+
+    # ── 沙箱执行 ──
+    from core import sandbox
+    tmp = Path(tempfile.mkdtemp(prefix="bot_run_"))
+    try:
+        if language == "python":
+            res = await sandbox.run_python(code, cwd=tmp, stdin_data=stdin_data)
+        elif language == "cpp":
+            res = await sandbox.compile_and_run_cpp({"main.cpp": code}, cwd=tmp, stdin_data=stdin_data)
+        else:
+            res = await sandbox.run_shell(code, cwd=tmp)
+    except Exception as e:
+        logger.error("沙箱执行异常: %s", e)
+        sandbox.cleanup(tmp)
+        return f"沙箱执行失败: {e}"
+
+    out_parts = []
+    if res.get("stdout"):
+        out_parts.append(res["stdout"].strip())
+    if res.get("stderr"):
+        out_parts.append(f"[stderr]\n{res['stderr'].strip()}")
+    text = "\n\n".join(out_parts) or "[无输出]"
+    if res.get("timed_out"):
+        text += "\n[提示] 运行超时已强制终止"
+    if res.get("returncode") not in (0, None):
+        text += f"\n[退出码] {res['returncode']}"
+
+    # ── 产物收集与发送 ──
+    artifacts = sandbox.collect_artifacts(tmp)
+    # 存在 zip/tar 归档时优先只发归档，避免"zip 里再套一层松散文件"
+    _archives = [a for a in artifacts if a.suffix.lower() in
+                 (".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2")]
+    if _archives:
+        artifacts = _archives
+    send_msgs = []
+    if artifacts:
+        from services.sender import send_file
+        try:
+            if len(artifacts) == 1:
+                f = artifacts[0]
+                ok = await send_file(str(f), group_id if is_group else user_id, is_group)
+                send_msgs.append(f"已发送产物 {f.name}" if ok else "产物发送失败")
+            else:
+                zip_path = tmp / "artifacts.zip"
+                with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in artifacts:
+                        zf.write(str(f), f.name)
+                ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
+                send_msgs.append(f"已发送 {len(artifacts)} 个产物的 zip" if ok else "产物 zip 发送失败")
+        except Exception as e:
+            send_msgs.append(f"产物发送异常: {e}")
+    sandbox.cleanup(tmp)
+
+    result = f"[运行输出]\n{text}"
+    if send_msgs:
+        result += "\n\n" + "\n".join(send_msgs)
+    logger.info("run_code 完成: lang=%s rc=%s 产物=%d", language,
+                res.get("returncode"), len(artifacts))
+    return result
 
 
 async def _compile_and_run(tmp: Path, cpp_files: list[str], chat_id: int, is_group: bool, description: str = "") -> str:
@@ -803,6 +934,10 @@ async def _execute_impl(
             arguments.get("language", "python"),
             desc,
             user_id, group_id, sender_name, is_group, bot_qq,
+        )
+    if tool_name == "run_code":
+        return await _run_code_tool(
+            arguments, user_id, group_id, sender_name, is_group, bot_qq,
         )
     if tool_name == "calc":
         return await _calc(arguments.get("code", ""))

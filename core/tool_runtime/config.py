@@ -98,6 +98,7 @@ TOOL_CAPABILITY: dict[str, tuple[str, str]] = {
     "calc":          ("calc", "compute"),
     "agent_think":   ("agent", "think"),
     "write_code":    ("code", "generate"),   # 只生成并发送文件，不执行
+    "run_code":      ("code", "execute"),    # 沙箱真实执行（业务层管理员/审批控制）
     "code_execute":  ("code", "execute"),    # 独立执行入口（默认 HIGH）
     "shell_execute": ("shell", "execute"),
     "system_status": ("system", "status"),

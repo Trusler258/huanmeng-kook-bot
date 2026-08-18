@@ -72,6 +72,14 @@ def check_permission(tool_name: str, explicit: Optional[str] = None) -> tuple[bo
     if tool_name in DENIED_TOOLS:
         return False, f"工具 {tool_name} 属于高风险操作，默认拒绝"
 
+    # 1.5 run_code 沙箱执行：权限层只做白名单放行，
+    #     真正的"管理员直接放行 / 非管理员审批"控制在工具内部（core.tools._run_code_tool），
+    #     避免 HIGH 风险默认 DENY 把管理员也一并挡掉。
+    if tool_name == "run_code":
+        if tool_name in ALLOWED_TOOLS:
+            return True, "run_code 沙箱执行由工具内部按管理员/审批控制"
+        return False, "run_code 不在白名单"
+
     # 2. 风险等级 → 策略
     risk = risk_of_tool(tool_name)
     policy = policy_of(risk)
