@@ -402,6 +402,7 @@ async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
     import zipfile
     from pathlib import Path
     from core.config import get_config
+    from core.logger import get_logger
     logger = get_logger("tools")
 
     language = (arguments.get("language") or "python").lower()
