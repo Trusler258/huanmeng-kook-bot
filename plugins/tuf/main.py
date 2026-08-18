@@ -1,7 +1,8 @@
 """
-TUF 谱面/玩家查询插件（重写版 v2）
+TUF 谱面/玩家查询插件（重写版 v3：全 KOOK 卡片输出）
 - 统一入口 .tuf <子命令>，数据源 https://api.tuforums.com 官方 API
 - 支持绑定自己的 TUF 玩家 ID（.tuf bind），之后 .tuf me 直接查自己
+- 所有输出均为 KOOK 卡片（玩家卡片带头像），发送失败回退纯文本
 
 子命令：
   谱面: search <词> [页] | info <ID/名称> | passes <ID> | dl <ID> | rerate <ID>
@@ -28,6 +29,16 @@ _DATA_FILE = Path(__file__).resolve().parent / "data.json"
 _LOCK = RLock()
 
 ID_RE = re.compile(r"^\d+$")
+
+# 国家国旗（KOOK 支持 emoji，用通用映射）
+_COUNTRY_FLAG = {
+    "CN": "🇨🇳", "KR": "🇰🇷", "JP": "🇯🇵", "US": "🇺🇸", "RU": "🇷🇺",
+    "FR": "🇫🇷", "DE": "🇩🇪", "GB": "🇬🇧", "AU": "🇦🇺", "TW": "🇨🇳",
+    "HK": "🇨🇳", "MO": "🇨🇳", "SG": "🇸🇬", "CA": "🇨🇦", "BR": "🇧🇷",
+    "MX": "🇲🇽", "IT": "🇮🇹", "ES": "🇪🇸", "NL": "🇳🇱", "PL": "🇵🇱",
+    "SE": "🇸🇪", "NO": "🇳🇴", "FI": "🇫🇮", "DK": "🇩🇰", "IN": "🇮🇳",
+    "ID": "🇮🇩", "TH": "🇹🇭", "VN": "🇻🇳", "PH": "🇵🇭", "MY": "🇲🇾",
+}
 
 
 # ── 绑定数据（按 KOOK user_id 存 TUF player_id/name）────────
@@ -64,6 +75,12 @@ def del_bind(uid):
     save_binds(data)
 
 
+def _flag(country: str) -> str:
+    if not country or country == "XX":
+        return ""
+    return _COUNTRY_FLAG.get(country, f" [{country}]")
+
+
 async def _resolve_player_id(arg: str | None, uid) -> tuple[int | None, str]:
     """解析玩家参数 → (player_id, 显示名)。arg 为空时用绑定，纯数字当 ID，否则按名字搜索。"""
     if not arg:
@@ -73,7 +90,6 @@ async def _resolve_player_id(arg: str | None, uid) -> tuple[int | None, str]:
         return int(b["player_id"]), b["name"]
     if ID_RE.match(arg.strip()):
         return int(arg.strip()), arg.strip()
-    # 按名字搜索
     found = await api.search_players(arg.strip(), limit=1)
     if not found:
         return None, f"未找到玩家: {arg}"
@@ -102,6 +118,37 @@ class Plugin:
 
     async def on_unload(self):
         pass
+
+    # ══════════════════════════════════════════════════════
+    #  通用 KOOK 卡片发送
+    # ══════════════════════════════════════════════════════
+    async def _send_card(self, msg, header: str, md: str,
+                         img: str | None = None, theme: str = "primary",
+                         footer: str | None = None) -> None | str:
+        """发送 KOOK 卡片，返回 None（成功）或回退文本（失败）。"""
+        from services.sender import send_raw_group, send_raw_user
+        modules = []
+        if header:
+            modules.append({"type": "header",
+                            "text": {"type": "plain-text", "content": header}})
+        if img:
+            modules.append({"type": "image", "src": img})
+        modules.append({"type": "section",
+                        "text": {"type": "kmarkdown", "content": md}})
+        if footer:
+            modules.append({"type": "context",
+                            "elements": [{"type": "plain-text", "content": footer}]})
+        card = [{"type": "card", "theme": theme, "size": "lg",
+                 "modules": modules}]
+        try:
+            if msg.get("is_group"):
+                await send_raw_group(card, msg.get("chat_id"))
+            else:
+                await send_raw_user(card, msg.get("author"))
+            return None
+        except Exception as e:
+            logger.warning("[TUF] 卡片发送失败回退文本: %s", e)
+            return md
 
     # ══════════════════════════════════════════════════════
     async def _cmd(self, msg):
@@ -139,30 +186,31 @@ class Plugin:
 
     # ── 帮助 ──────────────────────────────────────────────
     async def _help(self, args, uid, msg):
-        return (
-            "🎵 TUF 查询（ADOFai 谱面社区）\n"
+        md = (
+            "🎵 **TUF 查询**（ADOFai 谱面社区）\n"
             "━━━━━━━━━━━━━━━━\n"
-            "【谱面】\n"
-            "  .tuf search <关键词> [页]   搜索谱面\n"
-            "  .tuf info <ID/名称>         谱面详情\n"
-            "  .tuf passes <ID>            谱面通关记录\n"
-            "  .tuf dl <ID>                谱面下载直链\n"
-            "  .tuf rerate <ID>            谱面改版历史\n"
-            "【玩家】\n"
-            "  .tuf bind <名称/ID>         绑定你的 TUF 玩家\n"
-            "  .tuf me                     查询自己（需绑定）\n"
-            "  .tuf player [名称/ID]       玩家档案\n"
-            "  .tuf rank [名称/ID]         排名历史\n"
-            "  .tuf passesby [名称/ID]     玩家通关记录\n"
-            "【排行/统计】\n"
-            "  .tuf lb [榜] [页]           排行榜（ranked/pp/wf/12k/xacc/passes）\n"
-            "  .tuf lb creators [页]       创作者排行\n"
-            "  .tuf stats                  全局统计\n"
-            "  .tuf countries              国家分布\n"
-            "【资料】\n"
-            "  .tuf song <名称>            歌曲信息\n"
-            "  .tuf packs [页]             关卡包\n"
+            "**谱面**\n"
+            "`search <词> [页]` 搜索\n"
+            "`info <ID/名称>` 详情\n"
+            "`passes <ID>` 通关记录\n"
+            "`dl <ID>` 下载直链\n"
+            "`rerate <ID>` 改版历史\n"
+            "**玩家**\n"
+            "`bind <名称/ID>` 绑定自己\n"
+            "`me` 查自己\n"
+            "`player [名称/ID]` 档案\n"
+            "`rank [名称/ID]` 排名历史\n"
+            "`passesby [名称/ID]` 通关\n"
+            "**排行/统计**\n"
+            "`lb [榜] [页]` 排行榜\n"
+            "`lb creators [页]` 创作者排行\n"
+            "`stats` 全局统计\n"
+            "`countries` 国家分布\n"
+            "**资料**\n"
+            "`song <名称>` 歌曲\n"
+            "`packs [页]` 关卡包\n"
         )
+        return await self._send_card(msg, "🎵 TUF 查询帮助", md)
 
     # ── 谱面 ──────────────────────────────────────────────
     async def _search(self, args, uid, msg):
@@ -177,15 +225,18 @@ class Plugin:
         r = await api.search_levels(query, limit=10, page=page)
         if not r["results"]:
             return f"😢 未找到谱面: {query}"
-        lines = [f"🔍 搜索结果: {query}（共 {r['total']} 个）"]
+        lines = []
         for i, lv in enumerate(r["results"], 1):
             song = lv.get("song", "?")
             artist = lv.get("artist", "?")
             diff = api.get_diff_name(lv)
-            lines.append(f"{i}. [{diff}] {song} - {artist}")
+            num = (i - 1) + (page - 1) * 10 + 1
+            lines.append(f"`{num:02d}` **{song}** — {artist}\n└ 难度 {diff}")
+        md = "\n".join(lines)
+        footer = f"共 {r['total']} 个结果"
         if r["hasMore"]:
-            lines.append(f"… 还有更多，.tuf search {query} {page + 1}")
-        return "\n".join(lines)
+            footer += f" · 还有更多 → .tuf search {query} {page + 1}"
+        return await self._send_card(msg, f"🔍 搜索结果: {query}", md, footer=footer)
 
     async def _resolve_level(self, arg: str) -> dict | None:
         if ID_RE.match(arg.strip()):
@@ -204,19 +255,18 @@ class Plugin:
         creator = api.get_creator_name(d)
         diff = api.get_diff_name(d)
         lines = [
-            f"🎵 {song} - {artist}",
-            f"├ 创作者: {creator}",
-            f"├ 难度: {diff} | BPM: {api.fmt_bpm(d.get('bpm'))}",
-            f"├ 时长: {api.fmt_duration(d.get('levelLengthInMs'))} | 格子: {int(d.get('tilecount') or 0)}",
-            f"├ 通关: {api.fmt_num(d.get('clears'))} | 点赞: {api.fmt_num(d.get('likes'))} | 下载: {api.fmt_num(d.get('downloadCount'))}",
+            f"👤 创作者: **{creator}**",
+            f"🎚️ 难度: **{diff}** | BPM: **{api.fmt_bpm(d.get('bpm'))}**",
+            f"⏱️ 时长: **{api.fmt_duration(d.get('levelLengthInMs'))}** | 格子: **{int(d.get('tilecount') or 0)}**",
+            f"✅ 通关: **{api.fmt_num(d.get('clears'))}** | 👍 {api.fmt_num(d.get('likes'))} | ⬇️ {api.fmt_num(d.get('downloadCount'))}",
         ]
         rating = d.get("rating")
         if isinstance(rating, dict) and rating.get("averageDifficultyId"):
-            lines.append(f"├ 评级: 平均难度 ID {rating.get('averageDifficultyId')}")
+            lines.append(f"📊 评级: 平均难度 ID **{rating.get('averageDifficultyId')}**")
         video = d.get("videoLink")
         if video:
-            lines.append(f"├ 视频: {video}")
-        return "\n".join(lines)
+            lines.append(f"🎬 [视频]({video})")
+        return await self._send_card(msg, f"🎵 {song} — {artist}", "\n".join(lines))
 
     async def _passes(self, args, uid, msg):
         if not args:
@@ -229,14 +279,15 @@ class Plugin:
         r = await api.get_level_passes(lid, limit=5)
         if not r["passes"]:
             return f"该谱面还没有通关记录 ({d.get('song', '?')})"
-        lines = [f"🏆 {d.get('song', '?')} 通关记录（共 {r['total']}）"]
+        lines = []
         for i, p in enumerate(r["passes"][:5], 1):
             pname = (p.get("player") or {}).get("name", "?") if isinstance(p.get("player"), dict) else "?"
             acc = api.fmt_pct(p.get("accuracy"))
             speed = p.get("speed", 100)
             wf = "👑" if p.get("isWorldsFirst") else ""
-            lines.append(f"{i}. {pname} | acc {acc} | x{speed} {wf}")
-        return "\n".join(lines)
+            lines.append(f"`{i}` **{pname}** {wf}\n└ acc **{acc}** | x{speed}")
+        return await self._send_card(msg, f"🏆 {d.get('song', '?')} 通关记录",
+                                     "\n".join(lines), footer=f"共 {r['total']} 条")
 
     async def _dl(self, args, uid, msg):
         if not args:
@@ -248,7 +299,8 @@ class Plugin:
         link = d.get("dlLink") or d.get("legacyDllink")
         if not link:
             return _err("该谱面没有下载链接")
-        return f"⬇️ {d.get('song', '?')}\n下载: {link}"
+        return await self._send_card(msg, f"⬇️ {d.get('song', '?')}",
+                                     f"**[下载谱面]({link})**\n直链: `{link}`")
 
     async def _rerate(self, args, uid, msg):
         if not args:
@@ -260,26 +312,28 @@ class Plugin:
         d = lv["level"] if "level" in lv else lv
         if not hist:
             return f"{d.get('song', '?')} 暂无改版历史"
-        lines = [f"📜 {d.get('song', '?')} 改版历史"]
+        lines = []
         for i, h in enumerate(hist[:8], 1):
             old = h.get("oldDiff", {}).get("name", "?") if isinstance(h.get("oldDiff"), dict) else "?"
             new = h.get("newDiff", {}).get("name", "?") if isinstance(h.get("newDiff"), dict) else "?"
-            lines.append(f"{i}. {old} → {new}")
-        return "\n".join(lines)
+            lines.append(f"`{i}` {old} → **{new}**")
+        return await self._send_card(msg, f"📜 {d.get('song', '?')} 改版历史", "\n".join(lines))
 
     # ── 玩家 ──────────────────────────────────────────────
     async def _bind(self, args, uid, msg):
         if not args:
             b = get_bind(uid)
             if b:
-                return f"你当前绑定: {b['name']} (ID {b['player_id']})\n.tuf unbind 解除绑定"
+                return f"你当前绑定: **{b['name']}** (ID {b['player_id']})\n.tuf unbind 解除绑定"
             return "用法: .tuf bind <TUF玩家名称/ID>\n（在 tuf.gg 可查到你的玩家 ID）"
         arg = " ".join(args)
         pid, name = await _resolve_player_id(arg, uid)
         if pid is None:
             return _err(name)
         set_bind(uid, pid, name)
-        return f"✅ 已绑定 TUF 玩家: {name} (ID {pid})\n现在可以用 .tuf me 查询自己"
+        return await self._send_card(msg, "✅ 绑定成功",
+                                     f"已绑定 TUF 玩家: **{name}** (ID `{pid}`)\n现在可以用 `.tuf me` 查询自己",
+                                     theme="success")
 
     async def _unbind(self, args, uid, msg):
         del_bind(uid)
@@ -299,22 +353,29 @@ class Plugin:
         p = await api.get_player(pid)
         if not p:
             return _err("获取玩家信息失败")
-        flag = p.get("country", "")
+        pname = p.get("name", "?")
+        country = p.get("country", "")
+        flag = _flag(country)
+        pfp = p.get("pfp")
         lines = [
-            f"👤 {p.get('name', '?')} {('🇨' if flag else '')}",
-            f"├ 排名分: {api.fmt_num(p.get('rankedScore'))} | PP: {api.fmt_num(p.get('ppScore'))}",
-            f"├ 综合分: {api.fmt_num(p.get('generalScore'))} | 12K: {api.fmt_num(p.get('score12K'))}",
-            f"├ 世界第一: {p.get('worldsFirstCount', 0)} (PP {p.get('worldsFirstPPCount', 0)})",
-            f"├ 通关数: {p.get('universalPassCount', 0)} (总 {p.get('totalPasses', 0)})",
-            f"├ 平均精度: {api.fmt_pct(p.get('averageXacc'))}",
+            f"🏳️ 国家: **{country or '未知'}** {flag}",
+            f"📈 排名分: **{api.fmt_num(p.get('rankedScore'))}** | PP: **{api.fmt_num(p.get('ppScore'))}**",
+            f"📊 综合分: **{api.fmt_num(p.get('generalScore'))}** | 12K: **{api.fmt_num(p.get('score12K'))}**",
+            f"👑 世界第一: **{p.get('worldsFirstCount', 0)}** (PP {p.get('worldsFirstPPCount', 0)})",
+            f"🏁 通关: **{p.get('universalPassCount', 0)}** (总 {p.get('totalPasses', 0)})",
+            f"🎯 平均精度: **{api.fmt_pct(p.get('averageXacc'))}**",
         ]
         top = p.get("topDiff")
         if isinstance(top, dict) and top.get("name"):
-            lines.append(f"├ 最高难度: {top.get('name')}")
+            lines.append(f"🗻 最高难度: **{top.get('name')}**")
+        bio = p.get("bio")
+        if bio:
+            lines.append(f"📝 {bio[:100]}")
         created = p.get("createdAt", "")
         if created and len(created) >= 10:
-            lines.append(f"├ 注册: {created[:10]}")
-        return "\n".join(lines)
+            lines.append(f"📅 注册: {created[:10]}")
+        return await self._send_card(msg, f"👤 {pname} {flag}", "\n".join(lines),
+                                     img=pfp, footer=f"TUF 玩家 ID: {pid}")
 
     async def _rank(self, args, uid, msg):
         arg = " ".join(args) if args else None
@@ -324,15 +385,14 @@ class Plugin:
         series = await api.get_player_rank_history(pid)
         if not series:
             return f"{name} 暂无排名历史"
-        # 取最近若干条 + 最早/最高/最新
         recent = series[-10:]
-        lines = [f"📈 {name} 排名历史"]
+        lines = []
         for s in recent:
             date = s.get("date", "?")
             rr = s.get("rankedScoreRank")
             gr = s.get("generalScoreRank")
-            lines.append(f"  {date}: 排名分 #{rr} | 综合分 #{gr}")
-        return "\n".join(lines)
+            lines.append(f"`{date}` 排名分 **#{rr}** | 综合分 **#{gr}**")
+        return await self._send_card(msg, f"📈 {name} 排名历史", "\n".join(lines))
 
     async def _passesby(self, args, uid, msg):
         arg = " ".join(args) if args else None
@@ -342,14 +402,15 @@ class Plugin:
         passes = await api.get_player_passes(pid, limit=10)
         if not passes:
             return f"{name} 暂无通关记录"
-        lines = [f"🏆 {name} 最近通关（{len(passes)}）"]
+        lines = []
         for i, p in enumerate(passes, 1):
             acc = api.fmt_pct(p.get("accuracy"))
             speed = p.get("speed", 100)
             wf = "👑" if p.get("isWorldsFirst") else ""
             score = api.fmt_num(p.get("scoreV2"))
-            lines.append(f"{i}. acc {acc} | x{speed} | {score} {wf}")
-        return "\n".join(lines)
+            lines.append(f"`{i:02d}` acc **{acc}** | x{speed} | **{score}** {wf}")
+        return await self._send_card(msg, f"🏆 {name} 最近通关", "\n".join(lines),
+                                     footer=f"共 {len(passes)} 条")
 
     # ── 排行/统计 ─────────────────────────────────────────
     async def _lb(self, args, uid, msg):
@@ -362,11 +423,12 @@ class Plugin:
             r = await api.get_creators_leaderboard(page)
             if not r["results"]:
                 return "未获取到创作者排行"
-            lines = [f"🎨 创作者排行榜 (第 {page} 页)"]
+            lines = []
             for i, c in enumerate(r["results"][:10], 1):
                 rank = (i - 1) + (page - 1) * 10 + 1
-                lines.append(f"#{rank} {c.get('name', '?')}")
-            return "\n".join(lines)
+                lines.append(f"`#{rank:03d}` **{c.get('name', '?')}**")
+            return await self._send_card(msg, "🎨 TUF 创作者排行", "\n".join(lines),
+                                         footer=f"第 {page} 页")
         field_key = args[0].lower()
         field = api.resolve_rank_field(field_key)
         if not field:
@@ -376,80 +438,54 @@ class Plugin:
         if not r["results"]:
             return "未获取到排行榜"
         label = api._RANK_LABELS.get(field_key, field)
-        # KOOK 卡片输出
-        return await self._send_lb_card(r["results"], label, field, page, msg)
-
-    async def _send_lb_card(self, results, label, field, page, msg):
-        """排行榜 KOOK 卡片（v3 数据自带 name）。"""
-        from services.sender import send_raw_group, send_raw_user
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = []
-        for i, p in enumerate(results[:10], 1):
+        for i, p in enumerate(r["results"][:10], 1):
             rank = (i - 1) + (page - 1) * 10 + 1
             name = p.get("name") or f"玩家{p.get('id', '?')}"
             country = p.get("country") or ""
-            flag = f" [{country}]" if country and country != "XX" else ""
+            flag = _flag(country)
             val = p.get(field)
             if field == "averageXacc":
                 val_s = api.fmt_pct(val)
             else:
                 val_s = api.fmt_num(val)
-            m = medal.get(rank, f"#{rank}")
+            m = medal.get(rank, f"#{rank:02d}")
             lines.append(f"**{m} {name}**{flag}\n└ {label}: **{val_s}**")
-        card = [{
-            "type": "card",
-            "theme": "primary",
-            "size": "lg",
-            "modules": [
-                {"type": "header", "text": {"type": "plain-text",
-                                            "content": f"🏆 TUF {label} 排行"}},
-                {"type": "section", "text": {"type": "kmarkdown",
-                                             "content": "\n".join(lines)}},
-                {"type": "section", "text": {"type": "kmarkdown",
-                                             "content": f"第 {page} 页 · 展示 {len(results[:10])} 条"}},
-            ],
-        }]
-        try:
-            if msg.get("is_group"):
-                await send_raw_group(card, msg.get("chat_id"))
-            else:
-                await send_raw_user(card, msg.get("author"))
-            return None  # 已发送卡片
-        except Exception as e:
-            logger.error("[TUF] lb 卡片发送失败: %s", e)
-            # 回退纯文本
-            fallback = [f"#{i + (page - 1) * 10 + 1} {(p.get('name') or '?')} — "
-                        f"{api.fmt_pct(p.get(field)) if field == 'averageXacc' else api.fmt_num(p.get(field))}"
-                        for i, p in enumerate(results[:10])]
-            return "🏆 TUF " + label + " 排行\n" + "\n".join(fallback)
+        return await self._send_card(msg, f"🏆 TUF {label} 排行", "\n".join(lines),
+                                     footer=f"第 {page} 页")
 
     async def _stats(self, args, uid, msg):
         s = await api.get_statistics()
         if not s:
             return _err("获取统计失败")
         ov = s.get("overview", {})
-        lines = ["📊 TUF 全局统计"]
-        for k in ("players", "levels", "passes", "songs", "artists", "packs"):
+        lines = []
+        labels = {"players": "👥 玩家", "levels": "🎵 谱面", "passes": "🏁 通关",
+                  "songs": "🎶 歌曲", "artists": "🎨 艺术家", "packs": "📦 关卡包"}
+        for k, lbl in labels.items():
             if k in ov:
-                lines.append(f"  {k}: {api.fmt_num(ov[k])}")
-        # 难度分布
+                lines.append(f"{lbl}: **{api.fmt_num(ov[k])}**")
         diffs = s.get("difficulties", {})
-        if isinstance(diffs, dict):
-            items = list(diffs.items())[:8]
-            if items:
-                lines.append("  难度分布:")
-                for name, cnt in items:
-                    lines.append(f"    {name}: {api.fmt_num(cnt)}")
-        return "\n".join(lines) if len(lines) > 1 else _err("统计为空")
+        if isinstance(diffs, dict) and diffs:
+            items = list(diffs.items())[:6]
+            lines.append("")
+            lines.append("**难度分布**")
+            for name, cnt in items:
+                lines.append(f"`{name}` {api.fmt_num(cnt)}")
+        return await self._send_card(msg, "📊 TUF 全局统计", "\n".join(lines))
 
     async def _countries(self, args, uid, msg):
         stats = await api.get_country_stats()
         if not stats:
             return _err("获取国家分布失败")
-        lines = ["🌍 玩家国家分布 Top10"]
-        for c in stats[:10]:
-            lines.append(f"  {c.get('country', '?')}: {api.fmt_num(c.get('playerCount'))}")
-        return "\n".join(lines)
+        lines = []
+        for i, c in enumerate(stats[:10], 1):
+            cc = c.get("country", "?")
+            cnt = api.fmt_num(c.get("playerCount"))
+            flag = _flag(cc)
+            lines.append(f"`{i:02d}` {cc} {flag} — **{cnt}**")
+        return await self._send_card(msg, "🌍 玩家国家分布 Top10", "\n".join(lines))
 
     # ── 资料 ──────────────────────────────────────────────
     async def _song(self, args, uid, msg):
@@ -458,20 +494,21 @@ class Plugin:
         songs = await api.search_songs(" ".join(args))
         if not songs:
             return f"😢 未找到歌曲: {' '.join(args)}"
-        lines = ["🎵 歌曲搜索结果"]
+        lines = []
         for s in songs[:5]:
             artists = s.get("artists", [])
             anames = [a.get("name", "") for a in artists if isinstance(a, dict)] if artists else []
-            lines.append(f"  {s.get('name', '?')} — {'、'.join(anames) if anames else '?'}")
-        return "\n".join(lines)
+            lines.append(f"🎶 **{s.get('name', '?')}**\n└ {'、'.join(anames) if anames else '?'}")
+        return await self._send_card(msg, "🎵 歌曲搜索结果", "\n".join(lines))
 
     async def _packs(self, args, uid, msg):
         page = int(args[0]) if args and args[0].isdigit() else 1
         r = await api.get_packs(page, limit=10)
         if not r["packs"]:
             return "未获取到关卡包"
-        lines = [f"📦 关卡包 (第 {page} 页, 共 {r['total']})"]
+        lines = []
         for i, pk in enumerate(r["packs"][:10], 1):
             rank = (i - 1) + (page - 1) * 10 + 1
-            lines.append(f"{rank}. {pk.get('name', '?')} ({pk.get('levelsCount', pk.get('levelCount', '?'))} 关)")
-        return "\n".join(lines)
+            lines.append(f"`{rank:02d}` **{pk.get('name', '?')}** ({pk.get('levelsCount', pk.get('levelCount', '?'))} 关)")
+        return await self._send_card(msg, "📦 关卡包", "\n".join(lines),
+                                     footer=f"第 {page} 页 · 共 {r['total']}")

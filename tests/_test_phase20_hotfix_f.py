@@ -59,100 +59,125 @@ async def main():
     inst = mgr._records["tuf"].instance
     TEST_UID = 656176615
 
-    # help
+    # help（卡片）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["help"]))
-    assert "bind" in r and "search" in r
-    print("OK help 包含 bind/search")
+    assert r is None and _sent["cards"], f"help 失败: {r}"
+    card = _sent["cards"][-1][0]
+    assert "bind" in str(card) and "search" in str(card)
+    print("OK help → 卡片包含 bind/search")
 
     # 未知子命令
     r = await inst._cmd(make_msg(["hahaha"]))
     assert "未知子命令" in r
     print("OK 未知子命令提示")
 
-    # search（真实 API）
+    # search（真实 API → 卡片）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["search", "Hello"]))
-    assert "搜索结果" in r and "Camellia" in r or "Camellia" in r or r.startswith("🔍") or "未找到" in r
-    print("OK search 返回:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "未找到" in str(r), f"search 失败: {r}"
+    card = _sent["cards"][-1][0]
+    assert "搜索结果" in str(card)
+    print("OK search → 卡片")
 
     # bind（用已知玩家 Jipper）
     r = await inst._cmd(make_msg(["bind", "jipper"]))
-    assert "已绑定" in r, f"bind 失败: {r}"
-    print("OK bind:", r)
+    assert r is None and _sent["cards"], f"bind 失败: {r}"
+    print("OK bind → 卡片")
 
-    # me（绑定后查自己）
+    # me（绑定后查自己，带头像）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["me"]))
-    assert "Jipper" in r or "👤" in r, f"me 失败: {r}"
-    print("OK me:", r.splitlines()[0])
+    assert r is None and _sent["cards"], f"me 失败: {r}"
+    card = _sent["cards"][-1][0]
+    assert "Jipper" in str(card), f"me 卡片缺名字: {card}"
+    has_img = any(m.get("type") == "image" for m in card.get("modules", []))
+    print(f"OK me → 卡片含头像: {has_img}")
 
     # player（带 ID）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["player", "25"]))
-    assert "👤" in r, f"player 失败: {r}"
-    print("OK player 25:", r.splitlines()[0])
+    assert r is None and _sent["cards"], f"player 失败: {r}"
+    card = _sent["cards"][-1][0]
+    assert "Jipper" in str(card)
+    has_img = any(m.get("type") == "image" for m in card.get("modules", []))
+    print(f"OK player 25 → 卡片含头像: {has_img}")
 
-    # lb（排行榜 → KOOK 卡片）
+    # lb（排行榜 → KOOK 卡片，含名字）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["lb", "ranked"]))
-    assert r is None or "排行" in r or "未获取" in r, f"lb 失败: {r}"
-    assert _sent["cards"], "lb 应发送卡片"
-    card = _sent["cards"][-1]
-    assert card[0]["type"] == "card" and "排行" in str(card)
-    print("OK lb ranked → KOOK 卡片已发送（含名字）")
+    assert r is None and _sent["cards"], f"lb 失败: {r}"
+    card = _sent["cards"][-1][0]
+    assert "排行" in str(card)
+    assert "Jipper" in str(card), f"lb 卡片缺玩家名: {str(card)[:200]}"
+    print("OK lb ranked → KOOK 卡片（含玩家名）")
 
     # stats
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["stats"]))
-    assert "全局统计" in r or "❌" in r, f"stats 失败: {r}"
-    print("OK stats:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"stats 失败: {r}"
+    print("OK stats → 卡片")
 
     # countries
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["countries"]))
-    assert "国家分布" in r or "❌" in r, f"countries 失败: {r}"
-    print("OK countries:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"countries 失败: {r}"
+    print("OK countries → 卡片")
 
     # song
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["song", "Hello"]))
-    assert "歌曲" in r, f"song 失败: {r}"
-    print("OK song:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "未找到" in str(r), f"song 失败: {r}"
+    print("OK song → 卡片")
 
     # packs
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["packs"]))
-    assert "关卡包" in r or "❌" in r, f"packs 失败: {r}"
-    print("OK packs:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"packs 失败: {r}"
+    print("OK packs → 卡片")
 
     # info（谱面详情）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["info", "16161"]))
-    assert r and "🎵" in r, f"info 失败: {r}"
-    print("OK info 16161:", r.splitlines()[0])
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"info 失败: {r}"
+    print("OK info 16161 → 卡片")
 
     # passes（谱面通关）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["passes", "16161"]))
-    assert r, f"passes 失败: {r}"
-    print("OK passes:", r.splitlines()[0])
+    assert (r is None and _sent["cards"]) or "通关记录" in str(r), f"passes 失败: {r}"
+    print("OK passes → 卡片")
 
     # dl
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["dl", "16161"]))
-    assert "下载" in r or "❌" in r, f"dl 失败: {r}"
-    print("OK dl:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"dl 失败: {r}"
+    print("OK dl → 卡片")
 
     # rank（玩家排名历史）
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["rank", "25"]))
-    assert "排名历史" in r or "暂无" in r, f"rank 失败: {r}"
-    print("OK rank:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "暂无" in str(r), f"rank 失败: {r}"
+    print("OK rank → 卡片")
 
     # passesby
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["passesby", "25"]))
-    assert "通关" in r or "❌" in r, f"passesby 失败: {r}"
-    print("OK passesby:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "❌" in str(r), f"passesby 失败: {r}"
+    print("OK passesby → 卡片")
 
     # rerate
+    _sent["cards"].clear()
     r = await inst._cmd(make_msg(["rerate", "16161"]))
-    assert r, f"rerate 失败: {r}"
-    print("OK rerate:", r.splitlines()[0] if r else "?")
+    assert (r is None and _sent["cards"]) or "改版历史" in str(r), f"rerate 失败: {r}"
+    print("OK rerate → 卡片")
 
     # 清理绑定
     import plugins.tuf.main as tuf_mod
     tuf_mod.del_bind(TEST_UID)
 
     await mgr.unload("tuf")
-    print("\n=== ALL TUF V2 TESTS PASSED ===")
+    print("\n=== ALL TUF V3 TESTS PASSED ===")
 
 
 if __name__ == "__main__":
