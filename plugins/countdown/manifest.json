@@ -1,0 +1,11 @@
+{
+  "name": "countdown",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "倒计时：.countdown add/list/del",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}

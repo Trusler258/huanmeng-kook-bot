@@ -1,0 +1,11 @@
+{
+  "name": "nasa",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "NASA 每日一图：.nasa",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}

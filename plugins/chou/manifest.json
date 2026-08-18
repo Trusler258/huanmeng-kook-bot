@@ -1,0 +1,11 @@
+{
+  "name": "chou",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "随机抽取：.抽 A B C",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}

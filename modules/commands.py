@@ -3460,8 +3460,6 @@ COMMAND_MAP: dict[str, callable] = {
     "search_web":  cmd_search,  # FC 工具名别名
     "s":          cmd_search,  # 兼容 lang.toml 帮助文本中的 .s 用法
     "read":       cmd_read,
-    "whois":      cmd_whois,   # ★ 域名 WHOIS 查询
-    "域名":        cmd_whois,
     "kook_user_id": cmd_kook_user_id,    # ★ 查询 @用户的 KOOK ID
     "kuid":         cmd_kook_user_id,    # 短别名
     "kook_channel_id": cmd_kook_channel_id,  # ★ 查询当前频道 ID
@@ -3469,8 +3467,6 @@ COMMAND_MAP: dict[str, callable] = {
     "write_code":  cmd_write_code,  # ★ 代码生成
     "ignore":      cmd_ignore,      # ★ 忽略用户
     "unignore":    cmd_unignore,    # ★ 解除忽略
-    "天气":       cmd_weather,
-    "weather":    cmd_weather,
     "reload":     cmd_reload,
     "update":     _cmd_update,
     "upd":        _cmd_update,    # 短别名
@@ -3497,9 +3493,6 @@ COMMAND_MAP: dict[str, callable] = {
     "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
-    "eq":         cmd_eq,
-    "地震":       cmd_eq,
-    "luck":       cmd_luck,
     "op":         cmd_op,        # ★ OP 权限管理
     "persona":    cmd_persona,   # ★ 私聊人格
     "人格":       cmd_persona,
@@ -3509,21 +3502,15 @@ COMMAND_MAP: dict[str, callable] = {
     "叙事":       cmd_hanxu,
     "remind":     cmd_remind,
     "提醒":       cmd_remind,
-    "抽":         cmd_chou,
     "preset":     cmd_preset,
     "analyze":    cmd_analyze,
     "owner":      cmd_owner,
     "memory":     cmd_memory,
-    "nasa":       cmd_nasa,
     "pgr":        cmd_pgr,
     "wzq":        cmd_wzq,
     "五子棋":     cmd_wzq,
     "xq":         cmd_xq,
     "象棋":       cmd_xq,
-    "tr":         cmd_translate,
-    "翻译":       cmd_translate,
-    "countdown":  cmd_countdown,
-    "倒计时":     cmd_countdown,
     "wdsj":       cmd_wdsj,
     "balance":    cmd_balance,
     "cost":       cmd_cost,

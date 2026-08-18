@@ -1,0 +1,11 @@
+{
+  "name": "whois",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "域名 WHOIS 查询：.whois <域名>",
+  "author": "huanmeng",
+  "dependencies": [],
+  "permissions": ["message.read", "message.send"],
+  "config": {}
+}
