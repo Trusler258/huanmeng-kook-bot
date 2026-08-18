@@ -232,7 +232,11 @@ def _walk_strings(obj, depth: int = 0, out: Optional[list[str]] = None) -> list[
     if isinstance(obj, (int, float, bool)):
         return out
     if isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
+            # 跳过作者头像字段：Message.view 响应里 author.avatar 是头像 URL，
+            # 若被误当图片，会导致“引用取图”拿到被引用消息作者的头像而不是图片附件。
+            if k == "avatar":
+                continue
             _walk_strings(v, depth + 1, out)
         return out
     if isinstance(obj, (list, tuple, set)):
