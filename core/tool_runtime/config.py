@@ -43,6 +43,9 @@ ALLOWED_TOOLS: set[str] = {
     "weather", "search_web", "earthquake", "read_url", "wdsj", "wdsj_query",
     "wzq", "draw_card", "chess", "calc", "agent_think", "pgr", "whois",
     "write_code",
+    # run_code 沙箱执行：仅白名单放行，真正的"管理员直接放行 / 非管理员审批"
+    # 控制在工具内部（core.tools._run_code_tool），避免 HIGH 风险默认 DENY 挡掉管理员。
+    "run_code",
 }
 
 
