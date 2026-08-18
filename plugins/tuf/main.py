@@ -370,7 +370,10 @@ class Plugin:
         pname = p.get("name", "?")
         country = p.get("country", "")
         flag = _flag(country)
+        # Discord CDN 在国内不可访问，KOOK 校验图片时会 40000 → 跳过该域的头像
         pfp = p.get("pfp")
+        if pfp and ("discordapp.com" in pfp or "discord.com" in pfp):
+            pfp = None
         lines = [
             f"🏳️ 国家: **{country or '未知'}** {flag}",
             f"📈 排名分: **{api.fmt_num(p.get('rankedScore'))}** | PP: **{api.fmt_num(p.get('ppScore'))}**",
