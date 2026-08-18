@@ -137,6 +137,14 @@ class EventDispatcher:
         # ── 提取消息内容 ──
         content = msg.content or "" if hasattr(msg, 'content') else ""
 
+        # ══ 指令前缀转义归一化：KOOK KMarkdown 会把行首 `.` 转义为 `\.`/`\\.`，
+        #    用户发 `.luck` 可能收到 `\.luck`/`\\.luck`，导致指令前缀识别失败。
+        #    此处还原行首转义点（去掉反斜杠、保留点），后续所有环节保持一致。
+        if content and content.startswith("\\"):
+            _m = re.match(r'^\\+\.', content)
+            if _m:
+                content = content[len(_m.group(0)) - 1:]
+
         # 检测 @机器人
         is_mentioned = False
         # 方法1: 检查 msg.mention 列表

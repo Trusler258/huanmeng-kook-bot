@@ -251,6 +251,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------指令拦截------
     # KOOK 统一前缀: . 触发指令（管理员权限在各 handler 内部用 cfg.is_admin 校验）
     import re as _re
+    # KOOK KMarkdown 转义点归一化（用户发 `.luck` 可能收到 `\.luck`/`\\.luck`）
+    _m = _re.match(r'^\\+\.', msg_content)
+    if _m:
+        msg_content = msg_content[len(_m.group(0)) - 1:]
     if msg_content.startswith("."):
         # 纯标点/省略号（.、...、。。、？？等）直接忽略
         if _re.match(r'^[.。．｡?？！\uff01~]+$', msg_content):
