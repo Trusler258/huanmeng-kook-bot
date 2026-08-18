@@ -125,21 +125,25 @@ class Plugin:
     async def _send_card(self, msg, header: str, md: str,
                          img: str | None = None, theme: str = "primary",
                          footer: str | None = None) -> None | str:
-        """发送 KOOK 卡片，返回 None（成功）或回退文本（失败）。"""
+        """发送 KOOK 卡片，返回 None（成功）或回退文本（失败）。
+
+        头像用 section 的 accessory（右侧小圆图），避免 image-group 渲染大图。
+        """
         from services.sender import send_raw_group, send_raw_user
         modules = []
         if header:
             modules.append({"type": "header",
                             "text": {"type": "plain-text", "content": header}})
+        main_section = {"type": "section",
+                        "text": {"type": "kmarkdown", "content": md}}
         if img:
-            # KOOK 卡片没有顶层 image 模块，头像必须用 image-group + elements
-            modules.append({
-                "type": "image-group",
-                "elements": [{"type": "image", "src": img,
-                              "alt": "", "circle": True, "size": "sm"}],
-            })
-        modules.append({"type": "section",
-                        "text": {"type": "kmarkdown", "content": md}})
+            # 头像作为右侧小缩略图（section accessory），文本在左侧
+            main_section["mode"] = "right"
+            main_section["accessory"] = {
+                "type": "image", "src": img,
+                "alt": "", "circle": True, "size": "sm",
+            }
+        modules.append(main_section)
         if footer:
             modules.append({"type": "context",
                             "elements": [{"type": "plain-text", "content": footer}]})
