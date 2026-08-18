@@ -147,8 +147,12 @@ def resolve_rank_field(name: str) -> str | None:
 
 
 async def get_leaderboard(field: str = "rankedScore", page: int = 1, limit: int = 10) -> dict:
-    """排行榜。field 见 _RANK_FIELDS。"""
-    code, data = await _get("/v2/database/leaderboard", {
+    """排行榜。field 见 _RANK_FIELDS。
+
+    用 v3 端点（/v3/players/leaderboard），results 自带 name/country，
+    避免 v2 只有 id 无名字的问题。
+    """
+    code, data = await _get("/v3/players/leaderboard", {
         "field": field, "page": page, "limit": limit,
     })
     if code != 200 or not data:

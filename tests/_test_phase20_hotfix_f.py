@@ -13,6 +13,26 @@ async def _fake_call_llm(*a, **kw):
 _FAKE_LLM.call_llm = _fake_call_llm
 sys.modules.setdefault("services.llm", _FAKE_LLM)
 
+# mock services.sender（测试环境无 khl SDK）：记录卡片调用
+_FAKE_SENDER = types.ModuleType("services.sender")
+_sent = {"cards": []}
+async def _fake_send_raw_group(obj, chat_id):
+    _sent["cards"].append(obj)
+async def _fake_send_raw_user(obj, user_id):
+    _sent["cards"].append(obj)
+async def _fake_send_group_msg(text, group_id):
+    pass
+async def _fake_send_private_msg(text, user_id):
+    pass
+async def _fake_send_by_chat_type(text, chat_id, is_group, user_id=None):
+    pass
+_FAKE_SENDER.send_raw_group = _fake_send_raw_group
+_FAKE_SENDER.send_raw_user = _fake_send_raw_user
+_FAKE_SENDER.send_group_msg = _fake_send_group_msg
+_FAKE_SENDER.send_private_msg = _fake_send_private_msg
+_FAKE_SENDER.send_by_chat_type = _fake_send_by_chat_type
+sys.modules.setdefault("services.sender", _FAKE_SENDER)
+
 
 def make_msg(args, author=656176615, chat_id=12345, is_group=True, sender="Tester"):
     return {
@@ -69,10 +89,13 @@ async def main():
     assert "👤" in r, f"player 失败: {r}"
     print("OK player 25:", r.splitlines()[0])
 
-    # lb（排行榜）
+    # lb（排行榜 → KOOK 卡片）
     r = await inst._cmd(make_msg(["lb", "ranked"]))
-    assert "排行" in r or "未获取" in r, f"lb 失败: {r}"
-    print("OK lb ranked:", r.splitlines()[0] if r else "?")
+    assert r is None or "排行" in r or "未获取" in r, f"lb 失败: {r}"
+    assert _sent["cards"], "lb 应发送卡片"
+    card = _sent["cards"][-1]
+    assert card[0]["type"] == "card" and "排行" in str(card)
+    print("OK lb ranked → KOOK 卡片已发送（含名字）")
 
     # stats
     r = await inst._cmd(make_msg(["stats"]))

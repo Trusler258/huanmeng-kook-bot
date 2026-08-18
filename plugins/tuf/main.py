@@ -376,16 +376,52 @@ class Plugin:
         if not r["results"]:
             return "未获取到排行榜"
         label = api._RANK_LABELS.get(field_key, field)
-        lines = [f"🏆 TUF {label} 排行 (第 {page} 页)"]
-        for i, p in enumerate(r["results"][:10], 1):
+        # KOOK 卡片输出
+        return await self._send_lb_card(r["results"], label, field, page, msg)
+
+    async def _send_lb_card(self, results, label, field, page, msg):
+        """排行榜 KOOK 卡片（v3 数据自带 name）。"""
+        from services.sender import send_raw_group, send_raw_user
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = []
+        for i, p in enumerate(results[:10], 1):
             rank = (i - 1) + (page - 1) * 10 + 1
+            name = p.get("name") or f"玩家{p.get('id', '?')}"
+            country = p.get("country") or ""
+            flag = f" [{country}]" if country and country != "XX" else ""
             val = p.get(field)
             if field == "averageXacc":
                 val_s = api.fmt_pct(val)
             else:
                 val_s = api.fmt_num(val)
-            lines.append(f"#{rank} {p.get('name', '?')} — {val_s}")
-        return "\n".join(lines)
+            m = medal.get(rank, f"#{rank}")
+            lines.append(f"**{m} {name}**{flag}\n└ {label}: **{val_s}**")
+        card = [{
+            "type": "card",
+            "theme": "primary",
+            "size": "lg",
+            "modules": [
+                {"type": "header", "text": {"type": "plain-text",
+                                            "content": f"🏆 TUF {label} 排行"}},
+                {"type": "section", "text": {"type": "kmarkdown",
+                                             "content": "\n".join(lines)}},
+                {"type": "section", "text": {"type": "kmarkdown",
+                                             "content": f"第 {page} 页 · 展示 {len(results[:10])} 条"}},
+            ],
+        }]
+        try:
+            if msg.get("is_group"):
+                await send_raw_group(card, msg.get("chat_id"))
+            else:
+                await send_raw_user(card, msg.get("author"))
+            return None  # 已发送卡片
+        except Exception as e:
+            logger.error("[TUF] lb 卡片发送失败: %s", e)
+            # 回退纯文本
+            fallback = [f"#{i + (page - 1) * 10 + 1} {(p.get('name') or '?')} — "
+                        f"{api.fmt_pct(p.get(field)) if field == 'averageXacc' else api.fmt_num(p.get(field))}"
+                        for i, p in enumerate(results[:10])]
+            return "🏆 TUF " + label + " 排行\n" + "\n".join(fallback)
 
     async def _stats(self, args, uid, msg):
         s = await api.get_statistics()
