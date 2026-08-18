@@ -220,6 +220,26 @@ async def _get_blob_sha(rel_path: str, commit_sha: str) -> str:
         return ""
 
 
+def compute_local_blob(root: Path, rel_path: str) -> str:
+    """计算本地文件的 git blob SHA（纯本地，不依赖网络）。
+
+    blob = SHA1("blob <字节数>\\0<内容>")，与 GitHub 仓库逐字节一致时
+    与远端 _get_blob_sha 返回值相等。用于检测本地文件是否被外部改动
+    （如 scp 覆盖 / 手动编辑），从而决定走 patch 还是全量对齐。
+    """
+    import hashlib
+    fpath = root / rel_path
+    if not fpath.exists():
+        return ""
+    try:
+        data = fpath.read_bytes()
+        return hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\x00" + data
+        ).hexdigest()
+    except Exception:
+        return ""
+
+
 def _read_local(root: Path, rel_path: str) -> list[str]:
     """读取本地文件，返回行列表 (保留换行符)"""
     fpath = root / rel_path

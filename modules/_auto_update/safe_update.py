@@ -575,6 +575,19 @@ async def _apply_production(
         if not patch_text:
             continue
 
+        # ★ 本地 blob 自检：若本地文件与 state 记录的 blob 不一致
+        # （被 scp/手动编辑等外部改动过），patch 上下文必然对不上。
+        # 直接走全量下载对齐 HEAD，而不是 patch 失败 → 整体回滚。
+        state_blob = _eng.get_file_blob(state, rel) if hasattr(_eng, "get_file_blob") else ""
+        if state_blob and _eng.compute_local_blob(root, rel) != state_blob:
+            logger.warning("文件 %s 本地 blob 与记录不一致（外部改动），全量对齐 HEAD", rel)
+            if await _download_full(root, item, state, head):
+                ok += 1
+                continue
+            # 全量下载失败（如 raw 被墙）→ 提示手动同步，不静默回滚
+            failed.append(rel)
+            continue
+
         hunks = patcher.parse_patch(patch_text)
         if not hunks:
             # 有 patch 文本却解析不出 hunk（二进制/重命名等）：非新增非删除，
