@@ -167,6 +167,18 @@ _HMP_URL_RE = re.compile(r"https?://[^\s\"<>]+?\.hmp(?:\?[^\s\"<>]*)?", re.I)
 _FILE_TAG_RE = re.compile(r"\(file\)\s*([^\s\"<>]+)", re.I)
 
 
+def is_hmp_url(text: str) -> bool:
+    """判断给定文本是否一个 .hmp 直链（http/https 且以 .hmp 结尾，允许 query 参数）。
+
+    供 `.plugin -import <url>` 识别用户直接粘贴的下载直链，与聊天附件/引用区分。
+    """
+    s = (text or "").strip()
+    return bool(_HMP_URL_RE.fullmatch(s)) or (
+        s.lower().startswith(("http://", "https://"))
+        and s.lower().split("?", 1)[0].endswith(HMP_EXT)
+    )
+
+
 def _walk_strings(obj, depth: int = 0, out: Optional[list[str]] = None) -> list[str]:
     """递归收集对象内的所有字符串（去重保序），深度受限避免递归爆炸。
 

@@ -3209,6 +3209,19 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
                 return "plugins/_down/ 还没有下载的 .hmp"
             return "已下载的 .hmp（在 plugins/_down/）：\n" + "\n".join("  " + n for n in names)
 
+        # -import <url>：直链导入 .hmp（下载 → 解包 → 加载，一步到位）
+        if "import" in flags or "url" in flags:
+            if not non_flags:
+                return "用法：`.plugin -import <直链URL>`\n示例：`.plugin -import https://example.com/xxx.hmp`"
+            raw_url = " ".join(non_flags)
+            if not PS.is_hmp_url(raw_url):
+                return ("❌ 不是有效的 .hmp 直链（需 http/https 且以 .hmp 结尾）。\n"
+                        "若你是引用聊天里的文件，请用 `.plugin -down -load`")
+            ok, msg = PS.download_hmp(raw_url)
+            if not ok:
+                return "❌ " + msg
+            return await _plugin_load_hmp(PS.local_filename_for(raw_url))
+
         # -pack <本地插件名>：打包并把 .hmp 发到当前聊天
         if "pack" in flags:
             if not non_flags:
@@ -3252,6 +3265,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
 
         return ("CLI 用法：\n"
                 "`.plugin -pack <本地插件名>`  打包为 .hmp\n"
+                "`.plugin -import <直链URL>`  直链导入 .hmp（下载+解包+加载）\n"
                 "`.plugin -down`   引用聊天中的 .hmp 下载保存到 _down\n"
                 "`.plugin -down -load` 下载并加载\n"
                 "`.plugin -load <xxx.hmp>` 解包+加载 _down 内的插件\n"
@@ -3297,7 +3311,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
             "`.plugin enable <名字>`  启用\n"
             "`.plugin disable <名字>` 禁用\n"
             "`.plugin unload <名字>`  卸载（需二次确认）\n"
-            "`.plugin -pack/-down/-load` 插件打包/下载/加载")
+            "`.plugin -pack/-import/-down/-load` 插件打包/导入/下载/加载")
 
 
 async def _plugin_load_hmp(fname: str) -> str:
