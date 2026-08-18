@@ -265,6 +265,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message, raw_event=raw_event)
             return
 
+    # 消息不以 . 开头，但文本中嵌入了已注册指令（如"你能不能执行 .plugin status"）
+    # → 提取并真实执行，避免把命令意图交给 LLM 产生"假装执行"的幻觉
+    from modules.commands import _extract_embedded_command
+    embedded = _extract_embedded_command(msg_content)
+    if embedded:
+        full_cmd = embedded
+        logger.info("指令拦截(嵌入): '%s' from=%s", full_cmd[:40], sender_name)
+        await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message, raw_event=raw_event)
+        return
+
     if msg_type != "文字":
         logger.debug("非文字消息(type=%s)，不进入回复管道", msg_type)
         return

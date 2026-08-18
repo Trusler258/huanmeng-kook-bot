@@ -3602,6 +3602,34 @@ def _find_plugin_command(cmd_name: str):
     return None
 
 
+def _is_registered_command(cmd: str) -> bool:
+    """判断 cmd（不带点）是否为已注册指令（静态 COMMAND_MAP 或插件动态命令）。"""
+    if not cmd:
+        return False
+    if cmd in COMMAND_MAP:
+        return True
+    return _find_plugin_command(cmd) is not None
+
+
+def _extract_embedded_command(text: str):
+    """从消息文本中提取嵌入的已注册指令片段。
+
+    用户可能发「执行 .plugin status」「能不能运行.luck」等，指令不在行首，
+    若直接交给 LLM 会产生"假装执行"的幻觉。此处扫描文本中的 `.cmd ...`，
+    仅当命令名已注册时返回从点开始的完整命令文本；URL 里的点（如 .com）
+    因命令未注册会自动跳过。找不到返回 None。
+    """
+    if not text:
+        return None
+    idx = text.find(".")
+    while idx != -1:
+        m = re.match(r'\.([A-Za-z\u4e00-\u9fa5][^\s]*)(\s.*)?$', text[idx:])
+        if m and _is_registered_command(m.group(1).lower()):
+            return text[idx:]
+        idx = text.find(".", idx + 1)
+    return None
+
+
 async def handle_command(
     text: str,
     user_id: int,
