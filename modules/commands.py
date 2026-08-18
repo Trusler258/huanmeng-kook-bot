@@ -3596,6 +3596,15 @@ async def handle_command(
 
     # 插件动态命令：handler 是 async (msg) -> str|None，构造消息对象直接调用
     if plugin_handler is not None:
+        # 透传引用消息 ID，供插件按需拉取被引用消息内容（如引用图片取 URL）
+        quote_id = ""
+        try:
+            quote = getattr(raw_event, "quote", None)
+            qid = getattr(quote, "id", None) if quote is not None else None
+            if qid:
+                quote_id = str(qid)
+        except Exception:
+            pass
         msg = _PluginMsg(
             args=args,
             text=raw_message,
@@ -3603,6 +3612,7 @@ async def handle_command(
             sender=sender_name,
             is_group=is_group,
             chat_id=group_id,
+            quote_id=quote_id,
         )
         try:
             result = await plugin_handler(msg)
