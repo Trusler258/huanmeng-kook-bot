@@ -803,6 +803,73 @@ def _is_promise_only_reply(content: str | None) -> bool:
         return False
     return any(m in text for m in _PROMISE_MARKERS)
 
+def _calls_to_tool_calls(calls: list) -> list[dict]:
+    """把 LLM 回复 JSON 里的 calls 数组转为原生 tool_calls 格式（触发 FC 执行）。
+
+    兼容多种 calls 条目形态：
+    - {"tool": "run_code", "language": "python", "code": "..."}   （参数平铺，插件工具常见）
+    - {"name": "run_code", "arguments": {...}}                    （OpenAI 风格）
+    - {"name": "run_code", "args": "{...}"}                       （历史字符串风格）
+    - {"name": ".run", "args": "..."}                             （历史指令风格）
+    """
+    out: list[dict] = []
+    for i, c in enumerate(calls):
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or c.get("tool") or c.get("function") or "").strip()
+        # 兼容历史指令风格（name 形如 ".run" / "~run"），去掉前缀点
+        name = name.lstrip(".~ ")
+        if not name:
+            continue
+        arguments = c.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except Exception:
+                arguments = {"args": arguments}
+        if not isinstance(arguments, dict):
+            # 兼容平铺参数（tool/language/code...）与历史 args 字段
+            _skip = {"name", "tool", "id", "type", "function", "arguments"}
+            _flat = {k: v for k, v in c.items() if k not in _skip}
+            if list(_flat.keys()) == ["args"] and isinstance(_flat["args"], dict):
+                arguments = _flat["args"]
+            elif _flat:
+                arguments = _flat
+            else:
+                arguments = {}
+        out.append({
+            "id": c.get("id") or f"call_{i}",
+            "name": name,
+            "arguments": arguments,
+        })
+    return out
+
+
+def _calls_from_content(content: str | None) -> list[dict]:
+    """从模型返回的 content 中提取 calls 数组并转为原生 tool_calls。
+
+    无论 content 是纯 JSON 还是前后带杂质的混合文本，都先截取 { ... } 再解析；
+    无 calls 时返回空列表。
+    """
+    if not content or not content.strip():
+        return []
+    raw = content.strip().lstrip("\ufeff")
+    raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\s*```$', '', raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start:end + 1]
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    calls = data.get("calls") if isinstance(data, dict) else None
+    if not isinstance(calls, list) or not calls:
+        return []
+    return _calls_to_tool_calls(calls)
+
+
 async def generate_multi_reply_with_tools(
     msg_history: list[str],
     speaker_name: str,
@@ -854,62 +921,67 @@ async def generate_multi_reply_with_tools(
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
         if not result.tool_calls:
-            if not (result.content or "").strip():
-                if round_idx == 0:
-                    logger.warning("LLM 返回空内容，重试...")
-                    continue
-                # 第二轮仍空 → json_mode 兜底（FC 路径未开 json_mode，这里补一次）
-                logger.warning("LLM 连续返回空内容，用 json_mode 兜底...")
-                json_raw = await call_llm(
-                    reply_model, msgs,
-                    max_tokens=min(max_tokens or 800, 800),
-                    temperature=0.3, json_mode=True,
-                )
-                if json_raw and json_raw.strip():
-                    result.content = json_raw
-                    logger.info("json_mode 兜底成功: %s...", json_raw[:80])
-                else:
-                    logger.error("json_mode 兜底仍失败，放弃")
-                    break
-            # 非 JSON 且首次 → 强制 json_mode 重试一次
-            raw = (result.content or "").strip()
-            if round_idx == 0 and raw and not raw.startswith("{"):
-                # 先尝试从混合文本中提取 JSON（LLM 有时会先吐自然语言再吐 JSON）
-                json_pos = raw.find('{"replies"') if '"replies"' in raw else raw.find('{"')
-                if json_pos >= 0:
-                    extracted = raw[json_pos:]
-                    logger.info("从混合文本提取 JSON: pos=%d", json_pos)
-                    result.content = extracted
-                    # 从 JSON 解析 calls 转为原生 tool_calls 格式（触发FC循环执行）
-                    try:
-                        parsed = json.loads(extracted)
-                        calls = parsed.get("calls", [])
-                        if calls and isinstance(calls, list):
-                            result.tool_calls = [
-                                {"id": f"call_{i}", "name": c.get("name", ""), "arguments": {"args": c.get("args", "")}}
-                                for i, c in enumerate(calls)
-                            ]
+            # ★ 兼容：模型可能不走原生 FC，而是在 JSON content 里带 calls 数组
+            #   （如 run_code 等工具）。无论 content 是否以 { 开头，都先尝试提取
+            #   calls 并转成原生 tool_calls，触发下方 FC 执行——否则工具调用会被
+            #   静默丢弃（日志表现为 tool_calls=0、只回复提示语而不执行）。
+            _json_tcs = _calls_from_content(result.content)
+            if _json_tcs:
+                result.tool_calls = _json_tcs
+                logger.info("从 JSON content 提取到 %d 个工具调用（非原生 FC）", len(result.tool_calls))
+            else:
+                # ── 无工具调用 → 原有兜底：空内容重试 / json_mode 修复 ──
+                if not (result.content or "").strip():
+                    if round_idx == 0:
+                        logger.warning("LLM 返回空内容，重试...")
+                        continue
+                    # 第二轮仍空 → json_mode 兜底（FC 路径未开 json_mode，这里补一次）
+                    logger.warning("LLM 连续返回空内容，用 json_mode 兜底...")
+                    json_raw = await call_llm(
+                        reply_model, msgs,
+                        max_tokens=min(max_tokens or 800, 800),
+                        temperature=0.3, json_mode=True,
+                    )
+                    if json_raw and json_raw.strip():
+                        result.content = json_raw
+                        logger.info("json_mode 兜底成功: %s...", json_raw[:80])
+                    else:
+                        logger.error("json_mode 兜底仍失败，放弃")
+                        break
+                # 非 JSON 且首次 → 强制 json_mode 重试一次
+                raw = (result.content or "").strip()
+                if round_idx == 0 and raw and not raw.startswith("{"):
+                    # 先尝试从混合文本中提取 JSON（LLM 有时会先吐自然语言再吐 JSON）
+                    json_pos = raw.find('{"replies"') if '"replies"' in raw else raw.find('{"')
+                    if json_pos >= 0:
+                        extracted = raw[json_pos:]
+                        logger.info("从混合文本提取 JSON: pos=%d", json_pos)
+                        result.content = extracted
+                        # 提取出的 JSON 可能带 calls → 再尝试一次（防御）
+                        _mix_tcs = _calls_from_content(extracted)
+                        if _mix_tcs:
+                            result.tool_calls = _mix_tcs
                             logger.info("混合文本中提取到 %d 个工具调用", len(result.tool_calls))
-                    except Exception:
-                        pass
-                    # 提取成功但无 calls → json_mode 确保 JSON 完整
-                    if not result.tool_calls:
-                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.4, json_mode=True)
+                        else:
+                            # 提取成功但无 calls → json_mode 确保 JSON 完整
+                            json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.4, json_mode=True)
+                            if json_raw and json_raw.startswith("{"):
+                                result.content = json_raw
+                    else:
+                        logger.info("LLM 输出非 JSON，强制重试...")
+                        json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens or 800, 800), temperature=0.3, json_mode=True)
                         if json_raw and json_raw.startswith("{"):
                             result.content = json_raw
-                else:
-                    logger.info("LLM 输出非 JSON，强制重试...")
-                    json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens or 800, 800), temperature=0.3, json_mode=True)
-                    if json_raw and json_raw.startswith("{"):
-                        result.content = json_raw
-                        logger.info("json_mode 重试成功: %s...", json_raw[:80])
-            # Phase 20 Hotfix F：纯承诺"只说不做"死结——无工具调用却只回预告(先看看/去找找/再发一遍)。
-            # 拦截后向对话注入"立刻实答"指令，再生成一轮；第二轮仍如此则保留（有界，不过度消耗）。
-            if round_idx == 0 and _is_promise_only_reply(result.content):
-                logger.warning("回复疑似纯承诺(只说不做)，强制再生成一轮要求直接实答: %s", (result.content or "")[:60])
-                msgs.append({"role": "user", "content": _PROMISE_KILLER_MSG})
-                continue
-            break
+                            logger.info("json_mode 重试成功: %s...", json_raw[:80])
+                # Phase 20 Hotfix F：纯承诺"只说不做"死结——无工具调用却只回预告
+                # (先看看/去找找/再发一遍)。拦截后向对话注入"立刻实答"指令，再生成一轮；
+                # 第二轮仍如此则保留（有界，不过度消耗）。
+                if not result.tool_calls:
+                    if round_idx == 0 and _is_promise_only_reply(result.content):
+                        logger.warning("回复疑似纯承诺(只说不做)，强制再生成一轮要求直接实答: %s", (result.content or "")[:60])
+                        msgs.append({"role": "user", "content": _PROMISE_KILLER_MSG})
+                        continue
+                    break
 
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
         msgs.append({
