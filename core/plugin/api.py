@@ -250,6 +250,28 @@ class PluginImage:
             logger.warning("PluginImage 引用消息取图失败: %s", e)
         return []
 
+    @staticmethod
+    async def fetch_user_avatar(user_id: str) -> str:
+        """按 KOOK 用户 ID 拉取其头像 URL（失败返回空串）。
+
+        供插件按需使用，如 `.摸头 @人` 用被 @ 用户的头像生成 GIF。
+        """
+        if not user_id:
+            return ""
+        try:
+            from khl import api
+            from services.delivery import kook_transport
+            bot = kook_transport._bot
+            gate = getattr(getattr(bot, "client", None), "gate", None)
+            if not gate:
+                return ""
+            body = await gate.exec_req(api.User.view(user_id=str(user_id)))
+            if isinstance(body, dict):
+                return str(body.get("avatar") or "")
+        except Exception as e:
+            logger.warning("PluginImage 拉取用户头像失败 %s: %s", user_id, e)
+        return ""
+
 
 class PluginVision:
     """图片识别能力：用视觉 LLM 把图片内容描述成文字。"""

@@ -3656,6 +3656,17 @@ async def handle_command(
                 quote_id = str(qid)
         except Exception:
             pass
+        # 透传被 @ 的用户 ID 列表（排除 bot 自身），供插件按需使用（如 .摸头 @人 取头像）
+        mentions: list[str] = []
+        try:
+            if hasattr(raw_event, "mention") and raw_event.mention:
+                bid = str(bot_qq)
+                for m in raw_event.mention:
+                    ms = str(m)
+                    if ms and ms != bid:
+                        mentions.append(ms)
+        except Exception:
+            pass
         msg = _PluginMsg(
             args=args,
             text=raw_message,
@@ -3664,6 +3675,7 @@ async def handle_command(
             is_group=is_group,
             chat_id=group_id,
             quote_id=quote_id,
+            mentions=mentions,
         )
         try:
             result = await plugin_handler(msg)
