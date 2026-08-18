@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, Optional
 from core.logger import get_logger
 from core.eventbus import EventBus, Event, get_event_bus
 from core.capability import (
-    Capability, CATEGORY_COMMAND, RUNTIME_COMMAND,
+    Capability, CATEGORY_COMMAND, CATEGORY_TOOL, RUNTIME_COMMAND, RUNTIME_FC,
     get_capability_registry,
 )
 
@@ -162,6 +162,41 @@ class PluginCapability:
             source=f"plugin:{self._plugin}",
         )
         self._registry.register(cap)
+        if handler is not None:
+            self._registry.bind_handler(cap.id, handler)
+        self._registered.append(cap.id)
+
+    def register_tool(self, name: str, description: str = "",
+                      schema: Optional[dict] = None,
+                      handler: Optional[Callable] = None,
+                      permissions: Optional[list[str]] = None) -> None:
+        """注册一个 Function Calling 工具能力，供 LLM 对话时自动发现并调用（无需指令）。
+
+        - schema : 完整 OpenAI 工具定义 {"type":"function","function":{...}}。
+          缺省时按 name/description 自动生成一个无参 schema。
+        - handler: async (arguments: dict, user_id, group_id, sender_name,
+                    is_group, bot_qq) -> str | None，返回自然语言结果文本。
+          缺省时只注册 schema 不绑定 handler（如仅想暴露给 LLM 语义）。
+        - description 里的触发关键词会被 CapabilityRouter 用来精准路由：
+          只在用户消息命中相关语义时才把该工具 Schema 交给 LLM。
+        """
+        if not schema:
+            schema = {"type": "function", "function": {
+                "name": name,
+                "description": description,
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            }}
+        cap = Capability(
+            id=f"plugin.{self._plugin}.{name}",
+            name=name,
+            description=description or schema.get("function", {}).get("description", ""),
+            category=CATEGORY_TOOL,
+            runtime=RUNTIME_FC,
+            permissions=permissions or ["message.read", "message.send"],
+            source=f"plugin:{self._plugin}",
+        )
+        self._registry.register(cap)
+        self._registry.bind_tool_schema(cap.id, schema)
         if handler is not None:
             self._registry.bind_handler(cap.id, handler)
         self._registered.append(cap.id)

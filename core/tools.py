@@ -857,6 +857,23 @@ def effective_tool_timeout(tool_name: str, agent_fallback: float) -> float:
     return TOOL_TIMEOUTS.get(tool_name, agent_fallback)
 
 
+def _find_plugin_tool_handler(tool_name: str):
+    """按工具名查找插件动态注册的工具 handler（未注册返回 None）。
+
+    插件经 PluginCapability.register_tool 注册 tool 能力（cap.source 以 "plugin:" 开头，
+    schema 存于 CapabilityRegistry，handler 经 bind_handler(cap.id, handler) 绑定）。
+    """
+    try:
+        from core.capability.registry import get_capability_registry
+        registry = get_capability_registry()
+        cap = registry.find_plugin_tool(tool_name)
+        if cap is None:
+            return None
+        return registry.get_handler(cap.id)
+    except Exception:
+        return None
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -947,6 +964,15 @@ async def _execute_impl(
         return await _system_status()
 
     if not cmd_name:
+        # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler
+        plugin_handler = _find_plugin_tool_handler(tool_name)
+        if plugin_handler:
+            try:
+                return await plugin_handler(
+                    arguments, user_id, group_id, sender_name, is_group, bot_qq)
+            except Exception as e:
+                logger.error("插件工具 %s 执行失败: %s", tool_name, e)
+                return f"插件工具 {tool_name} 执行出错: {e}"
         logger.warning("未知工具调用: %s args=%s", tool_name, arguments)
         return None
 

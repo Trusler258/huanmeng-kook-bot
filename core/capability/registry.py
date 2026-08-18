@@ -32,6 +32,7 @@ class CapabilityRegistry:
     def __init__(self) -> None:
         self._caps: dict[str, Capability] = {}
         self._handlers: dict[str, object] = {}
+        self._tool_schemas: dict[str, dict] = {}
         self._loaded = False
 
     # ── 发现 ──────────────────────────────────────────────
@@ -151,6 +152,8 @@ class CapabilityRegistry:
         """移除一个动态注册的能力（Plugin 卸载时调用）。core 发现的能力不删。"""
         if cap_id.startswith("plugin."):
             self._caps.pop(cap_id, None)
+            self._handlers.pop(cap_id, None)
+            self._tool_schemas.pop(cap_id, None)
 
     def bind_handler(self, cap_id: str, handler) -> None:
         """为 command 能力绑定实际处理器（异步函数）。"""
@@ -158,6 +161,28 @@ class CapabilityRegistry:
 
     def get_handler(self, cap_id: str):
         return self._handlers.get(cap_id)
+
+    # ── 插件工具 Schema（Plugin 用）────────────────────────
+    def bind_tool_schema(self, cap_id: str, schema: dict) -> None:
+        """为 tool 能力绑定完整 OpenAI Schema（插件 register_tool 用）。"""
+        if schema is not None:
+            self._tool_schemas[cap_id] = schema
+
+    def get_tool_schema(self, cap_id: str):
+        return self._tool_schemas.get(cap_id)
+
+    def find_plugin_tool(self, tool_name: str) -> Optional[Capability]:
+        """按工具名查找插件动态注册的 tool 能力（未找到返回 None）。
+
+        供工具执行路由 / 权限层按 LLM 调用名定位插件 handler。
+        只遍历动态注册的能力，不触发 discover()，避免权限检查时拉起重量级导入。
+        """
+        for cap in self._caps.values():
+            if (cap.category == CATEGORY_TOOL
+                    and cap.source.startswith("plugin:")
+                    and cap.name == tool_name):
+                return cap
+        return None
 
     def reload(self) -> None:
         self._loaded = False

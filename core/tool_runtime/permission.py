@@ -52,6 +52,15 @@ def _bootstrap_role_grants() -> None:
 _bootstrapped = False
 
 
+def _is_plugin_tool(tool_name: str) -> bool:
+    """工具名是否为插件动态注册的工具（register_tool 注册，source 以 plugin: 开头）。"""
+    try:
+        from core.capability.registry import get_capability_registry
+        return get_capability_registry().find_plugin_tool(tool_name) is not None
+    except Exception:
+        return False
+
+
 def check_permission(tool_name: str, explicit: Optional[str] = None) -> tuple[bool, str]:
     """权限检查。返回 (allowed, reason)。
 
@@ -79,6 +88,16 @@ def check_permission(tool_name: str, explicit: Optional[str] = None) -> tuple[bo
         if tool_name in ALLOWED_TOOLS:
             return True, "run_code 沙箱执行由工具内部按管理员/审批控制"
         return False, "run_code 不在白名单"
+
+    # 插件动态注册的工具：注册即显式授权（作者经 PluginCapability.register_tool
+    # 主动暴露，细粒度控制由插件自己的 handler 负责，与 run_code 同思路）。
+    if _is_plugin_tool(tool_name):
+        try:
+            from core.trace import record
+            record("permission", f"plugin tool {tool_name} 注册授权放行")
+        except Exception:
+            pass
+        return True, f"plugin tool {tool_name} 显式注册授权放行"
 
     # 2. 风险等级 → 策略
     risk = risk_of_tool(tool_name)

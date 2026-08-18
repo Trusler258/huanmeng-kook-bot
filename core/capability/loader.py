@@ -15,23 +15,44 @@ from core.capability.metadata import (
     Capability,
     CATEGORY_TOOL, CATEGORY_COMMAND, CATEGORY_SKILL,
 )
+from core.capability.registry import get_capability_registry
 from core.capability.router import get_capability_router
 
 
 def load_fc_schemas(caps: list[Capability]) -> list[dict]:
-    """返回选中 tool 能力的 OpenAI Schema 列表（仅命中项）。"""
+    """返回选中 tool 能力的 OpenAI Schema 列表（仅命中项）。
+
+    内置工具（core.tools.TOOLS）+ 插件动态注册的工具
+    （PluginCapability.register_tool 注册，schema 存于 CapabilityRegistry）。
+    """
     want = {c.id for c in caps if c.category == CATEGORY_TOOL}
     if not want:
         return []
+    out: list[dict] = []
+    builtin_names: set[str] = set()
     try:
         from core.tools import TOOLS
     except Exception:
-        return []
-    out = []
+        TOOLS = []
     for t in TOOLS:
         fn = (t or {}).get("function", {})
-        if fn.get("name") in want:
+        name = fn.get("name", "")
+        if not name:
+            continue
+        builtin_names.add(name)
+        if name in want:
             out.append(t)
+    # 插件工具：schema 由 register_tool 注册，key 为 cap.id（plugin.<plugin>.<name>）
+    registry = get_capability_registry()
+    for c in caps:
+        if c.category != CATEGORY_TOOL:
+            continue
+        # 与内置工具同名 → 内置优先，避免同一 name 出现重复 Schema
+        if c.name in builtin_names:
+            continue
+        schema = registry.get_tool_schema(c.id)
+        if schema:
+            out.append(schema)
     return out
 
 
