@@ -342,6 +342,9 @@ class AgentPlanner:
 - **纯知识/概念/原理/历史类问题（如"什么是 eval"、"MySQL 历史"、编程原理、概念解释）：
   模型自身知识即可可靠回答，禁止规划 search_web，直接留空 tool 回答。**
   只有需要实时信息（新闻/天气/行情/最新）、外部资料、用户明确要求搜索时才用 search_web。
+- **用户要求「执行/运行某段代码」「真实生成/创建文件并打包发送」「返回运行结果/产物」时，
+  优先用 tool="run_code"（会真实执行并返回产物文件如 zip/图片）；tool="write_code" 只把
+  代码本身作为附件发给用户，不执行、不返回运行结果，两者不要混用。**
 - 最多 {MAX_PLAN_STEPS} 步。不要编造工具或 Skill 名。"""
 
             raw = await call_llm(
@@ -405,16 +408,45 @@ class AgentPlanner:
 
 # ── 工具目录：只暴露 名称/描述/参数摘要，不暴露完整 schema ──
 def _tool_catalog() -> list[dict]:
-    """从 get_tool_schemas 提取轻量目录（name/desc/参数名），不给完整 schema。"""
+    """从 get_tool_schemas + 插件注册工具 提取轻量目录（name/desc/参数名），不给完整 schema。
+
+    必须把插件动态注册的 tool 也纳入目录（如 sandbox 插件的 run_code）：否则 Agent
+    规划时不知道存在「真实执行代码/生成产物」能力，会把"生成文件并打包"误路由到
+    只发代码不执行的 write_code，导致只回一个脚本文件、产物流失（用户收不到 zip）。
+    """
     from core.tools import get_tool_schemas
     out = []
+    seen: set[str] = set()
     for t in get_tool_schemas():
-        fn = t.get("function", {})
+        fn = (t or {}).get("function", {})
         name = fn.get("name", "")
+        if not name:
+            continue
+        seen.add(name)
         desc = fn.get("description", "")
         params = fn.get("parameters", {}).get("properties", {})
         out.append({"name": name, "desc": desc,
                     "params": list(params.keys()) if isinstance(params, dict) else []})
+    # 插件注册的工具（CapabilityRegistry）：schema 由 register_tool 绑定，与内置同名则内置优先
+    try:
+        from core.capability.metadata import CATEGORY_TOOL
+        from core.capability.registry import get_capability_registry
+        registry = get_capability_registry()
+        for cap in registry.all():
+            if cap.category != CATEGORY_TOOL or not cap.source.startswith("plugin:"):
+                continue
+            if cap.name in seen:
+                continue
+            schema = registry.get_tool_schema(cap.id) or {}
+            fn = schema.get("function", {})
+            name = fn.get("name") or cap.name
+            desc = fn.get("description") or cap.description
+            params = fn.get("parameters", {}).get("properties", {})
+            out.append({"name": name, "desc": desc,
+                        "params": list(params.keys()) if isinstance(params, dict) else []})
+            seen.add(name)
+    except Exception:
+        pass
     return out
 
 
