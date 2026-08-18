@@ -1,293 +1,269 @@
 """
-TUF API 服务模块
-- 封装 The Universal Forums API 调用
-- 支持搜索谱面、获取谱面详情
-- 异步 HTTP 请求（httpx）
+TUF API 服务模块（重写版 v2）
+- 封装 The Universal Forums (ADOFai) 官方 API: https://api.tuforums.com
+- 覆盖: 谱面 / 玩家 / 排行榜 / 统计 / 歌曲 / 艺术家 / 关卡包
+- 全部端点公开可用（无需认证）
 """
-
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Optional
 
 import httpx
 
 from core.logger import get_logger
-from core.config import get_config
 
 logger = get_logger("tuf_api")
 
-# ── 配置 ───────────────────────────────────────────────
 _BASE_URL = "https://api.tuforums.com"
+_TIMEOUT = httpx.Timeout(15.0, connect=8.0)
+
+
+async def _get(path: str, params: dict | None = None) -> tuple[int, any]:
+    """GET 请求，返回 (status_code, json)。"""
+    url = f"{_BASE_URL}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(url, params=params)
+            if r.status_code != 200:
+                logger.warning("[TUFAPI] %s HTTP %d: %s", path, r.status_code, r.text[:150])
+                return r.status_code, None
+            try:
+                return r.status_code, r.json()
+            except Exception:
+                return r.status_code, None
+    except Exception as e:
+        logger.error("[TUFAPI] %s 异常: %s", path, e)
+        return -1, {"error": str(e)}
 
 
 # ══════════════════════════════════════════════════════════
-#  公共函数
+#  谱面 Levels
 # ══════════════════════════════════════════════════════════
 
-async def search_levels(
-    query: str,
-    limit: int = 20,
-    page: int = 1,
-    sort: str = "relevance",
-) -> dict:
-    """
-    搜索谱面
-    
-    Args:
-        query: 搜索关键词（支持字段语法：song:xxx, artist:xxx, creator:xxx）
-        limit: 每页数量（默认 20）
-        page: 页码（默认 1）
-        sort: 排序方式（relevance/bpm/time 等）
-        
-    Returns:
-        API 响应的 data 部分（含 results, total, hasMore 等）
-    """
-    url = f"{_BASE_URL}/v2/database/levels"
-    params = {
-        "query": query,
-        "limit": limit,
-        "page": page,
-    }
-    
-    logger.info("[TUFAPI] 搜索谱面: query=%s page=%d", query, page)
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, params=params)
-            if resp.status_code != 200:
-                logger.error("[TUFAPI] 搜索失败 HTTP %d: %s", resp.status_code, resp.text[:200])
-                return {"results": [], "total": 0, "hasMore": False, "error": f"HTTP {resp.status_code}"}
-            
-            data = resp.json()
-            results = data.get("results", [])
-            total = data.get("total", 0)
-            has_more = data.get("hasMore", False)
-            
-            logger.info("[TUFAPI] 搜索成功: 找到 %d/%d 个结果", len(results), total)
-            return {
-                "results": results,
-                "total": total,
-                "hasMore": has_more,
-                "page": page,
-                "limit": limit,
-            }
-            
-    except Exception as e:
-        logger.error("[TUFAPI] 搜索异常: %s", e, exc_info=True)
-        return {"results": [], "total": 0, "hasMore": False, "error": str(e)}
-
-
-async def get_level_by_slug(slug: str) -> Optional[dict]:
-    """
-    通过 slug（字符串 ID）获取谱面详情
-    
-    Args:
-        slug: 谱面 slug（如 "hello-bpm-2021"）
-        
-    Returns:
-        谱面详情 dict，未找到返回 None
-    """
-    url = f"{_BASE_URL}/v2/database/levels/{slug}"
-    logger.info("[TUFAPI] 获取谱面详情: slug=%s", slug)
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                logger.warning("[TUFAPI] 谱面不存在: slug=%s", slug)
-                return None
-            if resp.status_code != 200:
-                logger.error("[TUFAPI] 获取详情失败 HTTP %d", resp.status_code)
-                return None
-            
-            data = resp.json()
-            logger.info("[TUFAPI] 获取详情成功: %s", data.get("song", "?"))
-            return data
-            
-    except Exception as e:
-        logger.error("[TUFAPI] 获取详情异常: %s", e, exc_info=True)
-        return None
-
-
-async def get_level_by_id(level_id: int) -> Optional[dict]:
-    """
-    通过数字 ID 获取谱面详情
-    
-    Args:
-        level_id: 谱面数字 ID
-        
-    Returns:
-        谱面详情 dict，未找到返回 None
-    """
-    url = f"{_BASE_URL}/v2/database/levels/byId/{level_id}"
-    logger.info("[TUFAPI] 获取谱面详情: id=%d", level_id)
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                logger.warning("[TUFAPI] 谱面不存在: id=%d", level_id)
-                return None
-            if resp.status_code != 200:
-                logger.error("[TUFAPI] 获取详情失败 HTTP %d", resp.status_code)
-                return None
-            
-            data = resp.json()
-            logger.info("[TUFAPI] 获取详情成功: %s", data.get("song", "?"))
-            return data
-            
-    except Exception as e:
-        logger.error("[TUFAPI] 获取详情异常: %s", e, exc_info=True)
-        return None
-
-
-async def get_level_passes(level_id: int, limit: int = 5, offset: int = 0) -> dict:
-    """
-    获取关卡的通关记录
-    
-    Args:
-        level_id: 关卡 ID
-        limit: 返回记录数量（默认 5）
-        offset: 偏移量（用于分页）
-        
-    Returns:
-        包含 passes 列表和 total 的 dict
-    """
-    url = f"{_BASE_URL}/v2/database/passes/level/{level_id}"
-    params = {
-        "limit": limit,
-        "offset": offset,
-        "sort": "createdAt",
-        "order": "desc",
-    }
-    
-    logger.info("[TUFAPI] 获取通关记录: level=%d limit=%d", level_id, limit)
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, params=params)
-            if resp.status_code != 200:
-                logger.error("[TUFAPI] 获取通关记录失败 HTTP %d", resp.status_code)
-                return {"passes": [], "total": 0}
-            
-            data = resp.json()
-            # API 可能直接返回 list，也可能返回 {results: [], total: N}
-            if isinstance(data, list):
-                passes = data
-                total = len(data)
-            else:
-                passes = data.get("results", data.get("passes", []))
-                total = data.get("total", len(passes))
-            
-            logger.info("[TUFAPI] 获取通关记录成功: %d/%d 条", len(passes), total)
-            return {
-                "passes": passes,
-                "total": total,
-            }
-            
-    except Exception as e:
-        logger.error("[TUFAPI] 获取通关记录异常: %s", e, exc_info=True)
-        return {"passes": [], "total": 0}
-
-
-async def download_image(url: str, save_path: Path) -> bool:
-    """
-    下载图片到本地（用于难度图标等）
-    
-    Args:
-        url: 图片 URL
-        save_path: 保存路径
-        
-    Returns:
-        是否下载成功
-    """
-    logger.info("[TUFAPI] 下载图片: %s → %s", url[:60], save_path.name)
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                logger.error("[TUFAPI] 下载失败 HTTP %d", resp.status_code)
-                return False
-            
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, "wb") as f:
-                f.write(resp.content)
-            
-            logger.info("[TUFAPI] 图片下载成功: %s (%d bytes)", save_path.name, len(resp.content))
-            return True
-            
-    except Exception as e:
-        logger.error("[TUFAPI] 下载图片异常: %s", e, exc_info=True)
-        return False
-
-
-# ══════════════════════════════════════════════════════════
-#  数据格式化辅助函数
-# ══════════════════════════════════════════════════════════
-
-def format_duration(ms: Optional[int]) -> str:
-    """将毫秒转换为 MM:SS 格式"""
-    if not ms:
-        return "?.??"
-    seconds = ms // 1000
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{minutes}:{secs:02d}"
-
-
-def format_bpm(bpm: Optional[float]) -> str:
-    """格式化 BPM 显示"""
-    if not bpm:
-        return "?.?"
-    return str(int(bpm)) if bpm == int(bpm) else f"{bpm:.1f}"
-
-
-def get_difficulty_info(level_data: dict) -> dict:
-    """
-    从谱面数据中提取难度信息
-    
-    Returns:
-        包含 difficulty_name, difficulty_color, difficulty_icon, base_score 的 dict
-    """
-    diff = level_data.get("difficulty", {})
-    rating = level_data.get("rating", {})
-    
+async def search_levels(query: str, limit: int = 10, page: int = 1,
+                        sort: str = "relevance") -> dict:
+    """搜索谱面。query 支持 song:/artist:/creator: 语法。"""
+    _, data = await _get("/v2/database/levels", {
+        "query": query, "limit": limit, "page": page, "sort": sort,
+    })
+    if not data:
+        return {"results": [], "total": 0, "hasMore": False}
     return {
-        "name": diff.get("name", "?"),
-        "type": diff.get("type", "PGU"),
-        "color": diff.get("color", "#ffffff"),
-        "icon_url": diff.get("icon", ""),
-        "base_score": diff.get("baseScore", 0),
-        "avg_difficulty_id": rating.get("averageDifficultyId", 0) if rating else 0,
+        "results": data.get("results", []),
+        "total": data.get("total", 0),
+        "hasMore": data.get("hasMore", False),
+        "page": data.get("page", page),
     }
 
 
-def format_creator(level_data: dict) -> str:
-    """格式化创作者信息"""
-    creator = level_data.get("creator", "")
-    if creator:
-        return creator
-    
-    # 从 levelCredits 提取
-    credits = level_data.get("levelCredits", [])
-    creators = [c.get("creator", {}).get("name", "") for c in credits if c.get("role") == "charter"]
-    return " | ".join(creators) if creators else "未知"
+async def get_level(level_id: int | str) -> Optional[dict]:
+    """获取谱面详情（数字 ID 或 slug）。返回 {level, rerateHistory} 或 None。"""
+    path = f"/v2/database/levels/byId/{level_id}" if str(level_id).isdigit() \
+        else f"/v2/database/levels/{level_id}"
+    code, data = await _get(path)
+    return data if code == 200 and data else None
+
+
+async def get_level_ratings(level_id: int) -> list:
+    """获取谱面评级。"""
+    code, data = await _get(f"/v2/database/levels/{level_id}/ratings")
+    if code != 200 or not data:
+        return []
+    if isinstance(data, list):
+        return data
+    return data.get("results", data.get("ratings", []))
+
+
+async def get_level_passes(level_id: int, limit: int = 5) -> dict:
+    """获取谱面通关记录。"""
+    code, data = await _get(f"/v2/database/passes/level/{level_id}",
+                            {"limit": limit, "sort": "createdAt", "order": "desc"})
+    if code != 200 or not data:
+        return {"passes": [], "total": 0}
+    if isinstance(data, list):
+        return {"passes": data, "total": len(data)}
+    return {"passes": data.get("results", data.get("passes", [])),
+            "total": data.get("total", 0)}
 
 
 # ══════════════════════════════════════════════════════════
-#  测试函数
+#  玩家 Players
 # ══════════════════════════════════════════════════════════
 
-async def test_search():
-    """测试搜索功能"""
-    result = await search_levels("song:Hello (BPM) 2021", limit=3)
-    print(f"找到 {result['total']} 个结果，显示前 {len(result['results'])} 个:")
-    for level in result["results"]:
-        print(f"  - {level.get('song')} ({level.get('artist')}) - {format_creator(level)}")
+async def search_players(name: str, limit: int = 5) -> list[dict]:
+    """按名称搜索玩家（用于 bind 绑定）。"""
+    code, data = await _get(f"/v2/database/players/search/{name}", {"limit": limit})
+    if code != 200 or not data:
+        return []
+    return data.get("results", data.get("players", []))
 
 
-if __name__ == "__main__":
-    asyncio.run(test_search())
+async def get_player(player_id: int) -> Optional[dict]:
+    """获取玩家详情（v3，含分数/Pass/WF 等）。"""
+    code, data = await _get(f"/v3/players/{player_id}")
+    return data if code == 200 and data else None
+
+
+async def get_player_rank_history(player_id: int, limit: int = 30) -> list[dict]:
+    """玩家排名历史（周度采样）。"""
+    code, data = await _get(f"/v3/players/{player_id}/rank-history", {"limit": limit})
+    if code != 200 or not data:
+        return []
+    return data.get("series", [])
+
+
+async def get_player_passes(player_id: int, limit: int = 10) -> list[dict]:
+    """玩家通关记录。"""
+    code, data = await _get(f"/v3/players/{player_id}/passes", {"limit": limit})
+    if code != 200 or not data:
+        return []
+    return data.get("passes", data.get("results", []))
+
+
+# ══════════════════════════════════════════════════════════
+#  排行榜 Leaderboard
+# ══════════════════════════════════════════════════════════
+
+_RANK_FIELDS = {
+    "ranked": "rankedScore",      # 排名分（默认）
+    "general": "generalScore",    # 综合分
+    "pp": "ppScore",              # PP
+    "wf": "wfScore",              # 世界第一分数
+    "wfpp": "wfPPScore",
+    "12k": "score12K",
+    "xacc": "averageXacc",        # 平均精度
+    "passes": "universalPassCount",  # 通关数
+}
+
+_RANK_LABELS = {
+    "ranked": "排名分", "general": "综合分", "pp": "PP", "wf": "世界第一分",
+    "wfpp": "WF PP", "12k": "12K 分", "xacc": "平均精度", "passes": "通关数",
+}
+
+
+def resolve_rank_field(name: str) -> str | None:
+    return _RANK_FIELDS.get(name)
+
+
+async def get_leaderboard(field: str = "rankedScore", page: int = 1, limit: int = 10) -> dict:
+    """排行榜。field 见 _RANK_FIELDS。"""
+    code, data = await _get("/v2/database/leaderboard", {
+        "field": field, "page": page, "limit": limit,
+    })
+    if code != 200 or not data:
+        return {"results": [], "count": 0}
+    return {"results": data.get("results", []), "count": data.get("count", 0),
+            "page": data.get("page", page)}
+
+
+async def get_creators_leaderboard(page: int = 1, limit: int = 10) -> dict:
+    """创作者排行榜。"""
+    code, data = await _get("/v3/creators/leaderboard", {"page": page, "limit": limit})
+    if code != 200 or not data:
+        return {"results": [], "count": 0}
+    return {"results": data.get("results", []), "count": data.get("count", 0),
+            "page": data.get("page", page)}
+
+
+# ══════════════════════════════════════════════════════════
+#  统计 Statistics
+# ══════════════════════════════════════════════════════════
+
+async def get_statistics() -> Optional[dict]:
+    """全局统计：overview / difficulties / submissions。"""
+    code, data = await _get("/v2/database/statistics")
+    return data if code == 200 and data else None
+
+
+async def get_country_stats() -> list[dict]:
+    """国家/地区玩家分布。"""
+    code, data = await _get("/v2/database/statistics/players")
+    if code != 200 or not data:
+        return []
+    return data.get("countryStats", [])
+
+
+# ══════════════════════════════════════════════════════════
+#  歌曲 / 艺术家 / 关卡包
+# ══════════════════════════════════════════════════════════
+
+async def search_songs(query: str, limit: int = 5) -> list[dict]:
+    """搜索歌曲。"""
+    code, data = await _get("/v2/database/songs", {"query": query, "limit": limit})
+    if code != 200 or not data:
+        return []
+    return data.get("songs", data.get("results", []))
+
+
+async def search_artists(query: str, limit: int = 5) -> list[dict]:
+    """搜索艺术家。"""
+    code, data = await _get("/v2/database/artists", {"query": query, "limit": limit})
+    if code != 200 or not data:
+        return []
+    return data.get("artists", data.get("results", []))
+
+
+async def get_packs(page: int = 1, limit: int = 10) -> dict:
+    """关卡包列表。"""
+    code, data = await _get("/v2/database/levels/packs", {"page": page, "limit": limit})
+    if code != 200 or not data:
+        return {"packs": [], "total": 0}
+    return {"packs": data.get("packs", data.get("results", [])),
+            "total": data.get("total", 0), "page": data.get("page", page)}
+
+
+# ══════════════════════════════════════════════════════════
+#  格式化辅助
+# ══════════════════════════════════════════════════════════
+
+def fmt_duration(ms) -> str:
+    if not ms:
+        return "??:??"
+    s = int(float(ms) // 1000)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def fmt_bpm(bpm) -> str:
+    if not bpm:
+        return "?"
+    return str(int(bpm)) if float(bpm) == int(float(bpm)) else f"{float(bpm):.1f}"
+
+
+def fmt_num(n, digits: int = 0) -> str:
+    """数字千分位格式化。"""
+    if n is None:
+        return "0"
+    try:
+        return f"{float(n):,.{digits}f}"
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def fmt_pct(x, digits: int = 2) -> str:
+    if x is None:
+        return "-"
+    try:
+        return f"{float(x) * 100:.{digits}f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def get_creator_name(level: dict) -> str:
+    """从关卡数据提取创作者名。"""
+    c = level.get("creator")
+    if isinstance(c, dict):
+        return c.get("name", "")
+    if c:
+        return str(c)
+    credits = level.get("levelCredits", []) or []
+    names = [x.get("creator", {}).get("name", "") for x in credits
+             if isinstance(x.get("creator"), dict)]
+    return " | ".join(n for n in names if n) or "未知"
+
+
+def get_diff_name(level: dict) -> str:
+    d = level.get("difficulty", {})
+    if isinstance(d, dict):
+        return d.get("name", "?")
+    return "?"

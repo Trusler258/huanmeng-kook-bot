@@ -49,11 +49,6 @@ except ImportError:
 from modules.changelog import send_changelog_card, send_weather_card, send_box_card
 from modules.whois_lookup import lookup_domain   # ★ WHOIS 域名查询
 
-try:
-    from modules.tuf_commands import cmd_tuflevel, cmd_tuf_search, cmd_tufd, cmd_tufpage
-except ImportError:
-    cmd_tuflevel = cmd_tuf_search = cmd_tufd = cmd_tufpage = None
-
 from core.token_tracker import cmd_cost, cmd_tokens
 
 logger = get_logger("commands")
