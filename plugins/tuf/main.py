@@ -127,28 +127,44 @@ class Plugin:
                          footer: str | None = None) -> None | str:
         """发送 KOOK 卡片，返回 None（成功）或回退文本（失败）。
 
-        头像用 section 的 accessory（右侧小圆图），避免 image-group 渲染大图。
+        严格对齐 KOOK 已接受的卡片格式（参考 16:40 KOOK 更新检查卡片）：
+        - 顶层: theme/color/size/expand/modules
+        - header: text 为 {type:plain-text, emoji:true, content, elements:[]}
+        - section: 必须有 mode/accessory(可为 null)/elements:[] 字段
+        - context: elements 为 [{type:kmarkdown, content, elements:[]}]
+        - 所有对象都带 elements:[] 字段（KOOK 服务端校验要求）
         """
         from services.sender import send_raw_group, send_raw_user
         modules = []
         if header:
-            modules.append({"type": "header",
-                            "text": {"type": "plain-text", "content": header}})
-        main_section = {"type": "section",
-                        "text": {"type": "kmarkdown", "content": md}}
+            modules.append({
+                "type": "header",
+                "text": {"type": "plain-text", "emoji": True,
+                         "content": header, "elements": []},
+                "elements": [],
+            })
+        main_section = {
+            "type": "section",
+            "mode": "right" if img else "left",
+            "accessory": None,
+            "text": {"type": "kmarkdown", "content": md, "elements": []},
+            "elements": [],
+        }
         if img:
-            # 头像作为右侧小缩略图（section accessory），文本在左侧
-            main_section["mode"] = "right"
+            # 头像作为右侧小缩略图（section accessory）
             main_section["accessory"] = {
                 "type": "image", "src": img,
                 "alt": "", "circle": True, "size": "sm",
             }
         modules.append(main_section)
         if footer:
-            modules.append({"type": "context",
-                            "elements": [{"type": "plain-text", "content": footer}]})
-        card = [{"type": "card", "theme": theme, "size": "lg",
-                 "modules": modules}]
+            modules.append({
+                "type": "context",
+                "elements": [{"type": "kmarkdown",
+                              "content": footer, "elements": []}],
+            })
+        card = [{"type": "card", "theme": theme, "color": "#7289DA",
+                 "size": "lg", "expand": False, "modules": modules}]
         try:
             if msg.get("is_group"):
                 await send_raw_group(card, msg.get("chat_id"))
