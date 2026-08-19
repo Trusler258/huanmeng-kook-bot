@@ -393,119 +393,26 @@ async def _write_code(
 async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
                          sender_name: str, is_group: bool, bot_qq: int,
                          original_msg: str = "") -> str:
-    """run_code 工具：在沙箱中真实执行代码，返回真实输出并发送产物文件。
+    """run_code 工具：转发壳（真实实现已迁移到沙箱插件）。
 
-    权限：管理员直接放行；非管理员走审批卡片（request_run_approval）。
-    执行结果一律来自沙箱子进程真实输出，禁止 LLM 编造。
+    plugins/sandbox/main.py 通过 register_tool 把 run_code 注册为插件能力并绑定
+    handler，这里只做委托，不再持有任何业务逻辑（权限/审批/代码生成/沙箱执行/
+    输出截断策略/产物收集发送全部在插件里改），避免每次调整沙箱行为都要推动
+    核心更新、让所有使用者跟着升级。
     """
-    import re as _re
-    import tempfile
-    import zipfile
-    from pathlib import Path
-    from core.config import get_config
-    from core.logger import get_logger
-    logger = get_logger("tools")
-
-    language = (arguments.get("language") or "python").lower()
-    code = (arguments.get("code") or "").strip()
-    # 描述缺省时回退用户原始消息（与 write_code 一致），确保 Agent 规划只给了 language
-    # 也能按真实需求生成代码，而不是落到"示例代码"。
-    description = (arguments.get("description") or "").strip() or (original_msg or "").strip()
-    stdin_data = arguments.get("stdin") or ""
-
-    cfg = get_config()
-
-    # ── 权限：管理员直接放行；非管理员走审批卡片 ──
-    if not cfg.is_admin(user_id):
-        try:
-            from services.notify_system import request_run_approval
-        except Exception as e:
-            logger.warning("审批模块不可用: %s", e)
-            return "沙箱执行需管理员授权，但审批模块当前不可用"
-        plan_desc = f"[{language}] {description or code[:80]}"
-        approved = await request_run_approval(plan_desc)
-        if not approved:
-            return "已取消沙箱执行（需管理员审批通过才能运行）"
-
-    # ── 无代码 → 按 description 生成代码 ──
-    if not code:
-        if language == "shell":
-            code = description
-        else:
-            from services.llm import call_llm
-            prompt = {
-                "python": "写一段可独立运行的 Python 脚本，关键结果用 print() 输出，UTF-8，只输出代码不写注释。",
-                "cpp": "写一段可独立编译运行的 C++ 程序（含 #include <iostream>），关键结果用 cout 输出，只输出代码。",
-            }.get(language, "只输出可运行的代码。")
-            code = await call_llm(cfg.reply_model, [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": (description or "示例代码")[:3000]},
-            ], temperature=0.3, timeout=60.0)
-            if not code:
-                return "代码生成失败，请稍后重试"
-            code = code.strip()
-            if code.startswith("```"):
-                code = _re.sub(r'^```\w*\n?', '', code)
-                code = _re.sub(r'\n?```$', '', code)
-
-    # ── 沙箱执行 ──
-    from core import sandbox
-    tmp = Path(tempfile.mkdtemp(prefix="bot_run_"))
+    handler = _find_plugin_tool_handler("run_code")
+    if handler is None:
+        return "沙箱执行插件未加载（plugins/sandbox），无法运行代码"
     try:
-        if language == "python":
-            res = await sandbox.run_python(code, cwd=tmp, stdin_data=stdin_data)
-        elif language == "cpp":
-            res = await sandbox.compile_and_run_cpp({"main.cpp": code}, cwd=tmp, stdin_data=stdin_data)
-        else:
-            res = await sandbox.run_shell(code, cwd=tmp)
+        return await handler(
+            arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg)
+    except TypeError:
+        # 兼容未接收 original_msg 的旧 handler 签名
+        return await handler(
+            arguments, user_id, group_id, sender_name, is_group, bot_qq)
     except Exception as e:
-        logger.error("沙箱执行异常: %s", e)
-        sandbox.cleanup(tmp)
-        return f"沙箱执行失败: {e}"
-
-    out_parts = []
-    if res.get("stdout"):
-        out_parts.append(res["stdout"].strip())
-    if res.get("stderr"):
-        out_parts.append(f"[stderr]\n{res['stderr'].strip()}")
-    text = "\n\n".join(out_parts) or "[无输出]"
-    if res.get("timed_out"):
-        text += "\n[提示] 运行超时已强制终止"
-    if res.get("returncode") not in (0, None):
-        text += f"\n[退出码] {res['returncode']}"
-
-    # ── 产物收集与发送 ──
-    artifacts = sandbox.collect_artifacts(tmp)
-    # 存在 zip/tar 归档时优先只发归档，避免"zip 里再套一层松散文件"
-    _archives = [a for a in artifacts if a.suffix.lower() in
-                 (".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2")]
-    if _archives:
-        artifacts = _archives
-    send_msgs = []
-    if artifacts:
-        from services.sender import send_file
-        try:
-            if len(artifacts) == 1:
-                f = artifacts[0]
-                ok = await send_file(str(f), group_id if is_group else user_id, is_group)
-                send_msgs.append(f"已发送产物 {f.name}" if ok else "产物发送失败")
-            else:
-                zip_path = tmp / "artifacts.zip"
-                with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
-                    for f in artifacts:
-                        zf.write(str(f), f.name)
-                ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
-                send_msgs.append(f"已发送 {len(artifacts)} 个产物的 zip" if ok else "产物 zip 发送失败")
-        except Exception as e:
-            send_msgs.append(f"产物发送异常: {e}")
-    sandbox.cleanup(tmp)
-
-    result = f"[运行输出]\n{text}"
-    if send_msgs:
-        result += "\n\n" + "\n".join(send_msgs)
-    logger.info("run_code 完成: lang=%s rc=%s 产物=%d", language,
-                res.get("returncode"), len(artifacts))
-    return result
+        logger.error("run_code 插件执行失败: %s", e)
+        return f"沙箱执行出错: {e}"
 
 
 async def _compile_and_run(tmp: Path, cpp_files: list[str], chat_id: int, is_group: bool, description: str = "") -> str:

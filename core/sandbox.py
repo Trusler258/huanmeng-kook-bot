@@ -59,8 +59,13 @@ def _limit_preexec(mem_mb: int, cpu_sec: int) -> callable | None:
 
 
 async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
-                    stdin_data: str = "") -> dict:
-    """通用子进程执行：限时、限资源、截断输出。返回 dict。"""
+                    stdin_data: str = "", max_output: int = MAX_OUTPUT) -> dict:
+    """通用子进程执行：限时、限资源、截断输出。返回 dict。
+
+    max_output: 单路输出截断长度（默认 MAX_OUTPUT=1500）。调用方（如沙箱插件）
+    可传更大值让 LLM 看到更完整输出（"输出全丢给 LLM"），仅调整截断上限，
+    不改变"保留头尾、中间折叠"的截断策略。
+    """
     kwargs: dict = {
         "cwd": str(cwd),
         "stdout": asyncio.subprocess.PIPE,
@@ -97,21 +102,21 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
         return {"returncode": -1, "stdout": "",
                 "stderr": f"执行异常: {e}", "timed_out": False}
 
-    def _cut(b: bytes) -> str:
+    def _cut(b: bytes, max_output: int = MAX_OUTPUT) -> str:
         text = b.decode("utf-8", errors="replace")
-        if len(text) > MAX_OUTPUT:
+        if len(text) > max_output:
             # 保留头尾：末尾常是最终结果（如 uptime / 退出信息 / 报错栈），不能整段丢
-            total = len(b.decode("utf-8", errors="replace"))
-            head = MAX_OUTPUT * 2 // 3
-            tail = MAX_OUTPUT - head - 1
+            total = len(text)
+            head = max_output * 2 // 3
+            tail = max_output - head - 1
             text = (text[:head] + f"\n…(输出过长，已截断 {total} 字符，末尾保留)…\n"
                     + text[-tail:])
         return text
 
     return {
         "returncode": getattr(proc, "returncode", -1) if not timed_out else -1,
-        "stdout": _cut(stdout or b""),
-        "stderr": _cut(stderr or b""),
+        "stdout": _cut(stdout or b"", max_output),
+        "stderr": _cut(stderr or b"", max_output),
         "timed_out": timed_out,
     }
 
@@ -131,20 +136,22 @@ def _pick_python() -> str:
 
 async def run_python(code: str, timeout: float = DEFAULT_TIMEOUT,
                      mem_mb: int = DEFAULT_MEM_MB,
-                     stdin_data: str = "", cwd: Path | None = None) -> dict:
+                     stdin_data: str = "", cwd: Path | None = None,
+                     max_output: int = MAX_OUTPUT) -> dict:
     """在沙箱目录执行 Python 代码，返回运行结果。"""
     tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
     script = tmp / "main.py"
     script.write_text(code or "", encoding="utf-8")
     cmd = [_pick_python(), str(script)]
-    result = await _run_proc(cmd, tmp, timeout, mem_mb, stdin_data)
+    result = await _run_proc(cmd, tmp, timeout, mem_mb, stdin_data, max_output)
     result["tmp_dir"] = str(tmp)
     return result
 
 
 async def compile_and_run_cpp(files: dict[str, str], timeout: float = DEFAULT_TIMEOUT,
                               mem_mb: int = DEFAULT_MEM_MB,
-                              stdin_data: str = "", cwd: Path | None = None) -> dict:
+                              stdin_data: str = "", cwd: Path | None = None,
+                              max_output: int = MAX_OUTPUT) -> dict:
     """在沙箱目录编译并运行 C++（g++）。files: {文件名: 内容}。"""
     tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
     for fname, content in files.items():
@@ -157,26 +164,27 @@ async def compile_and_run_cpp(files: dict[str, str], timeout: float = DEFAULT_TI
     srcs = [str(tmp / f) for f in files]
     comp = await _run_proc(
         ["g++", "-std=c++14", "-O2", "-o", str(exe)] + srcs,
-        tmp, timeout, mem_mb)
+        tmp, timeout, mem_mb, max_output=max_output)
     if comp["returncode"] != 0:
         comp["tmp_dir"] = str(tmp)
         comp["stdout"] = "[编译失败]\n" + (comp["stderr"] or "")
         return comp
-    run = await _run_proc([str(exe)], tmp, timeout, mem_mb, stdin_data)
+    run = await _run_proc([str(exe)], tmp, timeout, mem_mb, stdin_data, max_output)
     run["tmp_dir"] = str(tmp)
     return run
 
 
 async def run_shell(command: str, timeout: float = DEFAULT_TIMEOUT,
                     mem_mb: int = DEFAULT_MEM_MB,
-                    cwd: Path | None = None) -> dict:
+                    cwd: Path | None = None,
+                    max_output: int = MAX_OUTPUT) -> dict:
     """执行 shell 命令（终端模拟，如 `cd / && ls -l`）。仅管理员/审批后调用。"""
     tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
     if os.name == "posix":
         cmd = ["bash", "-c", command]
     else:
         cmd = ["cmd", "/c", command]
-    result = await _run_proc(cmd, tmp, timeout, mem_mb)
+    result = await _run_proc(cmd, tmp, timeout, mem_mb, max_output=max_output)
     result["tmp_dir"] = str(tmp)
     return result
 
