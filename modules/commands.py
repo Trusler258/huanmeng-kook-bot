@@ -428,23 +428,22 @@ async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """查询快递物流信息（优先输出精美卡片图片）"""
+    """查询快递物流信息（KOOK 原生卡片输出）"""
     if not args:
         return format_lang("box.prompt_input")
-    
-    tracking_no = args[0]
-    ckey = os.getenv("KUAIBAO_CKEY", "")
-    logger.info("指令 .box 触发 单号=%s user=%d (卡片模式优先)", tracking_no, user_id)
-    
-    if not ckey:
-        logger.warning("快递API密钥未配置 (KUAIBAO_CKEY)")
-        return format_lang("error.api_fail")
 
-    api_url = f"https://openapi.dwo.cc/api/kuaiok?ckey={ckey}&trackingNo={tracking_no}"
-    
+    tracking_no = args[0]
+    ckey = os.getenv("KUAIBAO_CKEY", "").strip()
+    logger.info("指令 .box 触发 单号=%s user=%d", tracking_no, user_id)
+
+    # ckey 按接口文档为可选参数；配置了才携带，未配置则不带。
+    params = {"trackingNo": tracking_no}
+    if ckey:
+        params["ckey"] = ckey
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(api_url)
+            resp = await client.get("https://openapi.dwo.cc/api/kuaiok", params=params)
             if resp.status_code != 200:
                 return format_lang("box.api_error")
             data = resp.json()
@@ -454,18 +453,18 @@ async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     code = data.get("code", "")
     if code != "0000000000":
-        logger.debug("快递API业务码异常: %s desc=%s", code, data.get("desc", ""))
+        logger.info("快递API业务码异常: %s desc=%s", code, data.get("desc", ""))
         return format_lang("box.api_error", message=data.get("desc", "未知错误"))
 
     try:
         pkgs = data.get("data", {}).get("packageInfoList", [])
         if not pkgs:
             return format_lang("box.no_result")
-        
+
         pkg = pkgs[0]
         cp_name = pkg.get("cpName", "某快递")
         state = pkg.get("state", "未知")
-        
+
         # 状态映射（i18n）
         state_map = {
             "TRANSPORT": format_lang("box.state_transport", default="运输中"),
@@ -476,59 +475,27 @@ async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
             "FINISH": format_lang("box.state_finish", default="已完成"),
         }
         state_text = state_map.get(state, state)
-
         latest_msg = pkg.get("operateMessage", "")
         details = pkg.get("trackingDetails", [])
 
         logger.info("快递查询成功: 单号=%s 状态=%s (%d条轨迹)", tracking_no, state_text, len(details))
 
-        # ── 异步卡片生成（不阻塞聊天线程）──
-        async def _bg_send_box():
-            try:
-                card_result = await send_box_card(
-                    cp_name=cp_name,
-                    tracking_no=tracking_no,
-                    state=state,
-                    state_text=state_text,
-                    latest_msg=latest_msg,
-                    details=details,
-                    group_id=group_id if is_group else None,
-                    user_id=user_id if not is_group else None,
-                    is_group=is_group,
-                )
-                if card_result is not None:
-                    # 卡片生成失败，回退纯文本
-                    fallback_lines = [
-                        format_lang("box.header", cp_name=cp_name, tracking_no=tracking_no),
-                        format_lang("box.state", state=state_text),
-                    ]
-                    if latest_msg:
-                        clean_msg = re.sub(r'[（(【][^）)]*(如遇问题|物流问题)[^）)]*[）)]️]?', '', latest_msg).strip()
-                        fallback_lines.append(format_lang("box.latest", msg=clean_msg))
-
-                    fallback_lines.append(format_lang("box.trajectory_header"))
-                    for d in details:
-                        t = d.get("time", "")
-                        ctx = d.get("context", "")
-                        ctx = re.sub(r'[（(【][^）)]*(如遇问题|物流问题)[^）)]*[）)]️]?', '', ctx).strip()
-                        time_str = f"{t[4:6]}-{t[6:8]} {t[8:10]}:{t[10:12]}" if len(t) >= 12 else t
-                        fallback_lines.append(format_lang("box.trajectory_item", time=time_str, context=ctx))
-
-                    if state == "DELIVERING":
-                        fallback_lines.append(format_lang("box.delivering_tip"))
-                    elif state == "SIGNED":
-                        fallback_lines.append(format_lang("box.signed_tip"))
-
-                    fallback_text = "\n".join(fallback_lines)
-                    if is_group:
-                        await send_group_msg(fallback_text, group_id)
-                    else:
-                        await send_private_msg(fallback_text, user_id)
-            except Exception as e:
-                logger.error("[BG] 快递卡片后台发送失败: %s", e, exc_info=True)
-
-        asyncio.create_task(_bg_send_box())
-        return None  # 后台异步处理，无需立即回复
+        # 构建 KOOK 原生卡片并直接发送（无需图片截图，不再阻塞/后台任务）
+        from modules.cmd_cards import build_box_card
+        card_obj = build_box_card({
+            "cp_name": cp_name,
+            "cp": pkg.get("cp", ""),
+            "tracking_no": tracking_no,
+            "state": state,
+            "state_text": state_text,
+            "latest_msg": latest_msg,
+            "details": details,
+        })
+        if is_group:
+            await send_raw_group(card_obj, group_id)
+        else:
+            await send_raw_user(card_obj, user_id)
+        return None
 
     except Exception as e:
         logger.error("快递信息解析失败: %s", e)

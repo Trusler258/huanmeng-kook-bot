@@ -272,3 +272,60 @@ def build_plugin_status(plugins: list[dict]) -> list[dict]:
     modules.append(div())
     modules.append(kmd(f"**合计：{ok_count}/{total} 个插件生效**"))
     return card(theme, "lg", modules)
+
+
+def _box_time_fmt(t: str) -> str:
+    """把 YYYYMMDDHHMMSS 格式化为 MM-DD HH:MM；非法格式原样返回。"""
+    if len(t) >= 12 and t[:8].isdigit() and t[8:14].isdigit():
+        return f"{t[4:6]}-{t[6:8]} {t[8:10]}:{t[10:12]}"
+    return t
+
+
+def build_box_card(d: dict) -> list[dict]:
+    """.box 快递物流卡片（原生 KOOK 卡片，替代图片截图）。
+
+    d: 由 cmd_box 收集的结构化数据。
+      cp_name / cp / tracking_no / state / state_text / latest_msg /
+      details(list[{time, context}])
+    """
+    cp_name = (d.get("cp_name") or "未知快递").strip()
+    tracking_no = (d.get("tracking_no") or "").strip()
+    state = (d.get("state") or "").upper()
+    state_text = d.get("state_text") or state or "未知"
+    latest = (d.get("latest_msg") or "").strip()
+    details = d.get("details") or []
+
+    # 状态 → 卡片主题色
+    theme = "primary"
+    if state in ("SIGNED", "FINISH"):
+        theme = "success"
+    elif state == "RETURN":
+        theme = "danger"
+    elif state == "DELIVERING":
+        theme = "warning"
+    elif state == "TRANSPORT":
+        theme = "info"
+
+    modules = [header(f"📦 {cp_name} · {tracking_no}")]
+
+    # 状态 + 最新动态
+    modules.append(kmd(f"**当前状态**：{state_text}"))
+    if latest:
+        modules.append(kmd(f"**最新动态**\n{latest}"))
+
+    # 物流轨迹（卡片内控制条数，避免超长）
+    modules.append(div())
+    if details:
+        shown = details[:6]
+        modules.append(kmd(f"**物流轨迹**（{len(details)} 条，展示最近 {len(shown)} 条）"))
+        for dd in shown:
+            ctx = (dd.get("context") or "").strip()
+            time_str = _box_time_fmt(dd.get("time", ""))
+            modules.append(kmd(f"`{time_str}` {ctx}"))
+    else:
+        modules.append(kmd("暂无物流轨迹"))
+
+    modules.append(div())
+    modules.append(kmd(f"`{tracking_no}` · {cp_name}"))
+
+    return card(theme, "lg", modules)
