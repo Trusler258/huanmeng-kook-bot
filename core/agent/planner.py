@@ -374,6 +374,20 @@ class AgentPlanner:
             # 至少 1 步
             steps_raw = [{"action": goal}]
 
+        # 白名单：仅允许本次 LLM 规划出的工具名落在「真实已注册工具」集合内。
+        # 防止 LLM 幻觉规划出不存在的工具（如 weather）→ 执行失败后瞎编数据。
+        # _tool_catalog() 失败时 valid_tools=None 表示「不校验」（兼容回退）。
+        try:
+            _names = {t["name"] for t in _tool_catalog()}
+            valid_tools: Optional[set] = _names or None
+        except Exception:
+            valid_tools = None
+        try:
+            _skill_names = {m.get("name") for m in self._skills.metadata()}
+            valid_skills: Optional[set] = _skill_names or None
+        except Exception:
+            valid_skills = None
+
         steps: list[PlanStep] = []
         for i, s in enumerate(steps_raw[:MAX_PLAN_STEPS]):
             if not isinstance(s, dict):
@@ -382,6 +396,12 @@ class AgentPlanner:
             tool = str(s.get("tool", "") or "").strip()
             skill = str(s.get("skill", "") or "").strip()
             params = s.get("params")
+            # 工具/能力名校验：不在白名单 → 纠偏（联网意图换 search_web，否则置空）。
+            if valid_tools is not None and tool:
+                tool = _normalize_tool_choice(tool, action, valid_tools)
+            if valid_skills is not None and skill and skill not in valid_skills:
+                logger.warning("Agent 规划出未注册 Skill=%r，已清空避免瞎编", skill)
+                skill = ""
             steps.append(PlanStep(
                 index=i, action=action, tool=tool, skill=skill,
                 params=params if isinstance(params, dict) else {},
@@ -404,6 +424,33 @@ class AgentPlanner:
         logger.info("Agent 规划完成 goal=%r steps=%d tools=%s skills=%s",
                     goal[:40], len(steps), plan.required_tools, plan.required_skills)
         return plan
+
+
+# ── 工具名纠偏：防止 LLM 规划出不存在的工具导致执行失败后瞎编 ──
+# 联网/实时信息意图关键词（命中时把未注册工具纠偏为 search_web）。
+_INTERNET_QUERY_HINTS = (
+    "查", "搜", "找", "搜寻", "查询", "获取", "天气", "温度", "气温", "湿度",
+    "空气质量", "aqi", "预报", "行情", "股价", "汇率", "实时", "最新", "新闻",
+    "资讯", "地铁", "排队", "销量", "比分", "动态",
+)
+
+
+def _normalize_tool_choice(tool: str, action: str, valid_tools: set) -> str:
+    """校验/纠偏 LLM 规划的工具名，避免未注册工具执行失败后 LLM 瞎编数据。
+
+    规则：
+    - 工具名本就在白名单 → 原样使用；
+    - 不在白名单，但步骤动作含联网/实时信息意图 → 纠偏为 search_web；
+    - 其余不在白名单的名字（纯幻觉工具）→ 置空，让模型基于已有知识直接回答，
+      绝不做未注册工具调用。
+    """
+    if tool in valid_tools:
+        return tool
+    low_action = (action or "").lower()
+    if any(k in low_action for k in _INTERNET_QUERY_HINTS):
+        return "search_web"
+    logger.warning("Agent 规划出未注册工具=%r，已纠偏为空（阻断瞎编）", tool)
+    return ""
 
 
 # ── 工具目录：只暴露 名称/描述/参数摘要，不暴露完整 schema ──
