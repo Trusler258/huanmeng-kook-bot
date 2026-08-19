@@ -935,8 +935,11 @@ async def generate_multi_reply_with_tools(
     if max_tokens and has_long_context:
         max_tokens = max(max_tokens, 8000)
 
-    # 多轮 FC Agent 循环：最多 5 轮，LLM 可以连续调多个工具
-    MAX_ROUNDS = 4
+    # 多轮 FC Agent 循环。
+    # 注意：实际轮数由 LLM 自行决定——它通过"是否继续发 tool_call"控制是否进入下一轮
+    # （run_code 失败返回"需要下一步"时 continue 放行链式重跑）。MAX_ROUNDS 只是防死循环
+    # 的保险上限（阈值较大，正常多步任务不会触发），而非硬性规定的轮数。
+    MAX_ROUNDS = 10
     errors = []
     data_results = []
     action_results = []
