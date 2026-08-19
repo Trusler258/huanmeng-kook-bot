@@ -871,12 +871,14 @@ def _calls_from_content(content: str | None) -> list[dict]:
 
 
 def _format_raw_output(raw: str, limit: int = 1500) -> str:
-    """把 run_code 的原始返回整理成给用户看的代码块，超长截断。"""
+    """把 run_code 的原始返回整理成给用户看的代码块，超长时保留头尾、折叠中间。"""
     body = raw
     if body.startswith("[运行输出]"):
         body = body[len("[运行输出]"):].strip()
     if len(body) > limit:
-        body = body[:limit] + "\n…(输出过长已截断)"
+        head = limit * 2 // 3
+        tail = limit - head - 1
+        body = body[:head] + "\n…(输出过长已截断，末尾保留)…\n" + body[-tail:]
     return f"【运行原始输出】\n```\n{body}\n```"
 
 

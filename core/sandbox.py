@@ -100,7 +100,12 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
     def _cut(b: bytes) -> str:
         text = b.decode("utf-8", errors="replace")
         if len(text) > MAX_OUTPUT:
-            text = text[:MAX_OUTPUT] + f"\n…(输出过长，已截断，共 {len(b.decode('utf-8', errors='replace'))} 字符)"
+            # 保留头尾：末尾常是最终结果（如 uptime / 退出信息 / 报错栈），不能整段丢
+            total = len(b.decode("utf-8", errors="replace"))
+            head = MAX_OUTPUT * 2 // 3
+            tail = MAX_OUTPUT - head - 1
+            text = (text[:head] + f"\n…(输出过长，已截断 {total} 字符，末尾保留)…\n"
+                    + text[-tail:])
         return text
 
     return {
