@@ -881,7 +881,15 @@ async def _execute_impl(
     # 构建参数列表
     args = []
     if tool_name == "weather":
-        args = [arguments.get("city", "")]
+        # Agent 工具路径：直接返回真实天气文本给 LLM，杜绝「未注册 handler → 返回 None → 瞎编」。
+        city = str(arguments.get("city", "") or "").strip()
+        if not city:
+            return "请先告诉我你要查询哪个城市的天气。"
+        from modules.weather import query_weather, build_weather_report
+        data = await query_weather(city)
+        if not data:
+            return f"查询 {city} 的天气失败（网络或城市名问题），请稍后重试或换个城市。"
+        return build_weather_report(data, user_id)
     elif tool_name == "wdsj":
         # WDSJ 发图：强制用绑定名
         player = await _resolve_player(user_id, "wdsj")
