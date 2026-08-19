@@ -3382,8 +3382,8 @@ async def _plugin_update_cmd(non_flags: list[str]) -> str:
     mgr = await _plugin_mgr()
     cur = {x.get("name"): x for x in mgr.list()}
 
-    # 无参：列出可更新项
-    if not non_flags:
+    # 无参：列出可更新项（non_flags 恒含子命令词 update，仅 1 项即为无参）
+    if len(non_flags) == 1:
         ok, plugins, err = PS.lib_list()
         if not ok:
             return "❌ 插件库不可用: " + err
@@ -3401,8 +3401,8 @@ async def _plugin_update_cmd(non_flags: list[str]) -> str:
         return ("插件库有可用更新：\n" + "\n".join(updates)
                 + "\n用 `.plugin update <名字>` 更新")
 
-    # 带参：更新指定插件
-    name = non_flags[0]
+    # 带参：更新指定插件（non_flags[1] 才是插件名，non_flags[0] 是子命令词 update）
+    name = non_flags[1]
     if not PS.validate_name(name):
         return "❌ 插件名非法（仅限字母/数字/_/-）"
     ok, info, err = PS.lib_latest(name)
