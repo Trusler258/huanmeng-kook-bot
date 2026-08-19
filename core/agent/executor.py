@@ -236,6 +236,8 @@ class AgentExecutor:
             budget.use_tool()
             return
         budget.use_tool()
+        # 优化点：每步工具调用前发一条非 emoji 的步骤提示，提升 Agent 过程透明度。
+        self._notify_step(ctx, step)
         # Phase 8：Agent 不得直接执行工具，统一走 ToolRuntime（权限/超时/重试/预算/Trace）
         from core.tool_runtime import ToolRequest, get_tool_runtime
         from core.trace import get_trace_id
@@ -263,6 +265,23 @@ class AgentExecutor:
             step.result = f"工具执行出错: {e}"
         if step.result:
             accumulated.append(f"[工具:{step.tool}]\n{step.result}")
+
+    def _notify_step(self, ctx: AgentContext, step: PlanStep) -> None:
+        """工具执行前发一条非 emoji 的步骤提示（后台分发，失败静默）。"""
+        if not ctx.chat_id:
+            return
+        name = (step.tool or step.skill or "指令").strip()
+        text = f"[Agent 步骤 {step.index}] 正在执行：{name}…"
+        try:
+            async def _go():
+                try:
+                    from services.sender import send_by_chat_type
+                    await send_by_chat_type(text, ctx.chat_id, ctx.is_group, ctx.user_id)
+                except Exception as e:
+                    logger.warning("Agent 步骤提示发送失败: %s", e)
+            asyncio.create_task(_go())
+        except Exception as e:
+            logger.warning("Agent 步骤提示调度失败: %s", e)
 
     # ── 供测试/同步调用的工具执行入口（实际走 async）──
     async def _await_tool(self, step: PlanStep, ctx: AgentContext,

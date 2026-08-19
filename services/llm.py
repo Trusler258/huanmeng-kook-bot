@@ -1390,7 +1390,9 @@ def normalize_final_reply(raw: str) -> Optional[str]:
     if not (stripped.startswith('{') or stripped.startswith('[')):
         return text
     replies, *_ = _parse_reply(text, quiet=True)
-    out = "\n".join(str(r) for r in replies if str(r).strip()).strip()
+    # 用空行（段落）拼接，而非单纯换行：让后续 Agent 按句分段发送时能识别出
+    # 独立的消息单元，从而带上句间自然间隔（而不是把多条短回复粘成一条）。
+    out = "\n\n".join(str(r) for r in replies if str(r).strip()).strip()
     return out or None
 
 

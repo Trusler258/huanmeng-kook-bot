@@ -54,6 +54,23 @@ def _has_new_topic(msg: str) -> bool:
     return len(text) >= 2
 
 
+async def _send_progress(text: str, chat_id: int, is_group: bool, user_id: int) -> None:
+    """轻量进度提示：单条消息直接发送，失败静默（不抛进主流程）。"""
+    try:
+        from services.sender import send_by_chat_type
+        await send_by_chat_type(text, chat_id, is_group, user_id)
+    except Exception as e:
+        logger.warning("Agent 进度提示发送失败: %s", e)
+
+
+def _agent_entry_text(task: str) -> str:
+    """Agent 模式入口提示文案：先正常陈述一句，再斜体输出 [Agent Mode] 任务。"""
+    task = (task or "").strip()
+    if len(task) > 50:
+        task = task[:50] + "…"
+    return f"正在处理任务，进入 Agent 模式...\n*[Agent Mode] 任务：{task or '（空）'}*"
+
+
 async def try_handle_with_agent(
     msg: str,
     *,
@@ -86,6 +103,8 @@ async def try_handle_with_agent(
     if (constraints.is_continuation or constraints.is_one_shot or constraints.detail_level == "high") \
             and has_continuation(chat_id, user_id) \
             and not _has_new_topic(msg):
+        # Issue1：续说也进入 Agent → 先发入口提示再执行。
+        await _send_progress(_agent_entry_text(msg), chat_id, is_group, user_id)
         continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
         result = await get_executor().try_continue_task(continuation_ctx,
                                                         constraints=constraints)
@@ -106,6 +125,9 @@ async def try_handle_with_agent(
     trace_id = get_trace_id()
     logger.info("Agent: 进入规划 pipeline trace=%s intent=%s msg='%s'",
                 trace_id, intent, msg[:40])
+
+    # Issue1：确认进入 Agent 模式后，先发一句入口提示再规划，避免"无感知直接进 agent"。
+    await _send_progress(_agent_entry_text(msg), chat_id, is_group, user_id)
 
     # 规划：失败 → fallback
     plan = await planner.plan(msg, constraints=constraints)
@@ -203,17 +225,57 @@ async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,
             ctx.append_to_buffer(chat_id, f"{cfg.bot_name}: {s_clean}")
 
 
-def _split_sentences(text: str, max_len: int = 3000) -> list[str]:
-    """把长文本拆成可发送的多句（按换行优先，再按句号）。
+def _split_sentences(text: str, max_len: int = 3000, max_items: int = 10) -> list[str]:
+    """把长文本拆成可发送的多句。
 
-    Phase 20 Hotfix D：保留行内缩进（不再 strip 行），且不在 ``` 代码块
-    围栏内部切分——代码块整体归属同一条消息，保证代码结构不被拆碎。
+    Phase 20 Hotfix E（Issue2）：
+    - 优先按"空行（段落 \n\n）"天然切分，各段独立成句发送。配合句间随机延迟，
+      让多条短回复按自然节奏逐条发出，而不是粘成一条长消息；
+    - 代码块围栏（``` ... ```）内部一律不切分，整体归属同一条消息；
+    - 单个段落仍超长时，再按行做长度拆分。
     """
     text = (text or "").strip()
     if not text:
         return []
-    if len(text) <= max_len:
-        return [text]
+
+    # 1) 按空行切段，围栏内部不切。
+    paras: list[str] = []
+    buf = ""
+    in_fence = False
+    for ln in text.split("\n"):
+        stripped = ln.strip()
+        is_fence_line = stripped.startswith("```")
+        if is_fence_line:
+            # 围栏标记行永远并入当前段（避免把 ``` 单独切成一段）
+            in_fence = not in_fence
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
+        if in_fence:
+            # 代码块内部：完整累积，绝不按空行/长度切分
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
+        if stripped == "":
+            # 空行 = 段落分隔（仅在围栏外生效）
+            if buf:
+                paras.append(buf)
+                buf = ""
+            continue
+        buf = (buf + "\n" + ln) if buf else ln
+    if buf:
+        paras.append(buf)
+
+    # 2) 展开每个段落；超长段落再做行级拆分。
+    out: list[str] = []
+    for p in paras:
+        if len(p) <= max_len:
+            out.append(p)
+        else:
+            out.extend(_split_long_lines(p, max_len))
+    return out[:max_items] or [text[:max_len]]
+
+
+def _split_long_lines(text: str, max_len: int = 3000) -> list[str]:
+    """按行 + 长度拆分（不破坏代码块围栏），供超长段落降级使用。"""
     lines = text.split("\n")
     out: list[str] = []
     buf = ""
@@ -222,12 +284,10 @@ def _split_sentences(text: str, max_len: int = 3000) -> list[str]:
         stripped = ln.strip()
         is_fence_line = stripped.startswith("```")
         if is_fence_line:
-            # 围栏标记行永远并入当前 buf（避免把 ``` 单独切成一段）
             in_fence = not in_fence
             buf = (buf + "\n" + ln) if buf else ln
             continue
         if in_fence:
-            # 代码块内部：完整累积，绝不按长度切分
             buf = (buf + "\n" + ln) if buf else ln
             continue
         if len(buf) + len(ln) + 1 > max_len:
