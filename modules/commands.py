@@ -1083,53 +1083,6 @@ async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_qq)
     )
 
 
-# ─── 沙箱执行指令 ──────────────────────────────────────────
-
-async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """.run <py|cpp|sh|描述> — 沙箱真实执行代码并返回运行产物"""
-    if not args:
-        return ("用法:\n"
-                ".run py <代码> 运行Python\n"
-                ".run cpp <代码> 编译运行C++\n"
-                ".run sh <命令> 终端命令(如 .run sh cd / && ls -l)\n"
-                ".run <描述> 自动生成代码并运行(如 .run 创建10个md文件打包zip)")
-    first = args[0].lower()
-
-    # 审批回调：.run approve/deny <token>（仅 admin）
-    if first in ("approve", "deny") and len(args) >= 2:
-        cfg = get_config()
-        if not cfg.is_admin(user_id, group_id):
-            return "只有管理员才能审批喵~"
-        from services.notify_system import resolve_run_approval
-        return resolve_run_approval(args[1], first == "approve")
-
-    # 语言选择
-    lang = "python"
-    if first in ("py", "python"):
-        lang, rest = "python", args[1:]
-    elif first in ("cpp", "c++", "g++"):
-        lang, rest = "cpp", args[1:]
-    elif first in ("sh", "shell", "bash", "terminal", "终端"):
-        lang, rest = "shell", args[1:]
-    else:
-        rest = args
-    body = " ".join(rest).strip()
-    if not body:
-        return f"用法: .run {lang} <代码或描述>"
-
-    from core.tools import _run_code_tool
-    arguments: dict = {"language": lang}
-    if lang == "shell":
-        arguments["code"] = body
-    else:
-        # 含代码特征(= ( ) { } [ ] ; 换行)视为直接代码，否则视为自然语言描述
-        looks_code = bool(re.search(r'[()={}\[\];\n]', body))
-        arguments["code"] = body if looks_code else ""
-        arguments["description"] = "" if looks_code else body
-    return await _run_code_tool(
-        arguments, user_id, group_id, sender_name, is_group, bot_qq)
-
-
 # ─── 忽略/解除忽略指令 ──────────────────────────────────────
 
 async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -3557,7 +3510,6 @@ COMMAND_MAP: dict[str, callable] = {
     "kook_channel_id": cmd_kook_channel_id,  # ★ 查询当前频道 ID
     "kcid":            cmd_kook_channel_id,  # 短别名
     "write_code":  cmd_write_code,  # ★ 代码生成
-    "run":         cmd_run,         # ★ 沙箱执行（py/cpp/sh/描述）
     "ignore":      cmd_ignore,      # ★ 忽略用户
     "unignore":    cmd_unignore,    # ★ 解除忽略
     "reload":     cmd_reload,
