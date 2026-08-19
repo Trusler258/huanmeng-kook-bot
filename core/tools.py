@@ -718,7 +718,7 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "earthquake": 10.0,
     "read_url":   20.0,
     "write_code": 120.0,
-    "run_code":   60.0,   # 沙箱执行：含代码生成 LLM + 编译/运行 + 产物收集，需留足时间
+    "run_code":   300.0,  # 沙箱执行：含代码生成 LLM + 编译/运行 + 产物收集，需留足时间（高难度压测≤5min）
     "calc":        8.0,
     "agent_think": 90.0,
     "whois":      12.0,
