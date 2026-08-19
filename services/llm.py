@@ -936,13 +936,15 @@ async def generate_multi_reply_with_tools(
         max_tokens = max(max_tokens, 8000)
 
     # 多轮 FC Agent 循环：最多 5 轮，LLM 可以连续调多个工具
-    MAX_ROUNDS = 2
+    MAX_ROUNDS = 4
     errors = []
     data_results = []
     action_results = []
     run_raw_outputs = []  # run_code 的真实原始返回（用于透传给用户）
+    needs_next_any = False  # run_code 返回"需要下一步"信号 → 放行下一轮链式调用
 
     for round_idx in range(MAX_ROUNDS):
+        needs_next_any = False  # 每轮重置：仅依据本轮 run_code 结果判断是否需要继续链式执行
         result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
@@ -1042,6 +1044,9 @@ async def generate_multi_reply_with_tools(
             # 收集 run_code 的真实原始输出（成功返回带 [运行输出] 前缀），用于透传给用户
             if tc["name"] == "run_code" and tool_text and tool_text.startswith("[运行输出]"):
                 run_raw_outputs.append(tool_text)
+            # run_code 带"需要下一步"信号（执行失败/超时）→ 本轮不结束，下一轮由 LLM 修正后重跑
+            if tc["name"] == "run_code" and "需要下一步" in tool_text:
+                needs_next_any = True
             # 工具返回长内容时扩大 max_tokens
             if len(tool_text) > 500:
                 max_tokens = max(max_tokens or 0, 8000)
@@ -1053,6 +1058,10 @@ async def generate_multi_reply_with_tools(
             elif tool_text:
                 action_results.append(tool_text)
 
+        # run_code 失败 → 放行下一轮链式调用（LLM 修正后再次 run_code），而非直接 break 收尾
+        if needs_next_any:
+            logger.info("FC: run_code 需要下一步，继续链式执行")
+            continue
         # 遇到错误或数据结果 → 停止循环
         if errors or data_results:
             break
