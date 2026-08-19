@@ -3275,11 +3275,16 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw
         ok, err = await (await _plugin_mgr()).unload(name)
         return await _plugin_action_result(ok, err, f"✅ 已卸载插件 `{name}`")
 
+    # ── update：从插件库一键更新（无参列可更新，带参执行覆盖热重载）──
+    if sub in ("update", "更新"):
+        return await _plugin_update_cmd(non_flags)
+
     return ("用法：`.plugin [status|list]`\n"
             "`.plugin reload <名字>`  热重载\n"
             "`.plugin enable <名字>`  启用\n"
             "`.plugin disable <名字>` 禁用\n"
             "`.plugin unload <名字>`  卸载（需二次确认）\n"
+            "`.plugin update [名字]`  插件库一键更新（无参列出可更新项）\n"
             "`.plugin -pack/-import/-down/-load` 插件打包/导入/下载/加载")
 
 
@@ -3344,10 +3349,13 @@ def _plugin_overwrite_prompt(name: str, fname: str, conflict: dict, cur: Optiona
 
 async def _plugin_overwrite_confirm(pending: dict) -> str:
     """确认覆盖安装：卸载旧实例 → 清缓存模块 → 覆盖解包 → 重新加载启用。"""
+    return await _plugin_overwrite_install(pending["name"], pending["fname"])
+
+
+async def _plugin_overwrite_install(name: str, fname: str) -> str:
+    """覆盖安装并热重载：卸载旧实例 → 清缓存模块 → 覆盖解包 → 重新加载启用。"""
     import sys as _sys
     from modules import plugin_share as PS
-    name = pending["name"]
-    fname = pending["fname"]
     mgr = await _plugin_mgr()
     cur = {x.get("name"): x for x in mgr.list()}.get(name)
     if cur:
@@ -3363,6 +3371,57 @@ async def _plugin_overwrite_confirm(pending: dict) -> str:
     if not ok2:
         return f"❌ 已覆盖文件但加载失败: {msg2}"
     return f"✅ {msg} | {msg2}"
+
+
+async def _plugin_update_cmd(non_flags: list[str]) -> str:
+    """`.plugin update`：从插件库拉取最新版并覆盖热重载。
+
+    无参 → 列出库中比本地新的插件；带参 → 下载该插件 .hmp 并覆盖安装。
+    """
+    from modules import plugin_share as PS
+    mgr = await _plugin_mgr()
+    cur = {x.get("name"): x for x in mgr.list()}
+
+    # 无参：列出可更新项
+    if not non_flags:
+        ok, plugins, err = PS.lib_list()
+        if not ok:
+            return "❌ 插件库不可用: " + err
+        updates: list[str] = []
+        for lp in plugins:
+            p = cur.get(lp.get("name"))
+            if not p:
+                continue
+            lv = str(p.get("version") or "0.0.0")
+            pv = str(lp.get("version") or "0.0.0")
+            if PS.compare_versions(pv, lv) > 0:
+                updates.append(f"  {lp['name']}: v{lv} → v{pv}")
+        if not updates:
+            return f"插件库（{PS.lib_base()}）无可用更新，全部插件已是最新"
+        return ("插件库有可用更新：\n" + "\n".join(updates)
+                + "\n用 `.plugin update <名字>` 更新")
+
+    # 带参：更新指定插件
+    name = non_flags[0]
+    if not PS.validate_name(name):
+        return "❌ 插件名非法（仅限字母/数字/_/-）"
+    ok, info, err = PS.lib_latest(name)
+    if not ok:
+        return "❌ 插件库查询失败: " + err
+    pv = str(info.get("version") or "0.0.0")
+    dl = info.get("download_url") or PS.lib_download_url(name)
+    p = cur.get(name)
+    if not p:
+        return (f"❌ 本地未安装插件 `{name}`（库中 v{pv}），"
+                f"可用 `.plugin -import {dl}` 安装")
+    lv = str(p.get("version") or "0.0.0")
+    if PS.compare_versions(pv, lv) <= 0:
+        return f"✅ `{name}` 已是最新（本地 v{lv}，库 v{pv}）"
+
+    ok2, msg2 = PS.download_hmp(dl)
+    if not ok2:
+        return "❌ 下载失败: " + msg2
+    return await _plugin_overwrite_install(name, PS.local_filename_for(dl))
 
 
 def _plugin_cards_data() -> list[dict]:

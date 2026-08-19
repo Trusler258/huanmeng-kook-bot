@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
 import zipfile
@@ -369,6 +370,50 @@ def list_downloads() -> tuple[bool, list[str]]:
     """列出 _down 下所有 .hmp。"""
     files = sorted(p for p in _down_dir().glob("*" + HMP_EXT))
     return True, [p.name for p in files]
+
+
+# ── 插件库（一键更新）──────────────────────────────────
+# 库地址可用环境变量 PLUGIN_LIB_BASE 覆盖，默认本地服务器 20030 端口。
+# 库 API：
+#   GET /v1/plugin/list                → 插件列表 {plugins:[{name,version,download_url,...}]}
+#   GET /v1/plugin/hmp/{name}          → 单插件信息（含 version / download_url）
+#   GET /v1/plugin/hmp/{name}.hmp      → 直接下载 .hmp（兼容 -import）
+def lib_base() -> str:
+    return os.environ.get("PLUGIN_LIB_BASE", "http://01240820.xyz:20030").rstrip("/")
+
+
+def lib_list(timeout: float = 8.0) -> tuple[bool, list[dict], str]:
+    """拉取插件库插件列表。返回 (ok, plugins, err)。"""
+    try:
+        import httpx
+        resp = httpx.get(f"{lib_base()}/v1/plugin/list", timeout=timeout,
+                         follow_redirects=True, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+        return True, list(data.get("plugins") or []), ""
+    except Exception as e:
+        return False, [], f"{e}"
+
+
+def lib_latest(name: str, timeout: float = 8.0) -> tuple[bool, dict, str]:
+    """查询插件库中某插件的最新信息。返回 (ok, info, err)。"""
+    if not validate_name(name):
+        return False, {}, "插件名非法"
+    try:
+        import httpx
+        resp = httpx.get(f"{lib_base()}/v1/plugin/hmp/{name}", timeout=timeout,
+                         follow_redirects=True, verify=False)
+        if resp.status_code == 404:
+            return False, {}, "插件库中不存在该插件"
+        resp.raise_for_status()
+        return True, dict(resp.json()), ""
+    except Exception as e:
+        return False, {}, f"{e}"
+
+
+def lib_download_url(name: str) -> str:
+    """插件库 .hmp 下载直链（与 local_filename_for 推导的落盘名一致）。"""
+    return f"{lib_base()}/v1/plugin/hmp/{name}{HMP_EXT}"
 
 
 # ── 运行时加载已解包插件 ────────────────────────────────
