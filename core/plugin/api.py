@@ -5,19 +5,26 @@ Phase 13 Plugin API（Huanmeng 2.0）
 直接访问数据库或修改内部 Runtime 对象。
 
 暴露的能力（全部可选，按需使用）：
-- message  : 发送 / 回复消息（走 Response Delivery）
-- memory   : 记忆写入 / 检索（走 Memory Engine，异步不阻塞）
-- event    : 订阅 / 发布事件（走 EventBus）
-- timer    : 注册周期定时器（reload/unload 自动取消）
+- message   : 发送 / 回复消息（走 Response Delivery）
+- memory    : 记忆写入 / 检索（走 Memory Engine，异步不阻塞）
+- event     : 订阅 / 发布事件（走 EventBus）
+- timer     : 注册周期定时器（reload/unload 自动取消）
 - capability: 注册 Command / Skill / Tool 能力（走 CapabilityRegistry）
-- config   : 读取本插件 manifest 声明的静态配置
-- economy  : 积分余额 / 权益库存读写（唯一锁 + 原子写，杜绝跨插件并发丢更新）
-- image    : 图片提取（复用 dispatcher 附件/卡片/表情/引用提取器 + 按引用 ID 拉消息捞图）
-- vision   : 图片识别（复用 services.image_api 视觉 LLM 描述）
+- config    : 读取本插件 manifest 声明的静态配置
+- economy   : 积分余额 / 权益库存读写（唯一锁 + 原子写，杜绝跨插件并发丢更新）
+- image     : 图片提取（复用 dispatcher 附件/卡片/表情/引用提取器 + 按引用 ID 拉消息捞图）
+- vision    : 图片识别（复用 services.image_api 视觉 LLM 描述）
+- identity  : 权限判定（is_admin，走 core.config 全局权限）
+- logger    : 本插件命名空间的日志器
+- llm       : 文本生成（走 services.llm，默认 reply_model，惰性导入）
+- approval  : 人工审批申请 / 回传（走 services.notify_system，惰性导入）
+- sandbox   : 沙箱真实执行 py/cpp/shell + 产物收集 + 清理（走 core.sandbox，惰性导入）
 
 约束：
 - 不暴露 db、core 内部 Runtime、文件系统、网络、进程执行。
 - 高风险权限（网络/文件/进程）由 Phase 17 Permission 统一裁决，本层不直接开放。
+- 上述 Adapter 一律惰性 import 内部实现，插件经 ctx.* 调用即与内部实现解耦；
+  Core 内部重构时只需保持这些公开方法签名不变，插件无需改动。
 """
 from __future__ import annotations
 
@@ -49,6 +56,15 @@ class PluginMessage:
             return True
         except Exception as e:
             logger.warning("Plugin %s 发送失败: %s", self._plugin, e)
+            return False
+
+    async def send_file(self, file_path: str, chat_id: int, is_group: bool = True) -> bool:
+        """发送文件（先上传为 asset）。失败返回 False（不抛异常）。"""
+        try:
+            from services.sender import send_file as _send_file
+            return bool(await _send_file(file_path, chat_id, is_group))
+        except Exception as e:
+            logger.warning("Plugin %s 发送文件失败: %s", self._plugin, e)
             return False
 
 
@@ -335,6 +351,92 @@ class PluginVision:
         return ""
 
 
+class PluginIdentity:
+    """身份 / 权限判定：is_admin 走 core.config 全局权限。"""
+
+    @staticmethod
+    def is_admin(user_id, group_id: int = 0) -> bool:
+        try:
+            from core.config import get_config
+            return bool(get_config().is_admin(user_id, group_id))
+        except Exception as e:
+            logger.warning("PluginIdentity.is_admin 失败: %s", e)
+            return False
+
+
+class PluginLLM:
+    """文本生成：走 services.llm.call_llm，默认用机器人回复主模型reply_model。"""
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    async def generate(self, messages: list[dict], temperature: float = 0.3,
+                       timeout: float = 60.0) -> str:
+        """生成文本。messages 为 [{role,content},...]，缺省模型=reply_model，返回原始文本。"""
+        try:
+            from core.config import get_config
+            from services.llm import call_llm
+            model_cfg = getattr(get_config(), "reply_model", None)
+            if model_cfg is None:
+                logger.warning("Plugin %s llm.generate: 未配置 reply_model", self._plugin)
+                return ""
+            return (await call_llm(model_cfg, messages,
+                                   temperature=temperature, timeout=timeout) or "").strip()
+        except Exception as e:
+            logger.warning("Plugin %s llm.generate 失败: %s", self._plugin, e)
+            return ""
+
+
+class PluginApproval:
+    """人工审批：申请/回传走 services.notify_system（内部实现可替换）。"""
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    async def request(self, plan_desc: str, timeout: float = 120.0) -> bool:
+        """发起审批卡片，等待管理员确认；放行返回 True，取消/超时返回 False。"""
+        try:
+            from services.notify_system import request_run_approval
+            return bool(await request_run_approval(plan_desc, timeout=timeout))
+        except Exception as e:
+            logger.warning("Plugin %s approval.request 失败: %s", self._plugin, e)
+            return False
+
+    def resolve(self, token: str, approved: bool) -> str:
+        """回传审批结果（按钮回调用）。"""
+        from services.notify_system import resolve_run_approval
+        return resolve_run_approval(token, approved)
+
+
+class PluginSandbox:
+    """沙箱真实执行：py/cpp/shell + 产物收集 + 清理，走 core.sandbox（惰性导入）。"""
+
+    @staticmethod
+    async def run_python(code: str, **kwargs) -> dict:
+        from core import sandbox
+        return await sandbox.run_python(code, **kwargs)
+
+    @staticmethod
+    async def run_cpp(files: dict, **kwargs) -> dict:
+        from core import sandbox
+        return await sandbox.compile_and_run_cpp(files, **kwargs)
+
+    @staticmethod
+    async def run_shell(command: str, **kwargs) -> dict:
+        from core import sandbox
+        return await sandbox.run_shell(command, **kwargs)
+
+    @staticmethod
+    def collect_artifacts(tmp_dir) -> list:
+        from core import sandbox
+        return sandbox.collect_artifacts(tmp_dir)
+
+    @staticmethod
+    def cleanup(tmp_dir) -> None:
+        from core import sandbox
+        sandbox.cleanup(tmp_dir)
+
+
 class PluginContext:
     """插件上下文：插件唯一的 API 入口。"""
 
@@ -350,6 +452,11 @@ class PluginContext:
         self.image = PluginImage()
         self.vision = PluginVision(plugin_name)
         self.economy = _economy
+        self.identity = PluginIdentity()
+        self.llm = PluginLLM(plugin_name)
+        self.approval = PluginApproval(plugin_name)
+        self.sandbox = PluginSandbox()
+        self.logger = logger
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""
