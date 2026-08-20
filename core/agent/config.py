@@ -26,6 +26,15 @@ TOTAL_TASK_TIMEOUT: float = float(os.getenv("AGENT_TOTAL_TIMEOUT", "60"))
 PLANNER_LLM_TIMEOUT: float = float(os.getenv("AGENT_PLANNER_TIMEOUT", "15"))
 EVALUATOR_LLM_TIMEOUT: float = float(os.getenv("AGENT_EVALUATOR_TIMEOUT", "10"))
 
+# ── Agent 入口 LLM 门卫（Phase 20 Hotfix F）────────────────────────
+# 规则 should_plan 放行后，对"短句/含糊"这类边界消息再用一次极低成本 LLM 二次确认
+# （max_tokens 极小，只回 0/1），避免 "你会做吗"、"西红柿炒蛋你会做吗" 这类承接上文的
+# 闲聊被规则误判为 task 强拉进 Agent（导致 LLM 无活可干，编"我如何处理@消息"的元认知废话）。
+# 明确强任务标记命中时跳过门卫直接进 Agent；边界长度以内的消息才触发一次门卫确认。
+PLANNER_CONFIRM_MODEL: str = os.getenv("AGENT_CONFIRM_MODEL", "")       # 留空=复用 reply_model
+PLANNER_CONFIRM_MAX_LEN: int = int(os.getenv("AGENT_CONFIRM_MAX_LEN", "24"))
+PLANNER_CONFIRM_TIMEOUT: float = float(os.getenv("AGENT_CONFIRM_TIMEOUT", "8"))
+
 # 规划判定最小消息长度：过短消息不进入 LLM 规划（仍是 Fast Path）。
 # Phase 20 Part4：从 12 降到 8，让"分析这个项目并修改优化/整理并搜索多个资料"
 # 等短复杂任务能进入规划；纯闲聊由 _is_casual 排除，不受此阈值影响。

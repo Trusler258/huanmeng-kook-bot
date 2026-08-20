@@ -15,7 +15,12 @@ import re
 import time
 from typing import Optional
 
-from core.agent.config import AGENT_ENABLED
+from core.agent.config import (
+    AGENT_ENABLED,
+    PLANNER_CONFIRM_MODEL,
+    PLANNER_CONFIRM_MAX_LEN,
+    PLANNER_CONFIRM_TIMEOUT,
+)
 from core.agent.executor import (
     AgentContext, get_executor, has_continuation, get_continuation,
 )
@@ -71,6 +76,75 @@ def _agent_entry_text(task: str) -> str:
     return f"正在处理任务，进入 Agent 模式...\n*[Agent Mode] 任务：{task or '（空）'}*"
 
 
+# ── Phase 20 Hotfix F：Agent 入口 LLM 门卫 ──────────────────────────
+# 明确强任务标记：命中即跳过门卫直接进 Agent（长任务、多步骤、产出物），不打扰。
+_STRONG_TASK_MARKERS: tuple[str, ...] = (
+    "帮我写", "帮我做", "帮我查", "帮我找", "帮我分析", "帮我整理", "帮我配置",
+    "帮我调查", "帮我检查", "帮我看看", "帮我算", "帮我搜索", "帮我部署",
+    "写一个", "写一个程序", "写代码", "运行", "执行一下", "分析一下", "整理一下",
+    "总结一下", "对比一下", "修改一下", "翻译一下", "生成", "创建", "打包",
+    "部署", "搭建", "实现", "研究一下", "介绍一下", "详细", "展开", "完整",
+)
+
+
+async def _should_confirm_agent_entry(msg: str, intent: str) -> bool:
+    """是否需要对"是否进入 Agent"做一次轻量 LLM 二次确认。
+
+    仅边界情况触发：规则已放行（should_plan=True），但消息较短（≤ 边界长度）且
+    未命中明确强任务标记 → 回落 LLM 判断"是真复杂任务，还是普通聊天/承接上文"。
+    明确复杂任务 / 长消息直接进入 Agent，不额外调 LLM，避免拖慢正常任务。
+    """
+    if intent == "command":
+        return False
+    text = (msg or "").strip()
+    if len(text) > PLANNER_CONFIRM_MAX_LEN:
+        return False
+    low = text.lower()
+    return not any(m in low for m in _STRONG_TASK_MARKERS)
+
+
+async def _llm_confirms_agent(msg: str, intent: str) -> bool:
+    """用一次极低成本 LLM（max_tokens≈5，只回 0/1）确认"用户这句话是否真需要进 Agent"。
+
+    返回 True → 是复杂任务，应进 Agent；False → 普通聊天/承接上文，回退 Fast Path。
+    任何异常/超时/解析失败都保守返回 True（不阻断已放行的规则判定，避免丢真实任务）。
+    """
+    try:
+        from core.config import get_config
+        from services.llm import call_llm
+        cfg = get_config()
+        model_cfg = None
+        if PLANNER_CONFIRM_MODEL:
+            try:
+                model_cfg = cfg.get_model(PLANNER_CONFIRM_MODEL)
+            except Exception:
+                model_cfg = None
+        if model_cfg is None:
+            model_cfg = getattr(cfg, "reply_model", None)
+        if model_cfg is None:
+            return True
+
+        prompt = (
+            "判断用户这句话是否需要进入'Agent 模式'（Agent 会调用工具/搜索/执行代码"
+            "来完成任务）。\n"
+            "只回一个数字：0 表示这只是普通聊天/闲聊/承接上文的简单提问，不需要 Agent；"
+            "1 表示这是需要调用工具、联网、执行代码、多步骤处理的任务。\n"
+            "不要输出任何其他内容，只要 0 或 1。\n\n"
+            f"用户消息：{msg[:100]}\n"
+        )
+        raw = await call_llm(
+            model_cfg,
+            [{"role": "user", "content": prompt}],
+            max_tokens=5, temperature=0.0, timeout=PLANNER_CONFIRM_TIMEOUT,
+        )
+        raw = (raw or "").strip()
+        logger.info("Agent 门卫判定 msg=%r raw=%r", msg[:40], raw)
+        return "1" in raw and "0" not in raw
+    except Exception as e:
+        logger.warning("Agent 门卫失败，保守放行: %s", e)
+        return True
+
+
 async def try_handle_with_agent(
     msg: str,
     *,
@@ -121,6 +195,13 @@ async def try_handle_with_agent(
     if not planner.should_plan(msg, intent, is_group):
         logger.debug("Agent: 无需规划(简单消息/intent=%s)，保持 Fast Path", intent)
         return False
+
+    # Phase 20 Hotfix F：规则放行后，"短句/含糊"边界消息再经一次轻量 LLM 确认，
+    # 避免 "你会做吗" 这类承接上文的闲聊被规则(task)强拉进 Agent 后 LLM 编元认知废话。
+    if await _should_confirm_agent_entry(msg, intent):
+        if not await _llm_confirms_agent(msg, intent):
+            logger.info("Agent: 门卫判定为普通聊天(%r)，回退 Fast Path", msg[:30])
+            return False
 
     trace_id = get_trace_id()
     logger.info("Agent: 进入规划 pipeline trace=%s intent=%s msg='%s'",

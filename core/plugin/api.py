@@ -456,7 +456,7 @@ class PluginContext:
         self.llm = PluginLLM(plugin_name)
         self.approval = PluginApproval(plugin_name)
         self.sandbox = PluginSandbox()
-        self.logger = logger
+        self.logger = get_logger(plugin_name)
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""
