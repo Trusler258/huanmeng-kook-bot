@@ -1020,7 +1020,6 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             executed_calls.append((cmd_name, cmd_args))
 
     is_at_me = raw_message and (f"(met){bot_qq}(met)" in raw_message or f"[CQ:at,qq={bot_qq}]" in raw_message)
-    combined_reply = " || ".join(sentences)
     if executed_calls and is_group and is_at_me:
         first_call_idx = -1
         for i, s in enumerate(sentences):
@@ -1030,8 +1029,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         if first_call_idx > 0:
             logger.debug("丢弃 CALL 前的 %d 句闲聊（@优先）", first_call_idx)
             sentences = sentences[first_call_idx:]
-
-    combined_reply = re.sub(r'\[CALL:[^\]]+\]', '', combined_reply).strip()
+    # CALL/FACE 标记清理直接在列表元素上做，保持 sentences 为 JSON 多句数组，
+    # 不经过 " || ".join 字符串往返（消除竖线泄漏的历史遗留）。
+    sentences = [re.sub(r'\[CALL:[^\]]+\]', '', s).strip() for s in sentences]
     if executed_calls:
         hints = []
         for c in set(name for name, _ in executed_calls):
@@ -1043,19 +1043,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------表情处理------
     if not face_cq:
         # 静默去除 [FACE:xxx] 残留
-        combined_reply = re.sub(r'\[FACE:[^\]]*\]?', '', combined_reply).strip()
+        sentences = [re.sub(r'\[FACE:[^\]]*\]?', '', s).strip() for s in sentences]
 
-    sentences = [s for s in combined_reply.split(" || ") if s.strip()]
+    sentences = [s for s in sentences if s.strip()]
     # 通用分句：结构化标题优先（知识类回答按阶段分条），闲聊长句按自然段落兜底拆分，
     # 让 Fast Path 与 Agent 路径的分句行为一致（Phase20 HotfixF: 门卫把闲聊降回 Fast Path
     # 后仍能分句发送，不再粘成一条长消息）。
-    sentences = list(split_reply_for_send(" || ".join(sentences)))
+    sentences = list(split_reply_for_send("\n\n".join(sentences)))
     if not sentences:
         sentences = ["喵~"]
     _face_cq_for_later = face_cq
 
     # ------上下文回写------
-    _context_reply = re.sub(r'\s*\[系统\]\s*已调用:\s*\S+', '', " || ".join(sentences)).strip()
+    _context_reply = "\n".join(sentences)
     # ★ 标记简化写入上下文（避免图片标记污染 LLM 上下文）
     _context_reply = re.sub(r'\[img:file:[^\]]*\]', '[图片]', _context_reply)
     _context_reply = re.sub(r'\[img:https?://[^\]]*\]', '[图片]', _context_reply)

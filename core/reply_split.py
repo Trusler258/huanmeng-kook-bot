@@ -133,28 +133,12 @@ def split_reply_for_send(text: str, max_len: int = 3000, max_items: int = 10) ->
 
     优先调用 split_knowledge_sentences（如含 >=2 个**小标题**/第X代/编号则严格按阶段分条）；
     若结构化标题不足（普通聊天/承接上文），则按自然段落 + 长度拆成多条，让长回复也能分句发送。
-
-    Phase 20 Hotfix G：处理 ` || ` 内部粘接符。上游（core.pipeline）把句子用 ` || ` 拼回单串
-    再交给本函数切分——若只按空行/超长切，` || ` 会被当成普通正文原样漏到最终回复（用户
-    看到"|"残留）。这里在结构/段落切分前先把 ` || ` 展开为独立句段并剥掉分隔符。
+    多句由上游以 JSON 数组维护，传入前用空行 join；本函数只负责把含结构化标题或长文本的
+    内容稳妥地拆成可逐条发送的列表，不做字符串化的竖线拼接。
     """
-    return _split_reply_for_send(text, max_len=max_len, max_items=max_items, _top=True)
-
-
-def _split_reply_for_send(text: str, max_len: int = 3000, max_items: int = 10,
-                          _top: bool = True) -> list[str]:
     text = (text or "").strip()
     if not text:
         return []
-
-    # 仅顶层做 ` || `（带两侧空格）展开；递归子句不再展开，避免单句内部相交的 `||` 触发死循环。
-    if _top and " || " in text:
-        parts = [p.strip() for p in text.split(" || ") if p.strip()]
-        if len(parts) > 1:
-            out: list[str] = []
-            for p in parts:
-                out.extend(_split_reply_for_send(p, max_len=max_len, max_items=max_items, _top=False))
-            return out[:max_items] or [text[:max_len]]
 
     structured = split_knowledge_sentences(text)
     if len(structured) > 1:
