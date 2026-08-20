@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -871,7 +872,13 @@ def _calls_from_content(content: str | None) -> list[dict]:
 
 
 def _format_raw_output(raw: str, limit: int = 1500) -> str:
-    """把 run_code 的原始返回整理成给用户看的代码块，超长时保留头尾、折叠中间。"""
+    """把 run_code 的原始返回整理成给用户看的代码块，超长时保留头尾、折叠中间。
+
+    若内容自身已含代码围栏（```，如回显了带 ```python 块的 Markdown 文件之类），
+    就把返回的每行左缩进 4 空格再包进外层 ```：CommonMark/KMD 中缩进的
+    "    ```" 不会被当作闭合围栏，全部内容都能留在外层代码块内，避免"围栏
+    后续的文本漏到代码块外"的显示问题。
+    """
     body = raw
     if body.startswith("[运行输出]"):
         body = body[len("[运行输出]"):].strip()
@@ -879,6 +886,13 @@ def _format_raw_output(raw: str, limit: int = 1500) -> str:
         head = limit * 2 // 3
         tail = limit - head - 1
         body = body[:head] + "\n…(输出过长已截断，末尾保留)…\n" + body[-tail:]
+    body = body.strip()
+    if re.search(r'(?m)^ {0,3}```', body):
+        # 内容已含围栏 → 每非空行左缩进 4 空格，让内层 ``` 变成缩进字面代码、不闭合外层
+        body = "\n".join(
+            ("    " + ln) if ln.strip() else ln
+            for ln in body.split("\n")
+        )
     return f"【运行原始输出】\n```\n{body}\n```"
 
 
