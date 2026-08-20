@@ -66,3 +66,75 @@ def split_knowledge_sentences(text: str) -> list[str]:
     if tail:
         segs.append(tail)
     return [s for s in segs if s]
+
+
+def _chunks_by_paragraph(text: str, max_len: int = 3000, max_items: int = 10) -> list[str]:
+    """按空行切段 + 超长段落按行切分（代码块围栏内一律不切），供普通聊天分句兜底。
+
+    与 core.agent.gateway 的分句逻辑保持一致，让 Fast Path 与 Agent 路径分句行为统一：
+    优先依赖结构化标题拆分；标题不足（闲聊/承接上文）时，落到这里按自然段落分条发送，
+    避免一条长回复粘成一整条消息。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    paras: list[str] = []
+    buf = ""
+    in_fence = False
+    for ln in text.split("\n"):
+        stripped = ln.strip()
+        is_fence = stripped.startswith("```")
+        if is_fence:
+            in_fence = not in_fence
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
+        if in_fence:
+            buf = (buf + "\n" + ln) if buf else ln
+            continue
+        if stripped == "":
+            if buf:
+                paras.append(buf)
+                buf = ""
+            continue
+        buf = (buf + "\n" + ln) if buf else ln
+    if buf:
+        paras.append(buf)
+
+    # 超长段落按行切分（不破坏代码围栏）
+    out: list[str] = []
+    for p in paras:
+        if len(p) <= max_len:
+            out.append(p)
+            continue
+        seg = ""
+        f2 = False
+        for ln in p.split("\n"):
+            s = ln.strip()
+            if s.startswith("```"):
+                f2 = not f2
+                seg = (seg + "\n" + ln) if seg else ln
+                continue
+            if f2:
+                seg = (seg + "\n" + ln) if seg else ln
+                continue
+            if len(seg) + len(ln) + 1 > max_len:
+                if seg:
+                    out.append(seg)
+                seg = ln
+            else:
+                seg = (seg + "\n" + ln) if seg else ln
+        if seg:
+            out.append(seg)
+    return out[:max_items] or [text[:max_len]]
+
+
+def split_reply_for_send(text: str, max_len: int = 3000, max_items: int = 10) -> list[str]:
+    """通用回复分句：结构化标题优先，标不足时按空行/长度兜底拆分。
+
+    优先调用 split_knowledge_sentences（如含 >=2 个**小标题**/第X代/编号则严格按阶段分条）；
+    若结构化标题不足（普通聊天/承接上文），则按自然段落 + 长度拆成多条，让长回复也能分句发送。
+    """
+    structured = split_knowledge_sentences(text)
+    if len(structured) > 1:
+        return structured
+    return _chunks_by_paragraph(text, max_len=max_len, max_items=max_items)
