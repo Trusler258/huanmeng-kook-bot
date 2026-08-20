@@ -11,6 +11,7 @@ Phase 13 Plugin API（Huanmeng 2.0）
 - timer    : 注册周期定时器（reload/unload 自动取消）
 - capability: 注册 Command / Skill / Tool 能力（走 CapabilityRegistry）
 - config   : 读取本插件 manifest 声明的静态配置
+- economy  : 积分余额 / 权益库存读写（唯一锁 + 原子写，杜绝跨插件并发丢更新）
 - image    : 图片提取（复用 dispatcher 附件/卡片/表情/引用提取器 + 按引用 ID 拉消息捞图）
 - vision   : 图片识别（复用 services.image_api 视觉 LLM 描述）
 
@@ -29,6 +30,7 @@ from core.capability import (
     Capability, CATEGORY_COMMAND, CATEGORY_TOOL, RUNTIME_COMMAND, RUNTIME_FC,
     get_capability_registry,
 )
+from core import economy as _economy
 
 logger = get_logger("plugin.api")
 
@@ -347,6 +349,7 @@ class PluginContext:
         self.capability = PluginCapability(plugin_name)
         self.image = PluginImage()
         self.vision = PluginVision(plugin_name)
+        self.economy = _economy
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""
