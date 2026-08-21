@@ -27,6 +27,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from core.logger import get_logger
+
+logger = get_logger("core.complexity")
+
 # ── 复杂度等级 ─────────────────────────────────────────────
 LEVEL_CHAT = "chat"
 LEVEL_KNOWLEDGE = "knowledge"
@@ -218,6 +222,25 @@ def assess_complexity(msg: str) -> Complexity:
         score += 10
     if len(text) >= 80:
         score += 10
+
+    # 5.5) "核实断言"：用户提出一个需要证实真伪的事实断言（"X是不是真的""真的假的""属实吗"）
+    # 且含具体实体/事实载体（市值/股价/行情/新闻/事件/公司/上市等）→ 必须搜索核实，归 task。
+    # 解决"不知道却凭内在知识直接判真假"的问题：这类问题不应走闲聊快速回答。
+    _verify_phrase = any(p in text for p in (
+        "是真的吗", "是不是真的", "真的假的", "是真的", "真假的", "属实吗", "是真的不", "是真的嘛",
+    ))
+    _verify_carrier = any(w in text for w in (
+        "市值", "股价", "行情", "股价", "新闻", "事件", "上市", "价格", "销量",
+        "发布", "推出", "产量", "收入", "利润", "增长", "下跌", "上涨", "超过", "超过",
+    ))
+    if _verify_phrase and _verify_carrier and len(text) >= 6:
+        logger.debug("Agent: 断言核实(%r)，归 task 以便搜索核实", text[:20])
+        return Complexity(
+            level=LEVEL_TASK, score=score,
+            output_max_tokens=_OUTPUT_TOKENS[LEVEL_TASK],
+            context_scale=_CONTEXT_SCALE[LEVEL_TASK],
+            detail_hint=_DETAIL_HINT[LEVEL_TASK],
+        )
 
     # ── 分级 ──
     # 纯知识动词（讲解/介绍/解释/分析/说明等）本质是"解释/讲解"，优先归 knowledge，

@@ -154,11 +154,15 @@ async def try_handle_with_agent(
     is_group: bool,
     bot_qq: int,
     intent: str = "",
+    recent_history: list = None,
 ) -> bool:
     """尝试用 Agent 处理复杂任务。返回 True=已处理并发出回复；False=回退原 pipeline。
 
     仅当 Agent 全局开关开启、且规则判定需要规划时，才会进入规划/执行。
     规划失败 / 执行无回复 / 未开启 → False（调用方保持原 Fast Path 不丢消息）。
+
+    recent_history：近 N 条对话（不含当前句）。用于"去查查/再搜下/是么"这类承接句
+    结合前文确定搜索主题，避免孤立消息 plan/搜索跑偏。
     """
     if not AGENT_ENABLED:
         return False
@@ -210,15 +214,31 @@ async def try_handle_with_agent(
     # Issue1：确认进入 Agent 模式后，先发一句入口提示再规划，避免"无感知直接进 agent"。
     await _send_progress(_agent_entry_text(msg), chat_id, is_group, user_id)
 
+    # 承接句（去查查/再搜/真的吗）需结合前文确定主题：把最近历史拼进任务请求，
+    # 让规划器/搜索能理解"查什么"而不是孤立地处理"去查查"。
+    task_request = msg
+    if recent_history:
+        try:
+            _hist = [h for h in recent_history if isinstance(h, str) and h.strip()]
+        except Exception:
+            _hist = []
+        if _hist:
+            task_request = (
+                "以下为最近对话（供理解当前请求的前文，当前请求在最后）：\n"
+                + "\n".join(_hist[-6:])
+                + "\n\n当前请求：" + msg
+            )
+
     # 规划：失败 → fallback
-    plan = await planner.plan(msg, constraints=constraints)
+    plan = await planner.plan(task_request, constraints=constraints)
     if plan is None:
         logger.info("Agent: 规划失败，fallback 原 pipeline trace=%s", trace_id)
         set_plan_summary(planned=False, reason="plan_failed")
         return False
 
     # 执行：按 Plan 执行 Skill/Tool，得到最终回复
-    ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
+    ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg,
+                     recent_history=recent_history)
     result = await get_executor().execute(plan, ctx)
 
     # 发送最终回复 + 写上下文
@@ -235,7 +255,7 @@ async def try_handle_with_agent(
 
 
 def _build_ctx(user_id: int, chat_id: int, sender_name: str, is_group: bool,
-               bot_qq: int, msg: str) -> AgentContext:
+               bot_qq: int, msg: str, recent_history: list = None) -> AgentContext:
     return AgentContext(
         user_id=int(user_id or 0),
         group_id=int(chat_id or 0) if is_group else 0,
@@ -244,6 +264,7 @@ def _build_ctx(user_id: int, chat_id: int, sender_name: str, is_group: bool,
         is_group=bool(is_group),
         bot_qq=int(bot_qq or 0),
         original_msg=msg,
+        recent_history=list(recent_history or []),
     )
 
 

@@ -381,10 +381,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if intent != "command":
         try:
             from core.agent.gateway import try_handle_with_agent
+            # Agent 传入最近对话历史，让"去查查/再搜下/是么"这类承接句能结合前文定主题，
+            # 避免孤立消息 plan/搜索跑偏（如把"你去查查"误解成查用户本人）。
+            recent_history = ctx.get_context(chat_id)[-8:] or []
             if await try_handle_with_agent(
                 msg_content, user_id=user_id, chat_id=chat_id,
                 sender_name=sender_name, is_group=is_group, bot_qq=bot_qq,
-                intent=intent,
+                intent=intent, recent_history=recent_history,
             ):
                 return
         except Exception as _ae:

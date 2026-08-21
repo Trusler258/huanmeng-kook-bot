@@ -56,6 +56,7 @@ class AgentContext:
     bot_qq: int = 0
     chat_id: int = 0
     original_msg: str = ""
+    recent_history: list[str] = field(default_factory=list)  # 近 N 条对话，供承接句定主题
 
 
 @dataclass
