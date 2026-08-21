@@ -49,6 +49,24 @@ def _count_search_results(text: str) -> int:
     return max(1, text.count("\n\n") + 1)
 
 
+def _is_continuation(query: str) -> bool:
+    """判断 query 是否为"承接前文"的短句（自身无实体词/事实对象）。
+
+    命中"搜搜看吧?/去查查/再搜下/帮我查下/是吗"这类无实体词承接句时，搜索必须
+    依赖上下文补主题，否则搜了个寂寞。凡含明确实体语义的搜索词都不算承接句。
+    """
+    q = (query or "").strip()
+    if len(q) > 8:
+        return False
+    # 纯动作/疑问承接，无事实对象
+    continuation = (
+        "搜搜", "搜下", "搜一搜", "去搜", "再搜", "帮我搜", "搜搜看", "去查",
+        "查查", "查下", "查一查", "帮你查", "查查看", "查查看", "查一下",
+        "是吧", "是吗", "真的吗", "真的假", "对不对", "对吧", "看看", "查吗",
+    )
+    return any(k in q for k in continuation)
+
+
 async def perform_search(
     query: str,
     sender_name: str = "",
@@ -57,10 +75,19 @@ async def perform_search(
     limit: int = 4,
     source: str = "all",
     is_group: bool = False,
+    context: str = "",
 ) -> Optional[str]:
     """
     执行搜索：缓存 → Agent级搜索（百度+bing+百科并行）→ 格式化 → 写缓存/记忆。
+
+    context：最近对话上下文（可选）。当 query 是承接句（如"搜搜看吧?")自身无实体词时，
+    用于给 DeepSeek 搜索补充"搜什么"的主题上下文，避免搜到无关内容或搜了个寂寞。
     """
+    # 承接句无实体词：把前文并入 query 前缀，让原生搜索理解"关注主体"。
+    if context and len(query.strip()) <= 8 and _is_continuation(query):
+        merged = f"{context[:200]} | 聚焦搜索：{query}"
+        logger.info("搜索承接句，合并上下文补主题: query=%r → %r", query[:30], merged[:80])
+        query = merged
     # ── Step 1: 缓存命中检查 ──
     cached = get_cached_search(query)
     if cached:
@@ -143,11 +170,15 @@ async def auto_search_if_needed(
     user_id: int,
     chat_id: int,
     is_group: bool = False,
+    context: str = "",
 ) -> Optional[str]:
     """
     自动搜索：根据关键词和实时性判断是否需要搜索。
     仅对非 @ 消息生效。
-    
+
+    context：最近对话上下文（可选）。用于"搜搜看吧?"这类承接句补主题，以及交给
+    模型判断时参考"搜什么"。
+
     Returns:
         搜索结果文本；不需要搜索时返回 None
     """
@@ -186,18 +217,17 @@ async def auto_search_if_needed(
     # 快速关键词匹配
     if keyword_need_search(msg):
         logger.info("自动搜索触发（关键词）: '%s...'", msg[:30])
-        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group)
+        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
     # 实时话题判断
     if is_realtime_query(msg):
         logger.info("自动搜索触发（实时话题）: '%s...'", msg[:30])
-        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group)
+        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
-    # 回退到模型判断（较慢，仅前面都没命中时）
-    context_str = ""  # 调用方应传入上下文
-    need_model = await _needs_search_judge(msg, context_str)
+    # 回退到模型判断（较慢，仅前面都没命中时）；承接句必须带上下文才能判断"搜什么"
+    need_model = await _needs_search_judge(msg, context)
     if need_model:
         logger.info("自动搜索触发（模型判断）: '%s...'", msg[:30])
-        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group)
+        return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
     return None

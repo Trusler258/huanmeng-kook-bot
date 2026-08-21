@@ -775,8 +775,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if _fast_search:
         try:
             with _trace_span("search"):
+                # 承接句（"搜搜看吧?"无实体词）需结合前文确定搜索主题。
+                _search_ctx = ""
+                try:
+                    _recent = ctx.get_context(chat_id)[-6:] or []
+                    _search_ctx = "\n".join(
+                        h for h in _recent if isinstance(h, str) and h.strip()
+                    )[-400:]
+                except Exception:
+                    _search_ctx = ""
                 search_result = await auto_search_if_needed(
-                    msg_content, sender_name, user_id, chat_id, is_group
+                    msg_content, sender_name, user_id, chat_id, is_group,
+                    context=_search_ctx,
                 )
             if search_result:
                 # Phase 9：搜索结果注入 search 桶并按预算重建 extra_info
