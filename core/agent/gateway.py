@@ -59,6 +59,30 @@ def _has_new_topic(msg: str) -> bool:
     return len(text) >= 2
 
 
+def _clean_agent_msg(msg: str, bot_qq: int = 0) -> str:
+    """清洗 Agent 任务消息，剥离提及机器人/他人的 @ 标记，避免污染规划与搜索词。
+
+    KOOK 收到的 @ 是 (met)用户ID(met) 格式（发送层会替换为 @QQ 显示），Agent 任务里
+    不应把 (met)1341019011(met) 这类原始标记拼进 plan 的 goal 或 search_web 的 query；
+    否则会出现"[Agent Mode] 任务：@1341019011 长鑫存储..."、搜索词里也带上 @ 的问题。
+    返回清洗后的消息；仅保留确有实质内容的部分。
+    """
+    import re as _re
+    text = msg or ""
+    # 剥离 KOOK (met)ID(met) @提及
+    text = _re.sub(r"\(met\)\w+\(met\)", " ", text)
+    text = _re.sub(r"\[CQ:at,qq=\d+\]", " ", text)
+    # 剥离文本形式 @QQ / @机器人名
+    if bot_qq:
+        text = _re.sub(rf"@\s*{bot_qq}(?!\d)", " ", text)
+    # 折叠多余空白
+    text = _re.sub(r"\s+", " ", text).strip()
+    # 剥离后只剩纯 @（如用户只 @ 没说事）→ 空串，让其走原 Fast Path
+    if not text or _re.sub(r"@\w+", "", text).strip() == "":
+        return ""
+    return text
+
+
 async def _send_progress(text: str, chat_id: int, is_group: bool, user_id: int) -> None:
     """轻量进度提示：单条消息直接发送，失败静默（不抛进主流程）。"""
     try:
@@ -166,6 +190,7 @@ async def try_handle_with_agent(
     """
     if not AGENT_ENABLED:
         return False
+    msg = _clean_agent_msg(msg, bot_qq=bot_qq)
     if not msg or not msg.strip():
         return False
 
