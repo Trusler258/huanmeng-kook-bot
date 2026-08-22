@@ -437,6 +437,26 @@ class PluginSandbox:
         sandbox.cleanup(tmp_dir)
 
 
+class PluginCard:
+    """卡片渲染能力：把 HTML 模板渲染成图片（惰性依赖核心渲染基础设施）。
+
+    渲染基础设施（Playwright 全局浏览器 + 模板引擎）留在核心共享，
+    插件只通过此能力生成卡片图片，再自行用 ctx.message.send_file 发送。
+    """
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    async def render_weather_card(self, data: dict, output_filename: Optional[str] = None) -> Optional[str]:
+        """生成天气卡片图片，返回图片绝对路径；失败返回 None（调用方回退纯文本）。"""
+        try:
+            from modules.changelog import generate_weather_card
+            return await generate_weather_card(data, output_filename=output_filename)
+        except Exception as e:
+            logger.warning("Plugin %s 天气卡片渲染失败: %s", self._plugin, e)
+            return None
+
+
 class PluginPipeline:
     """消息管道钩子：允许插件在消息处理流程中插入逻辑。
 
@@ -566,6 +586,7 @@ class PluginContext:
         self.llm = PluginLLM(plugin_name)
         self.approval = PluginApproval(plugin_name)
         self.sandbox = PluginSandbox()
+        self.card = PluginCard(plugin_name)
         self.logger = get_logger(plugin_name)
 
     def config(self, key: str, default: Any = None) -> Any:
