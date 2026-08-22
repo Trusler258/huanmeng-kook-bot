@@ -116,7 +116,7 @@ async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
                                 user_id=user_id if not is_group else None)
 
     result = await safe_check_and_update(
-        check_only=check_only, force=force, require_approval=not yes,
+        check_only=check_only, force=force, require_approval=False,
         progress=None if (check_only or quiet) else _progress,
     )
 
