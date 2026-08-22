@@ -242,7 +242,13 @@ _HELP_DETAIL = {
                  "  .countdown del 1              删除",
 
     "balance": "【余额查询 .balance】\n"
-               "  查询 DeepSeek API 余额\n",
+               "  查询当前供应商 API 余额\n"
+               "  (DeepSeek / 硅基流动支持, Token Rhythm 需去用户中心)\n",
+
+    "model": "【模型供应商 .model .provider】\n"
+             "  .model                    查看当前供应商与模型\n"
+             "  .model <deepseek|tokenrhythm|siliconflow> [模型名]\n"
+             "  切换供应商, 模型名缺省为 deepseek-v4-flash\n",
 
     "voice": "【语音 .voice】\n"
              "  .voice <文本>           Edge TTS 合成语音\n"
@@ -388,16 +394,40 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """余额查询 .balance"""
+    """余额查询 .balance — 查询当前选中供应商的余额"""
     from core.config import get_config
     cfg = get_config()
+    provider = (cfg.reply_model.provider or "DEEPSEEK").upper()
     key = cfg.reply_model.key
     if not key:
-        return "未配置 DeepSeek API Key 喵~"
+        return "未配置 API Key 喵~"
+
+    # Token Rhythm 无公开余额查询 API（只能去用户中心网页查看）
+    if provider == "TOKENRHYTHM":
+        return "基元律动 (Token Rhythm) 暂无 API 余额查询接口，\n请到用户中心查看: https://tokenrhythm.studio/account"
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if provider == "SILICONFLOW":
+                base_url = (cfg.reply_model.url or "https://api.siliconflow.cn/v1").rstrip("/")
+                resp = await client.get(
+                    f"{base_url}/user/info",
+                    headers={"Accept": "application/json", "Authorization": f"Bearer {key}"},
+                )
+                if resp.status_code != 200:
+                    return f"查询失败: HTTP {resp.status_code} 喵~"
+                data = resp.json().get("data", {})
+                balance = data.get("balance", "?")
+                total = data.get("totalBalance", "?")
+                charge = data.get("chargeBalance", "?")
+                lines = ["【硅基流动 (SiliconFlow) 余额】"]
+                lines.append(f"  当前余额: {balance}")
+                lines.append(f"  总余额:   {total}")
+                lines.append(f"  充值额:   {charge}")
+                return "\n".join(lines)
+
+            # 默认 DeepSeek
             resp = await client.get(
                 "https://api.deepseek.com/user/balance",
                 headers={"Accept": "application/json", "Authorization": f"Bearer {key}"},
@@ -1187,12 +1217,13 @@ def _read_provider_cfg() -> tuple[str, str]:
 
 
 async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """切换回复模型供应商 .provider / .供应商
+    """切换回复模型供应商 .model / .provider / .供应商
 
     用法:
-      .provider            查看当前供应商与可用列表
-      .provider <名字>      切换回复模型到指定供应商（deepseek/tokenrhythm/siliconflow）
-    仅管理员可用。切换后写入 bot_config.toml 的 model.replyer_1.provider 并热重载。
+      .model                    查看当前供应商与可用列表
+      .model <名字> [模型名]     切换回复模型到指定供应商（deepseek/tokenrhythm/siliconflow）
+                             模型名缺省为 deepseek-v4-flash
+    仅管理员可用。切换后写入 bot_config.toml 的 model.replyer_1 并热重载。
     """
     roles = load_roles_config()
     admin_qq = roles.get("admin_qq")
@@ -1209,7 +1240,7 @@ async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
             mark = "● 当前" if p["label"] == cur_provider else ("✓ 已配" if ready else "✗ 未配 key")
             lines.append(f"  {key:<14} {p['name']}  {mark}")
         lines.append("")
-        lines.append("切换: .provider <deepseek|tokenrhythm|siliconflow>")
+        lines.append("切换: .model <deepseek|tokenrhythm|siliconflow> [模型名]")
         return "\n".join(lines)
 
     target = args[0].strip().lower()
@@ -1220,17 +1251,22 @@ async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
     if not _provider_ready(label):
         return f"{_PROVIDERS[target]['name']} 尚未配置（.env 缺少 {label}_URL / {label}_KEY），无法切换"
 
+    # 第二个参数为模型名，缺省 deepseek-v4-flash
+    model_name = args[1].strip() if len(args) >= 2 and args[1].strip() else "deepseek-v4-flash"
+
     # 写回 bot_config.toml
     import toml
     from pathlib import Path
     _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
     data = toml.load(_cfg_path) if _cfg_path.exists() else {}
-    data.setdefault("model", {}).setdefault("replyer_1", {})["provider"] = label
+    m = data.setdefault("model", {}).setdefault("replyer_1", {})
+    m["provider"] = label
+    m["name"] = model_name
     _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
 
     reload_config()
-    logger.info("供应商切换: %s → %s (by %s)", cur_provider, label, sender_name)
-    return f"回复模型供应商已切换为: {_PROVIDERS[target]['name']}\n(provider={label})"
+    logger.info("供应商切换: %s/%s → %s/%s (by %s)", cur_provider, cur_model, label, model_name, sender_name)
+    return f"回复模型已切换为: {_PROVIDERS[target]['name']}\n(provider={label}, model={model_name})"
 
 
 async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_qq):
