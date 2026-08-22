@@ -8,6 +8,7 @@ dist/
 # 密钥
 .env
 config/.env
+server_config_backup/.env.server
 *.key
 *.pem
 
