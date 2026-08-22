@@ -243,7 +243,8 @@ _HELP_DETAIL = {
 
     "balance": "【余额查询 .balance】\n"
                "  查询当前供应商 API 余额\n"
-               "  (DeepSeek / 硅基流动支持, Token Rhythm 需去用户中心)\n",
+               "  (DeepSeek / 硅基流动 / 基元律动均支持,\n"
+               "   基元律动需在 .env 配置 TR_COOKIE 登录态)\n",
 
     "model": "【模型供应商 .model .provider】\n"
              "  .model                    查看当前供应商与模型\n"
@@ -393,18 +394,81 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "__CARD__:" + json.dumps(build_info(d), ensure_ascii=False)
 
 
+_TR_API = "https://tokenrhythm.studio/api"
+
+
+async def _tr_balance() -> str:
+    """Token Rhythm 余额（逆向接口，需 .env 配置 TR_COOKIE 或 TR_TOKEN）
+
+    GET /wallet/expiring-credits  → 额度明细，真实余额 = Σ remainingCny
+    GET /usage/panel?range=today  → 当日用量（调用次数 / 花费）
+    """
+    import os
+    cookie = os.environ.get("TR_COOKIE", "").strip()
+    token = os.environ.get("TR_TOKEN", "").strip()
+    if not cookie and not token:
+        return ("基元律动余额需要登录态鉴权（.env 未配置 TR_COOKIE / TR_TOKEN）\n"
+                "可到用户中心查看: https://tokenrhythm.studio/account")
+
+    headers = {"Accept": "application/json",
+               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    if token:
+        headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
+    if cookie:
+        headers["Cookie"] = cookie
+
+    async def _api_get(path: str):
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(_TR_API + path, headers=headers)
+            if r.status_code == 401:
+                raise ValueError("登录态已失效，请更新 .env 中的 TR_COOKIE")
+            if r.status_code != 200:
+                raise ValueError(f"HTTP {r.status_code}")
+            data = r.json()
+            if data.get("code") not in (0, None):
+                raise ValueError(data.get("message", "业务错误"))
+            return data.get("data", {})
+
+    try:
+        wallet = await _api_get("/wallet/expiring-credits?page=1&pageSize=100")
+        usage = await _api_get("/usage/panel?range=today&page=1&pageSize=1")
+    except Exception as e:
+        return f"基元律动余额查询失败: {e}"
+
+    credits = wallet.get("list", [])
+    total = sum(float(x.get("remainingCny") or 0) for x in credits)
+    summary = wallet.get("summary", {})
+    next_expiry = str(summary.get("nextExpiryAt") or "")[:10]
+
+    s = usage.get("summary", {})
+    calls = s.get("calls", usage.get("total", 0))
+    spent = float(s.get("costCny") or 0)
+
+    lines = ["【基元律动 (TokenRhythm) 余额】",
+             f"  可用余额: ¥{total:.2f}（{len(credits)} 条额度）"]
+    if next_expiry:
+        lines.append(f"  最早过期: {next_expiry}")
+    lines.append(f"  今日消耗: ¥{spent:.4f} / {calls} 次调用")
+    top = sorted(credits, key=lambda x: -float(x.get("remainingCny") or 0))[:3]
+    for x in top:
+        lines.append(f"  · {x.get('sourceLabel', '?')}: 余 ¥{float(x.get('remainingCny') or 0):.2f}")
+    return "\n".join(lines)
+
+
 async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
     """余额查询 .balance — 查询当前选中供应商的余额"""
     from core.config import get_config
     cfg = get_config()
     provider = (cfg.reply_model.provider or "DEEPSEEK").upper()
+
+    # Token Rhythm 无官方余额 API → 走逆向接口（不依赖 API Key，用 Cookie 登录态）
+    if provider == "TOKENRHYTHM":
+        return await _tr_balance()
+
     key = cfg.reply_model.key
     if not key:
         return "未配置 API Key 喵~"
-
-    # Token Rhythm 无公开余额查询 API（只能去用户中心网页查看）
-    if provider == "TOKENRHYTHM":
-        return "基元律动 (Token Rhythm) 暂无 API 余额查询接口，\n请到用户中心查看: https://tokenrhythm.studio/account"
 
     try:
         import httpx
