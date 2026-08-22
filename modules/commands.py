@@ -1155,11 +1155,86 @@ async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_qq):
     return format_lang("reload.success")
 
 
+# ── 模型供应商选择 ─────────────────────────────────────────
+# 预设供应商表：展示名 + 对应 bot_config.toml 里的 provider 标签。
+# 实际 url/key 从 config/.env 读取（<PROVIDER>_URL / <PROVIDER>_KEY），指令只切换 provider 标签。
+_PROVIDERS = {
+    "deepseek":     {"label": "DEEPSEEK",     "name": "DeepSeek"},
+    "tokenrhythm":  {"label": "TOKENRHYTHM",  "name": "基元律动 (Token Rhythm)"},
+    "siliconflow":  {"label": "SILICONFLOW",  "name": "硅基流动 (SiliconFlow)"},
+}
+
+
+def _provider_ready(label: str) -> bool:
+    """判断供应商是否已在 .env 配好 url+key。"""
+    try:
+        import os
+        url = os.environ.get(f"{label}_URL", "")
+        key = os.environ.get(f"{label}_KEY", "")
+        return bool(url and key)
+    except Exception:
+        return False
+
+
+def _read_provider_cfg() -> tuple[str, str]:
+    """读回当前 replyer_1 的 (provider, model_name)。"""
+    import toml
+    from pathlib import Path
+    _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
+    data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+    m = data.get("model", {}).get("replyer_1", {})
+    return m.get("provider", ""), m.get("name", "")
+
+
+async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """切换回复模型供应商 .provider / .供应商
+
+    用法:
+      .provider            查看当前供应商与可用列表
+      .provider <名字>      切换回复模型到指定供应商（deepseek/tokenrhythm/siliconflow）
+    仅管理员可用。切换后写入 bot_config.toml 的 model.replyer_1.provider 并热重载。
+    """
+    roles = load_roles_config()
+    admin_qq = roles.get("admin_qq")
+    if user_id != admin_qq:
+        return format_lang("error.permission_denied")
+
+    cur_provider, cur_model = _read_provider_cfg()
+
+    # 无参数 → 展示列表
+    if not args:
+        lines = ["【模型供应商】", f"当前: {cur_provider or '未设置'} (模型 {cur_model or '-'})", ""]
+        for key, p in _PROVIDERS.items():
+            ready = _provider_ready(p["label"])
+            mark = "● 当前" if p["label"] == cur_provider else ("✓ 已配" if ready else "✗ 未配 key")
+            lines.append(f"  {key:<14} {p['name']}  {mark}")
+        lines.append("")
+        lines.append("切换: .provider <deepseek|tokenrhythm|siliconflow>")
+        return "\n".join(lines)
+
+    target = args[0].strip().lower()
+    if target not in _PROVIDERS:
+        return f"未知供应商: {target}\n可用: {', '.join(_PROVIDERS)}"
+
+    label = _PROVIDERS[target]["label"]
+    if not _provider_ready(label):
+        return f"{_PROVIDERS[target]['name']} 尚未配置（.env 缺少 {label}_URL / {label}_KEY），无法切换"
+
+    # 写回 bot_config.toml
+    import toml
+    from pathlib import Path
+    _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
+    data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+    data.setdefault("model", {}).setdefault("replyer_1", {})["provider"] = label
+    _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
+
+    reload_config()
+    logger.info("供应商切换: %s → %s (by %s)", cur_provider, label, sender_name)
+    return f"回复模型供应商已切换为: {_PROVIDERS[target]['name']}\n(provider={label})"
+
+
 async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_qq):
     """添加用户关系（仅管理员私聊）"""
-    if is_group:
-        return format_lang("error.permission_denied")
-    
     roles = load_roles_config()
     admin_qq = roles["admin_qq"]
     if user_id != admin_qq:
@@ -3539,6 +3614,8 @@ COMMAND_MAP: dict[str, callable] = {
     "ignore":      cmd_ignore,      # ★ 忽略用户
     "unignore":    cmd_unignore,    # ★ 解除忽略
     "reload":     cmd_reload,
+    "provider":   cmd_provider,      # ★ 模型供应商切换
+    "供应商":     cmd_provider,      # 中文别名
     "update":     _cmd_update,
     "upd":        _cmd_update,    # 短别名
     "gh":         _cmd_gh,
