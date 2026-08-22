@@ -3615,6 +3615,7 @@ COMMAND_MAP: dict[str, callable] = {
     "unignore":    cmd_unignore,    # ★ 解除忽略
     "reload":     cmd_reload,
     "provider":   cmd_provider,      # ★ 模型供应商切换
+    "model":      cmd_provider,      # 英语别名
     "供应商":     cmd_provider,      # 中文别名
     "update":     _cmd_update,
     "upd":        _cmd_update,    # 短别名
