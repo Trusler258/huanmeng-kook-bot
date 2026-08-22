@@ -111,16 +111,36 @@ def _plain(q: str) -> str:
 
 
 def _match_expr(q: str) -> str | None:
-    """构造 FTS5 MATCH 表达式；有效字符 <3 时返回 None（改用 LIKE 回退）。
+    """构造 FTS5 MATCH 表达式；任一 token <3 字时返回 None（改用 LIKE 回退）。
 
-    trigram tokenizer 支持中文字符串 >=3 字的子串命中；
-    2 字以内的中文关键词（常见）无法被 trigram 命中，走 LIKE。
+    trigram tokenizer 只能命中 >=3 字的连续子串；2 字以内的中文关键词
+    （如"小明"）无法被 trigram 命中，走 LIKE 更可靠。
     """
     plain = _plain(q)
-    if len(plain) < 3:
+    tokens = [t for t in plain.split() if t]
+    if not tokens:
         return None
-    tokens = plain.split()
+    if any(len(t) < 3 for t in tokens):
+        return None
     return " AND ".join(f'"{t}"' for t in tokens)
+
+
+def _like_clauses(query: str) -> tuple[str, dict]:
+    """把查询按空白拆成多个子串，构造 AND 连接的 LIKE 子句。
+
+    中文查询常为整句或空格分隔的多词（如"小明 香港"），单个 %整串% 无法命中
+    分散在内容中的关键词，需逐词 AND 匹配。
+    """
+    tokens = [t for t in _plain(query).split() if t]
+    if not tokens:
+        return "1=0", {}
+    clauses: list[str] = []
+    params: dict = {}
+    for i, t in enumerate(tokens):
+        key = f"lk{i}"
+        clauses.append(f"content LIKE :{key}")
+        params[key] = f"%{t}%"
+    return " AND ".join(clauses), params
 
 
 async def fts_search_messages(engine: AsyncEngine, query: str, limit: int = 20) -> list[dict]:
@@ -186,10 +206,11 @@ async def fts_search_memories(engine: AsyncEngine, query: str, limit: int = 20,
             rows = await conn.execute(sql, q)
         else:
             where_sql, params = _memory_filters(conversation_id, user_id, since_ms)
+            like_sql, like_params = _like_clauses(query)
             sql = text(
                 "SELECT id, content, memory_type, importance, created_at FROM memories "
-                "WHERE content LIKE :like" + where_sql + " ORDER BY id DESC LIMIT :lim"
+                "WHERE " + like_sql + where_sql + " ORDER BY id DESC LIMIT :lim"
             )
-            q = dict(params, like=f"%{_plain(query)}%", lim=limit)
+            q = dict(params, **like_params, lim=limit)
             rows = await conn.execute(sql, q)
         return [dict(r._mapping) for r in rows]

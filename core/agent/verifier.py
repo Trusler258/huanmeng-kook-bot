@@ -19,14 +19,23 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.logger import get_logger
+from utils.format_lang import format_lang
 
 logger = get_logger("agent.verifier")
 
-# 失败/成功标记（规则匹配）
+# 失败/成功标记（规则匹配）——全 Agent 模块唯一来源，勿在其他处重复定义
 _FAIL_MARKERS = ("失败", "出错", "超时", "未绑定", "错误", "exception", "traceback",
                  "无结果", "无法", "不存在", "未找到", "不允许", "请先")
 _DONE_MARKERS = ("完成", "已发送", "已生成", "如下", "结果", "资料", "数据", "总结",
                  "答案", "结论", "信息")
+
+
+def has_answer_marker(text: str) -> bool:
+    """结果文本是否含"已含答案/完成"标记。"""
+    if not text:
+        return False
+    low = text.lower()
+    return any(m in low for m in _DONE_MARKERS)
 
 
 @dataclass
@@ -77,15 +86,13 @@ class AgentVerifier:
         from core.trace import record_llm
 
         remaining_text = "\n".join(f"- {s}" for s in remaining) or "（无）"
-        prompt = (
-            "你是一个任务规划评估器。当前任务目标：{goal}\n"
-            "某一步执行失败：{failed_step}\n"
-            "剩余计划步骤：\n{remaining_text}\n"
-            "已收集的信息：\n{accumulated}\n\n"
-            "判断：是否需要调整剩余步骤以继续完成目标？\n"
-            "只回答 true（需要调整继续）或 false（信息不足/无法完成，放弃并给出已有结论）。"
-        ).format(goal=goal[:200], failed_step=failed_step[:200],
-                 remaining_text=remaining_text[:800], accumulated=(accumulated or "")[:800])
+        prompt = format_lang(
+            "llm.agent.replan_judge",
+            goal=goal[:200],
+            failed_step=failed_step[:200],
+            remaining_text=remaining_text[:800],
+            accumulated=(accumulated or "")[:800],
+        )
         try:
             raw = await call_llm(
                 get_config().reply_model,

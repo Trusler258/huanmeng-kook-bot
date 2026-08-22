@@ -34,6 +34,9 @@ _last_memory_attempt: dict[int, float] = {}
 _overflow_buffers: dict[int, list[dict]] = {}
 _OVERFLOW_THRESHOLD = 10  # 累积 10 条后触发压缩
 
+# 后台落库任务引用：持有强引用避免 asyncio GC 丢弃未完成的写任务
+_background_tasks: set[asyncio.Task] = set()
+
 
 # 私聊 persona 记忆覆盖：user_id → persona 专属 memory_id
 # pipeline 私聊有 persona 时调用 set_persona_override 设置
@@ -49,14 +52,43 @@ def set_persona_override(user_id: int, memory_id: str | None):
 
 
 def clear_memory_by_id(memory_id: str) -> bool:
-    """删除指定 memory_id 的记忆文件"""
+    """删除指定 memory_id 的记忆文件，并同步清除 SQLite 对应会话记忆。"""
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     file = MEMORY_DIR / f"memory_{memory_id}.md"
+    removed = False
     if file.exists():
         file.unlink()
         logger.info("已清空记忆文件: %s", file.name)
-        return True
-    return False
+        removed = True
+    _clear_memory_sqlite_async(memory_id)
+    return removed
+
+
+def _clear_memory_sqlite_async(memory_id: str) -> None:
+    """异步清空 SQLite 对应 conversation 的记忆（纯数字 memory_id 才可映射）。"""
+    if not memory_id.isdigit():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_clear_memory_sqlite(int(memory_id)))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _clear_memory_sqlite(conversation_id: int) -> None:
+    try:
+        from db.database import db
+        if not db.initialized:
+            return
+        from db.repositories import MemoryRepository
+        async with db.session()() as s:
+            repo = MemoryRepository(s)
+            await repo.delete_for_conversation(conversation_id)
+            await s.commit()
+    except Exception as e:
+        logger.warning("清空 SQLite 记忆失败 [%d]: %s", conversation_id, e)
 
 
 def _get_memory_file(chat_id) -> Path:
@@ -135,27 +167,35 @@ def append_memory(chat_id: int, new_line: str):
 def _append_memory_sqlite_async(chat_id: int, line: str) -> None:
     """异步写一条记忆到 SQLite（不阻塞、不抛异常）。无 running loop 时跳过。"""
     try:
-        import asyncio as _asyncio
-        _asyncio.get_running_loop().create_task(_append_memory_sqlite(chat_id, line))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        pass  # 无事件循环（如同步脚本）→ 跳过 DB 写入
+        return  # 无事件循环（如同步脚本）→ 跳过 DB 写入
+    task = loop.create_task(_append_memory_sqlite(chat_id, line))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _append_memory_sqlite(chat_id: int, line: str) -> None:
-    """写一条记忆到 SQLite（Phase 20 P0）。DB 未初始化/异常 → 静默回退文件。"""
+    """写一条记忆到 SQLite（Phase 20 P0，主存储）。DB 未初始化/异常 → 静默回退文件。
+
+    按 (conversation_id, content) 去重，避免同一行被重复落库。
+    """
     try:
         from db.database import db
         if not db.initialized:
             return
         from db.repositories import MemoryRepository
-        async with db.session() as s:
+        async with db.session()() as s:
             repo = MemoryRepository(s)
+            if await repo.find(conversation_id=int(chat_id or 0), content=line):
+                return
             await repo.add(
                 content=line,
                 conversation_id=int(chat_id or 0),
                 memory_type="auto",
                 source="append",
             )
+            await s.commit()
     except Exception:
         pass  # 记忆仍保留在文件中，DB 写入失败不影响主流程
 
@@ -429,7 +469,27 @@ def merge_overflow_memory(chat_id: int, overflow: list[dict]):
 #  读取 / 搜索
 # ════════════════════════════════════════════════════════════
 
-def read_long_memory(chat_id: int, limit: int = 20) -> str:
+async def _read_long_memory_from_db(chat_id: int, limit: int) -> list[str] | None:
+    """从 SQLite 取某会话最近 N 条记忆；DB 不可用/无数据返回 None（调用方回退文件）。"""
+    try:
+        from db.database import db
+        if not db.initialized:
+            return None
+        from db.repositories import MemoryRepository
+        async with db.session()() as s:
+            repo = MemoryRepository(s)
+            rows = await repo.recent_for_conversation(int(chat_id or 0), limit)
+        return [m.content for m in rows] if rows else None
+    except Exception as e:
+        logger.warning("SQLite 长时记忆读取不可用，回退文件: %s", e)
+        return None
+
+
+async def read_long_memory(chat_id: int, limit: int = 20) -> str:
+    """长时记忆读取：SQLite 为主源，memory_*.md 仅作 legacy fallback。"""
+    db_lines = await _read_long_memory_from_db(chat_id, limit)
+    if db_lines:
+        return "\n".join(db_lines)
     file = _get_memory_file(chat_id)
     if not file.exists():
         return "暂无长期记忆"
@@ -437,13 +497,86 @@ def read_long_memory(chat_id: int, limit: int = 20) -> str:
     return "\n".join(lines[-limit:]) if lines else "暂无长期记忆"
 
 
-def search_long_memory(chat_id: int, keyword: str, limit: int = 5) -> str:
+async def _search_long_memory_from_db(chat_id: int, keyword: str, limit: int) -> list[str] | None:
+    """从 SQLite/FTS5 检索某会话含关键词的记忆；DB 不可用/无数据返回 None。"""
+    try:
+        from db.database import db
+        if not db.initialized:
+            return None
+        from db.repositories import MemoryRepository
+        async with db.session()() as s:
+            repo = MemoryRepository(s)
+            rows = await repo.search(
+                keyword, limit=limit,
+                conversation_id=(int(chat_id) if chat_id else None),
+            )
+        return [r["content"] for r in rows] if rows else None
+    except Exception as e:
+        logger.warning("SQLite 长时记忆搜索不可用，回退文件: %s", e)
+        return None
+
+
+async def search_long_memory(chat_id: int, keyword: str, limit: int = 5) -> str:
+    """长时记忆搜索：SQLite/FTS5 为主源，memory_*.md 仅作 legacy fallback。"""
+    db_hits = await _search_long_memory_from_db(chat_id, keyword, limit)
+    if db_hits:
+        return "\n".join(db_hits)
     file = _get_memory_file(chat_id)
     if not file.exists():
         return "暂无长期记忆"
     lines = file.read_text(encoding="utf-8").strip().split("\n")
     matches = [l for l in lines if keyword.lower() in l.lower()]
     return "\n".join(matches[-limit:]) if matches else f"未找到含「{keyword}」的记忆"
+
+
+async def backfill_memories_to_db() -> int:
+    """把 data/memory_*.md 存量记忆回填到 SQLite（幂等，按 (conversation_id, content) 去重）。
+
+    仅回填纯数字文件名的记忆（群聊/私聊）；persona 专属文件（user_id_pxxx）暂跳过。
+    """
+    from db.database import db
+    if not db.initialized:
+        return 0
+    from db.repositories import MemoryRepository
+
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for file in sorted(MEMORY_DIR.glob("memory_*.md")):
+        raw_id = file.stem[len("memory_"):]
+        if not raw_id.isdigit():
+            continue
+        conversation_id = int(raw_id)
+        try:
+            lines = [l.strip() for l in file.read_text(encoding="utf-8").splitlines()
+                     if l.strip() and not l.strip().startswith("#")]
+        except Exception:
+            continue
+        if not lines:
+            continue
+        try:
+            async with db.session()() as s:
+                repo = MemoryRepository(s)
+                existing = {m.content for m in await repo.list(
+                    conversation_id=conversation_id, limit=1_000_000)}
+                added = 0
+                for line in lines:
+                    if line in existing:
+                        continue
+                    await repo.add(
+                        content=line, conversation_id=conversation_id,
+                        memory_type="auto", source="backfill",
+                    )
+                    existing.add(line)
+                    added += 1
+                await s.commit()
+                if added:
+                    total += added
+                    logger.info("记忆回填 [%d]: +%d 条", conversation_id, added)
+        except Exception as e:
+            logger.warning("记忆回填失败 [%d]: %s", conversation_id, e)
+    if total:
+        logger.info("存量记忆回填完成: 共 %d 条", total)
+    return total
 
 
 # ════════════════════════════════════════════════════════════

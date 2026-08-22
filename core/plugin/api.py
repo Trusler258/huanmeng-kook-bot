@@ -437,6 +437,114 @@ class PluginSandbox:
         sandbox.cleanup(tmp_dir)
 
 
+class PluginPipeline:
+    """消息管道钩子：允许插件在消息处理流程中插入逻辑。
+
+    Hook 类型：
+    - on_message: 收到消息后、管道处理前调用。返回 str 可跳过后续管道直接回复。
+    - on_reply: 管道生成回复后、发送前调用。可修改/替换/拦截回复。
+    """
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+        self._pre_hooks: list[Callable] = []
+        self._post_hooks: list[Callable] = []
+        _get_hook_registry()._register_plugin(plugin_name, self)
+
+    def on_message(self, fn: Callable):
+        """注册消息预处理钩子。fn(msg_dict) -> str|None。
+        返回非 None 字符串则跳过管道直接作为回复发送。"""
+        self._pre_hooks.append(fn)
+        return fn
+
+    def on_reply(self, fn: Callable):
+        """注册回复后处理钩子。fn(reply_text, msg_dict) -> str|None。
+        返回 None 保持原回复；返回空字符串拦截不发送；返回其他字符串替换原回复。"""
+        self._post_hooks.append(fn)
+        return fn
+
+    def get_pre_hooks(self) -> list:
+        return list(self._pre_hooks)
+
+    def get_post_hooks(self) -> list:
+        return list(self._post_hooks)
+
+    def clear(self) -> None:
+        self._pre_hooks.clear()
+        self._post_hooks.clear()
+        _get_hook_registry()._unregister_plugin(self._plugin)
+
+
+class PluginBackground:
+    """后台任务注册：允许插件注册长时间运行的后台协程。
+
+    用法：在 on_enable 中调用 ctx.background.add(my_coro())，
+    在 on_disable/on_unload 时自动取消所有已注册任务。
+    """
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+        self._tasks: list[asyncio.Task] = []
+
+    def add(self, coro) -> asyncio.Task:
+        """注册一个后台协程，返回 asyncio.Task。插件卸载时自动取消。"""
+        async def _wrapper():
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning("Plugin %s 后台任务异常: %s", self._plugin, e)
+        task = asyncio.create_task(_wrapper())
+        self._tasks.append(task)
+        return task
+
+    def cancel_all(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        self._tasks.clear()
+
+
+class _HookRegistry:
+    """全局管道钩子注册表（单例）。pipeline.py 从此查询所有插件的钩子。"""
+
+    def __init__(self):
+        self._plugins: dict[str, "PluginPipeline"] = {}
+
+    def _register_plugin(self, name: str, pipeline: "PluginPipeline") -> None:
+        self._plugins[name] = pipeline
+
+    def _unregister_plugin(self, name: str) -> None:
+        self._plugins.pop(name, None)
+
+    def all_pre_hooks(self) -> list[Callable]:
+        hooks: list[Callable] = []
+        for p in self._plugins.values():
+            hooks.extend(p.get_pre_hooks())
+        return hooks
+
+    def all_post_hooks(self) -> list[Callable]:
+        hooks: list[Callable] = []
+        for p in self._plugins.values():
+            hooks.extend(p.get_post_hooks())
+        return hooks
+
+
+_hook_registry: Optional[_HookRegistry] = None
+
+
+def _get_hook_registry() -> _HookRegistry:
+    global _hook_registry
+    if _hook_registry is None:
+        _hook_registry = _HookRegistry()
+    return _hook_registry
+
+
+def get_pipeline_hooks() -> _HookRegistry:
+    """供 pipeline.py 获取全局钩子注册表。"""
+    return _get_hook_registry()
+
+
 class PluginContext:
     """插件上下文：插件唯一的 API 入口。"""
 
@@ -449,6 +557,8 @@ class PluginContext:
         self.event = PluginEvent(plugin_name, self.bus)
         self.timer = PluginTimer(plugin_name)
         self.capability = PluginCapability(plugin_name)
+        self.pipeline = PluginPipeline(plugin_name)
+        self.background = PluginBackground(plugin_name)
         self.image = PluginImage()
         self.vision = PluginVision(plugin_name)
         self.economy = _economy
@@ -463,7 +573,9 @@ class PluginContext:
         return self.manifest.config.get(key, default)
 
     def cleanup(self) -> None:
-        """卸载时清理：事件订阅 + 定时器 + 能力注册，防止热更新后重复执行。"""
+        """卸载时清理：事件订阅 + 定时器 + 能力注册 + 管道钩子 + 后台任务，防止热更新后重复执行。"""
         self.event.clear()
         self.timer.cancel_all()
         self.capability.unregister_all()
+        self.pipeline.clear()
+        self.background.cancel_all()

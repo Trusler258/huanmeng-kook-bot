@@ -24,26 +24,20 @@ from core.agent.config import (
     TOTAL_TASK_TIMEOUT,
 )
 from core.agent.budget import AgentBudget, LoopDetector
-from core.agent.verifier import AgentVerifier
-from core.agent.evaluator import ResultEvaluator
+from core.agent.verifier import AgentVerifier, has_answer_marker
 from core.agent.planner import Plan, PlanStep, TaskConstraints
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import record, record_llm, set_plan_summary
 from core.tool_runtime import OK
+from utils.format_lang import format_lang
 
 logger = get_logger("agent.executor")
 
-# 结果中视为"已含答案/完成"的标记（供 Verifier 判定 goal_satisfied）
-_DONE_MARKERS = ("完成", "已发送", "已生成", "如下", "结果", "资料", "数据", "总结",
-                 "答案", "结论", "信息")
-
-
-def _has_answer_marker(text: str) -> bool:
-    if not text:
-        return False
-    low = text.lower()
-    return any(m in low for m in _DONE_MARKERS)
+# 兼容保留：结果标记判定已统一收敛到 Verifier 的 has_answer_marker。
+# 保留模块级别名，供 tests/_test_phase20_hotfix_d2.py 的
+# `from core.agent.executor import _has_answer_marker` 继续可用。
+_has_answer_marker = has_answer_marker
 
 
 @dataclass
@@ -73,10 +67,11 @@ class AgentResult:
 class AgentExecutor:
     """按 Plan 执行 Skill/Tool 的执行引擎（Phase 12：集成 AgentBudget + Verifier + LoopDetector）。"""
 
-    def __init__(self, evaluator: Optional[ResultEvaluator] = None,
+    def __init__(self, evaluator: Optional[AgentVerifier] = None,
                  skill_registry=None, verifier: Optional[AgentVerifier] = None):
-        self._eval = evaluator or ResultEvaluator()
-        self._verifier = verifier or AgentVerifier()
+        # evaluator（ResultEvaluator 现为 AgentVerifier 兼容子类）与 verifier
+        # 收敛为同一对象，消除 self._eval 死代码；测试注入的 decide_replan 覆写仍生效。
+        self._verifier = verifier or evaluator or AgentVerifier()
         self._skills = skill_registry or get_skill_registry()
 
     async def execute(self, plan: Plan, ctx: AgentContext,
@@ -272,7 +267,7 @@ class AgentExecutor:
         if not ctx.chat_id:
             return
         name = (step.tool or step.skill or "指令").strip()
-        text = f"[Agent 步骤 {step.index}] 正在执行：{name}…"
+        text = format_lang("llm.agent.notify_step", index=step.index, name=name)
         try:
             async def _go():
                 try:
@@ -400,43 +395,31 @@ class AgentExecutor:
             guide = ""
             if cons is not None:
                 if cons.is_one_shot or cons.is_continuation:
-                    guide += ("\n用户明确要求一次性/继续把内容说完。请直接给出完整内容，"
-                              "不要反问用户想先看哪部分，不要只给大纲，把能给出的都一次性写完。")
+                    guide += format_lang("llm.agent.guide_one_shot")
                 if cons.detail_level == "high":
-                    guide += "\n用户要求详细。请尽量完整、具体、详细地展开所有要点。"
+                    guide += format_lang("llm.agent.guide_detail_high")
                 if cons.output_mode == "list":
-                    guide += "\n用户希望分点/分条/分步骤输出，请用清晰的编号列表组织。"
+                    guide += format_lang("llm.agent.guide_list")
                 if cons.user_constraints:
-                    guide += "\n用户原话约束：" + "、".join(cons.user_constraints)
+                    guide += format_lang("llm.agent.guide_user_constraints",
+                                         constraints="、".join(cons.user_constraints))
             # Phase 20 Hotfix C：解释型问题（为什么/原理/区别/机制）按结构组织，
             # 结论 → 原因 → 机制/示例 → 注意事项/替代方案，避免只给一句安全提示。
             goal_low = (plan.goal or "").lower()
             if any(k in goal_low for k in ("为什么", "为何", "原理", "机制", "区别",
                                            "差异", "对比", "怎么", "如何", "是不是")):
-                guide += ("\n这是解释型问题：先一句话给结论，再解释原因/机制（可举例子），"
-                          "最后说明边界与替代方案（如安全场景下的替代做法），不要只给警告。")
+                guide += format_lang("llm.agent.guide_explain")
             # 断言核实：用户求证"X是不是真的/市值是否超过Y"时，结论必须基于已获取的搜索证据，
             # 并分清"业务公司"与"上市主体"（如长鑫存储 vs 其上市主体长鑫科技），不得以二者是
             # 不同实体就武断否定整件事，也不得凭模型内在知识覆盖搜索证据。
             if any(k in goal_low for k in ("是不是", "真的吗", "真假的", "属实", "是否已",
                                            "市值", "股价", "行情", "超过", "干翻", "上市")):
-                guide += ("\n这是事实核实/对比问题。强约束（必须遵守）："
-                          "① 结论里出现的每一个事实数值（市值、股价、汇率、涨幅、时间等）"
-                          "都必须来自【已获取信息】中的搜索证据，禁止凭模型固有知识补全或编造；"
-                          "② 若某一方的关键数值（如对比的另一家公司市值）在【已获取信息】里没有，"
-                          "必须如实说'未查到该数值'并说明原因，绝不能默认常识或虚构一个数；"
-                          "③ 若搜索证据与模型固有知识冲突，一律以搜索证据为准。")
-            prompt = (
-                "请根据以下任务目标和已获取的信息，用你一贯的语气（保持你的人格，如'喵~'），"
-                "给用户一个完整回答。\n"
-                "直接陈述结果，不要提'我搜索了'这类过程词。\n"
-                "排版要求：只用 KOOK KMarkdown 语法，禁止 # / ## 这类 Markdown 标题（KOOK 不渲染）；"
-                "回复开头先放一行分割线 `---`，用它与上面散落的执行进度提示（正在处理/步骤/搜索）隔开；"
-                "然后正文用小节组织，每节以 **加粗** 小标题独占一行开头，下面跟说明；"
-                "节与节之间用空行隔开（不要再加 ---），不要堆成一大段长文。\n"
-                f"{guide}\n\n"
-                f"任务目标：{plan.goal[:300]}\n\n"
-                f"已获取信息：\n{info[:4000]}"
+                guide += format_lang("llm.agent.guide_fact_check")
+            prompt = format_lang(
+                "llm.agent.compose_final",
+                guide=guide,
+                goal=plan.goal[:300],
+                info=info[:4000],
             )
             raw = await call_llm(
                 cfg.reply_model,

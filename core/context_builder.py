@@ -199,7 +199,8 @@ DEFAULT_TOKEN_BUDGETS: dict[str, int] = {
 
 # system 段中属于「Stable Context」的节（人格/格式/语气/好感度/玩模式等固定内容）
 STABLE_SECTIONS: frozenset[str] = frozenset({
-    "header", "format_rules", "face_lib", "private_tone",
+    "header", "persona_lock", "format_rules", "kook_sdk",
+    "face_lib", "private_tone",
     "anti_repeat", "fav_format", "fav_tiers", "play_mode",
 })
 # system 段中属于「Dynamic Capability Context」的节（指令/技能/工具等动态能力）

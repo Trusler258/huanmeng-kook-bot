@@ -89,6 +89,7 @@ class MemoryEngine:
                             "conversation_id": rec.conversation_id,
                             "type": rec.type, "content": rec.content[:80],
                         })
+                await s.commit()
             logger.info("异步记忆提炼完成 chat=%d: 候选%d 新增%d",
                         chat_id, len(records), saved)
         except Exception as e:
@@ -135,8 +136,10 @@ class MemoryEngine:
             if not db.initialized:
                 return 0
             async with db.session()() as s:
-                return await self.pipeline.consolidate(
+                result = await self.pipeline.consolidate(
                     s, min_importance=min_importance, max_age_days=max_age_days)
+                await s.commit()
+                return result
         except Exception as e:
             logger.warning("Consolidation 降级: %s", e)
             return 0

@@ -28,6 +28,7 @@ from core.agent.config import (
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import record, record_llm, set_plan_summary
+from utils.format_lang import format_lang
 
 logger = get_logger("agent.planner")
 
@@ -317,39 +318,13 @@ class AgentPlanner:
                 f"- {t['name']}: {t['desc']} 参数({', '.join(t['params'])})" for t in tools_catalog
             ) or "（无可用工具）"
 
-            prompt = f"""你是任务规划器。把用户请求拆分为可执行步骤，输出 JSON。
-
-用户请求：{task_request[:500]}
-
-可用工具（名称+说明+参数摘要）：
-{tools_text}
-
-可用能力(Skill)：
-{skills_text}
-
-输出 JSON（不要输出其他内容）：
-{{
-  "goal": "一句话目标",
-  "steps": [{{"action":"步骤描述","tool":"工具名或空","skill":"Skill名或空","params":{{"参数名":"值"}}}}],
-  "required_skills": ["用到的Skill名"],
-  "required_tools": ["用到的工具名"]
-}}
-
-规则：
-- 简单问题不要拆步骤，steps 里 1 步即可。
-- 需要联网信息用 tool="search_web"；需要查询数据用对应工具；需要特定能力用 skill。
-- 不需要工具/能力的分析步骤，tool 和 skill 都留空。
-- **纯知识/概念/原理/历史类问题（如"什么是 eval"、"MySQL 历史"、编程原理、概念解释）：
-  模型自身知识即可可靠回答，禁止规划 search_web，直接留空 tool 回答。**
-  只有需要实时信息（新闻/天气/行情/最新）、外部资料、用户明确要求搜索时才用 search_web。
-- **实时/随时间变化的事实（新闻、行情、股价、市值、汇率、最新事件）与需要核实的断言
-  （如"X公司市值是否已超过Y""X上市3周干翻Y是不是真的"）：必须用 search_web 搜索后回答，
-  禁止仅凭模型内在知识直接下结论说"真的/假的"。** 承接句（"去查查""再搜下"）需结合
-  前文确定搜索主题，别把它们当成查用户本人。
-- **用户要求「执行/运行某段代码」「真实生成/创建文件并打包发送」「返回运行结果/产物」时，
-  优先用 tool="run_code"（会真实执行并返回产物文件如 zip/图片）；tool="write_code" 只把
-  代码本身作为附件发给用户，不执行、不返回运行结果，两者不要混用。**
-- 最多 {MAX_PLAN_STEPS} 步。不要编造工具或 Skill 名。"""
+            prompt = format_lang(
+                "llm.agent.planner_prompt",
+                task_request=task_request[:500],
+                tools_text=tools_text,
+                skills_text=skills_text,
+                max_steps=MAX_PLAN_STEPS,
+            )
 
             raw = await call_llm(
                 get_config().reply_model,

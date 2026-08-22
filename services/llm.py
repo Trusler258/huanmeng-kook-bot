@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 # ── 回复 JSON schema ──────────────────────────────────────
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent / "config" / "reply_schema.json"
@@ -94,16 +96,12 @@ def _normalize_reply_json(data: dict) -> dict:
         else:
             out[key] = val if val is not None else field.get("default")
     return out
-import re
-import random
-from pathlib import Path
-from typing import Optional
 
 from openai import OpenAI
 
 from core.logger import get_logger
 from core.config import BotConfig, ModelConfig, get_config
-from utils.format_lang import format_lang
+from utils.format_lang import format_lang, get_lang_data
 
 logger = get_logger("llm")
 
@@ -114,7 +112,10 @@ logger = get_logger("llm")
 
 # ★ 锚点消息：插入在 system 和对话历史之间。内容永远不变，
 #    确保即使 FIFO 裁剪历史消息，system+锚点这段前缀始终缓存命中。
-_MULTI_REPLY_ANCHOR = "【以下是最新的聊天记录，请结合你的人设和上述规则参与对话】"
+try:
+    _MULTI_REPLY_ANCHOR = format_lang("llm.multi_reply_anchor")
+except Exception:
+    _MULTI_REPLY_ANCHOR = "【以下是最新的聊天记录，请结合你的人设和上述规则参与对话】"
 
 # ── main_skill.md 加载 ────────────────────────────────────
 
@@ -148,9 +149,6 @@ def _load_skill_sections() -> dict[str, str]:
                 pass
     _skill_loaded = True
     _skill_sections = sections
-
-    _skill_sections = sections
-    _skill_loaded = True
     logger.info("main_skill.md 已加载: %d 个章节", len(sections))
     return sections
 
@@ -167,8 +165,9 @@ def build_system_sections(bot_name: str, personality: str, is_group: bool,
                           capabilities: Optional[list] = None) -> dict[str, str]:
     """组装 system prompt 的各语义节（Phase 9：供 Context Engine 分类 Stable/Dynamic）。
 
-    返回 {节名: 内容}，节名 ∈ {header, format_rules, command_tools, cmd_list,
-    face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode}。
+    返回 {节名: 内容}，节名 ∈ {header, persona_lock, format_rules, kook_sdk,
+    command_tools, cmd_list, face_lib, private_tone, anti_repeat, fav_format,
+    fav_tiers, play_mode}。
     保留原 _build_system_text 的拼接逻辑，仅拆成 dict 便于分类与预算。
 
     Phase 10：capabilities 非空时，cmd_list 只列出「当前请求相关」的指令能力
@@ -202,9 +201,11 @@ def build_system_sections(bot_name: str, personality: str, is_group: bool,
     fav_tiers = sec.get("fav_tiers", "")
     anti_repeat = sec.get("anti_repeat", "")
     play_mode = sec.get("play_mode", "") if not custom_persona else ""
-    command_tools = sec.get("command_tools", "")
+    command_tools = sec.get("command_tools", "").replace("${host}", get_config().host)
     face_lib = sec.get("face_lib", "") if not custom_persona else ""
     private_tone = sec.get("private_tone", "") if (not is_group and not custom_persona) else ""
+    persona_lock = sec.get("persona_lock", "").format(bot_name=bot_name, personality=personality)
+    kook_sdk = sec.get("kook_sdk", "")
 
     # 动态注入 COMMAND_MAP 全部指令（Phase 10：capabilities 非空时只注入相关指令）
     if capabilities:
@@ -215,7 +216,9 @@ def build_system_sections(bot_name: str, personality: str, is_group: bool,
 
     return {
         "header": header,
+        "persona_lock": persona_lock,
         "format_rules": format_rules,
+        "kook_sdk": kook_sdk,
         "command_tools": command_tools,
         "cmd_list": cmd_list,
         "face_lib": face_lib,
@@ -237,7 +240,8 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
 
     # 稳定的注入顺序（Stable 在前，Dynamic Capability 在后）
     order = [
-        "header", "format_rules", "command_tools", "cmd_list",
+        "header", "persona_lock", "format_rules", "kook_sdk",
+        "command_tools", "cmd_list",
         "face_lib", "private_tone", "anti_repeat", "fav_format", "fav_tiers", "play_mode",
     ]
     return "\n\n".join(p for p in (sections[k] for k in order) if p)
@@ -259,94 +263,44 @@ def _build_dynamic_command_list() -> str:
     return "\n".join(lines)
 
 # ── 指令说明（精简，面向 LLM）─────────────────────────────
-_CMD_DESC = {
-    # 数据查询
-    "balance": "查 DeepSeek API 余额（还剩多少钱）",
-    "cost":    "查今日 Token 消耗统计（调了多少次、花了多少钱）",
-    "tokens":  "查今日各模型 Token 用量明细",
-    "stats":   "查自身统计（回复次数/好感度/被@次数）",
-    "setstats":"设置自身统计数据（主人用）",
-    "unstats": "管理员用",
-    # PC状态
-    "sys":     "查看主人电脑状态（当前窗口、在听什么歌、歌词）",
-    "pc":      "同 sys，查看主人电脑状态",
-    # 好感度 / 关系
-    "favlist": "查看本群好感度排行榜",
-    "resetfav":"重置某人的好感度（管理员）",
-    "添加关系":"添加用户的预设身份（管理员）",
-    # 天气 / 地震 / 新闻
-    "weather": "查指定城市天气",
-    "天气":    "同 weather，查天气",
-    "eq":      "查最近地震信息",
-    "地震":    "同 eq，查地震",
-    "wzq":     "查五子棋战绩排行榜",
-    # 搜索 / 阅读
-    "search":  "搜索互联网获取信息，返回总结",
-    "read":    "阅读网页内容，返回总结",
-    # 记忆 / 上下文
-    "memory":  "显示当前群聊的记忆（管理员）",
-    "recall":  "召回历史聊天中与当前话题相关的记忆",
-    "persona": "查看机器人的性格描述/adoptable persona",
-    # 群管理
-    "op":      "移交特权/管理员",
-    "owner":   "移交拥有者权限",
-    "leave":   "退出群聊（管理员）",
-    "nickname":"给群友设置备注名",
-    # 模式 / 预设
-    "preset":  "切换群聊 preset（管理员）",
-    "sleep":   "切换群聊到休眠模式",
-    "叙事":    "切换群聊到叙事模式",
-    "主人":    "切换群聊到主人互动模式",
-    "含蓄":    "切换群聊到含蓄模式",
-    # 提醒 / 倒计时 / 抽签
-    "remind":  "设置定时提醒",
-    "countdown":"设置倒计时",
-    "倒计时":   "同 countdown",
-    "luck":    "抽签/运势占卜",
-    "抽":      "同 luck，抽签",
-    # 信息 / 更新
-    "info":    "查看个人信息/群信息",
-    "updateinfo":"更新个人备注信息",
-    "up":      "同 updateinfo",
-    "reload":  "热重载配置（管理员）",
-    "update":  "从 git 拉取最新代码并更新 bot",
-    "upd":     "同 update",
-    "gh":      "从 git 拉取指定分支代码更新 bot",
-    "md":      "用 LLM 渲染 Markdown 为图片卡片",
-    # 绘画 / 视频 / 语音
-    "draw":    "AI 绘画生成图片",
-    "绘画":    "同 draw",
-    "video":   "AI 生成视频",
-    "视频":    "同 video",
-    "img2video":"图片转视频",
-    "图生视频": "同 img2video",
-    "voice":   "文本转语音播报",
-    "语音":    "同 voice",
-    "box":     "查看或加入小游戏盒子",
-    # 五子棋 / 象棋 / 翻译
-    "五子棋":   "发起五子棋对战",
-    "象棋":    "发起象棋对战",
-    "tr":      "翻译文本到指定语言",
-    "翻译":    "同 tr，翻译文本",
-    "xq":      "查看大群在线信息",
-    # 战绩 / TUFD
-    "wdsj":    "查我的数据",
-    "tufd":    "查 TUFD 信息",
-    "tuflevel":"查 TUFD 难度信息",
-    "tufpage":"查看 TUFD 关卡页面",
-    "tufsearch":"搜索 TUFD 谱面",
-    "tuf谱面":  "同 tufsearch",
-    "analyze": "分析谱面数据",
-    # 系统
-    "help":    "显示帮助信息",
-    "ping":    "检查机器人是否在线",
-    "restart": "重启机器人（管理员）",
-    "reload":  "热重载配置文件（管理员）",
-    # 调试/测试
-    "jsonraw": "查看原始 LLM 输出 JSON（调试用）",
-    "testok":  "测试用",
-    "testsys": "测试用",
-}
+# 统一从 config/lang.toml 的 [llm.cmd_desc] 读取，避免硬编码分散
+class _LazyCmdDesc(dict):
+    """惰性加载指令描述，兼容 `_CMD_DESC.get(name)` 的既有契约"""
+
+    _loaded = False
+
+    def _ensure(self) -> None:
+        if self._loaded:
+            return
+        try:
+            data = get_lang_data()
+            self.update(data.get("llm", {}).get("cmd_desc", {}) or {})
+        except Exception:
+            pass
+        self._loaded = True
+
+    def get(self, key, default=None):
+        self._ensure()
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        self._ensure()
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        self._ensure()
+        return super().__getitem__(key)
+
+    def items(self):
+        self._ensure()
+        return super().items()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+
+_CMD_DESC = _LazyCmdDesc()
 
 
 # ── 底层调用：同步 OpenAI → 异步执行器 ────────────────────
@@ -1202,11 +1156,7 @@ async def _reply_from_error(msgs: list[dict], err_text: str,
         _st = time.monotonic()
         follow = list(msgs) + [{
             "role": "user",
-            "content": (
-                "刚才的某个操作没有成功完成。请用你一贯的语气，自然、简短地告诉用户"
-                "这件事（不要复述内部报错细节，也不要暴露权限/系统内部信息）："
-                f"{err_text}"
-            ),
+            "content": format_lang("llm.error_reply_prompt", err_text=err_text),
         }]
         raw = await call_llm(reply_model, follow, max_tokens=200, temperature=0.4)
         try:
@@ -1475,30 +1425,18 @@ def _build_messages(
         extra_info and "知识/讲解类问题" in extra_info and "不受'回复1~3句" in extra_info
     )
     if _want_detail:
-        fmt_reminder = (
-            "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
-            f"{ctx_hint}\n"
-            "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
-            "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
-            f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
-            "本条为**详细/展开类请求**，不受'回复1~3句、每句≤40字'限制："
-            "可输出 3~8 句，每句 60~200 字，把要点讲全讲透。\n"
-            "排版：小标题用 **加粗** 独占一行，分点用 - 或 1.，段落间用换行分隔；"
-            "保持你已设定的人格语气（喵~/颜文字/口癖），不要变成干巴巴的百科条目。\n"
-            "★ KOOK KMarkdown 规则：禁止使用 # / ## 标题（KOOK 不渲染，会原文显示井号），"
-            "一律用 **加粗** 做小标题；禁止输出'我会用KMD/我用代码块'这类元话语——"
-            "直接把格式化后的内容写在 replies 里，用户要 KMD 就是要看到排版好的正文本身。\n"
-            "fav -5~+5。严格按照这个 JSON 格式输出！"
-        )
+        fmt_reminder = format_lang(
+            "llm.fmt_reminder_detail",
+            ctx_hint=ctx_hint,
+            speaker_name=speaker_name,
+        ).strip()
     else:
-        fmt_reminder = (
-            "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
-            f"{ctx_hint}\n"
-            "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
-            "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
-            f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
-            f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
-        )
+        fmt_reminder = format_lang(
+            "llm.fmt_reminder_brief",
+            ctx_hint=ctx_hint,
+            speaker_name=speaker_name,
+            max_chars=max_chars,
+        ).strip()
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
     msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")
@@ -1740,11 +1678,12 @@ async def judge_interest(
     """
     调用精细兴趣度判断模型（第三级），返回 0~10 的兴趣度分数。
     """
-    system = (
-        f"你叫{get_config().bot_name}，消息记录:{context_str} "
-        f"请输出你对'{msg}'的感兴趣的程度(0~10)，只输出数字，不能带有其他内容。"
-        f"你的人设：{personality_core}，如果消息与你无关可输出2，非常相关输出10。"
-        "如果消息是纯表情、无意义或私人对话，不应回复（可输出0）。"
+    system = format_lang(
+        "llm.judge.interest",
+        bot_name=get_config().bot_name,
+        context=context_str,
+        msg=msg,
+        personality=personality_core,
     )
     result = await call_llm(
         judge_model,
@@ -1771,12 +1710,11 @@ async def judge_should_reply_cheap(
     """
     调用廉价判断模型（第二级），返回是否应该回复（bool）。
     """
-    bot_name = get_config().bot_name
-    prompt = (
-        f"你是群聊管家。机器人叫{bot_name}。根据聊天记录判断机器人是否应回复新消息。\n"
-        f"【最近对话】\n{context_str}\n"
-        f"【新消息】{msg}\n"
-        "如果机器人需要回应（被直接提及、问题可解答、话题高度相关），输出1；否则输出0。只输出数字。"
+    prompt = format_lang(
+        "llm.judge.cheap",
+        bot_name=get_config().bot_name,
+        context=context_str,
+        msg=msg,
     )
     result = await call_llm(
         cheap_model,
@@ -1796,13 +1734,11 @@ async def judge_need_search(
     cheap_model: ModelConfig,
 ) -> bool:
     """判断消息是否需要联网搜索"""
-    bot_name = get_config().bot_name
-    prompt = (
-        f"你是一个搜索判断助手。机器人叫{bot_name}，正在群聊中。\n"
-        f"最近对话：{context_str}\n"
-        f"新消息：{msg}\n"
-        "这条消息是否需要联网查询实时信息或未知知识才能准确回答？"
-        "如果需要，输出1；否则输出0。只输出数字。"
+    prompt = format_lang(
+        "llm.judge.search",
+        bot_name=get_config().bot_name,
+        context=context_str,
+        msg=msg,
     )
     result = await call_llm(
         cheap_model,
@@ -1866,15 +1802,12 @@ async def _judge_combined(
     model: ModelConfig, personality_core: str,
 ) -> tuple[int, bool, bool]:
     """合并判断：一次 API 返回 cheap+interest+arch"""
-    bot_name = get_config().bot_name
-    prompt = (
-        f"你是群聊助手 {bot_name}。回答三个问题，只输出 X|Y|Z：\n"
-        f"X=1 机器人应回复 / 0 不应回复\n"
-        f"Y=对消息的兴趣度 0~10\n"
-        f"Z=1 消息在问机器人的架构/版本/模型/能力 / 0 不是\n\n"
-        f"【人设】{personality_core}\n"
-        f"【上下文】{context_str}\n"
-        f"【新消息】{msg}\n"
+    prompt = format_lang(
+        "llm.judge.combined",
+        bot_name=get_config().bot_name,
+        context=context_str,
+        msg=msg,
+        personality=personality_core,
     )
     result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=20, temperature=0.4, timeout=15.0)
     result = result.strip()

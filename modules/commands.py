@@ -3025,14 +3025,14 @@ async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_qq):
         return stm.summarize(chat_id)
 
     if action in ("long", "ltm", "长时"):
-        return read_long_memory(chat_id)
+        return await read_long_memory(chat_id)
 
     if action == "search":
         if len(args) < 2:
             return "用法: .memory search <关键词>"
         kw = " ".join(args[1:])
         s = stm.search(chat_id, kw)
-        l = search_long_memory(chat_id, kw)
+        l = await search_long_memory(chat_id, kw)
         parts = []
         if s:
             parts.append("【短时记忆匹配】")

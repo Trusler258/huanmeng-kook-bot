@@ -30,6 +30,7 @@ from core.agent.planner import (
 from core.agent.skill_registry import get_skill_registry
 from core.logger import get_logger
 from core.trace import set_plan_summary, get_trace_id
+from utils.format_lang import format_lang
 
 logger = get_logger("agent.gateway")
 
@@ -97,7 +98,7 @@ def _agent_entry_text(task: str) -> str:
     task = (task or "").strip()
     if len(task) > 50:
         task = task[:50] + "…"
-    return f"正在处理任务，进入 Agent 模式...\n*[Agent Mode] 任务：{task or '（空）'}*"
+    return format_lang("llm.agent.entry_text", task=task or "（空）")
 
 
 # ── Phase 20 Hotfix F：Agent 入口 LLM 门卫 ──────────────────────────
@@ -148,14 +149,7 @@ async def _llm_confirms_agent(msg: str, intent: str) -> bool:
         if model_cfg is None:
             return True
 
-        prompt = (
-            "判断用户这句话是否需要进入'Agent 模式'（Agent 会调用工具/搜索/执行代码"
-            "来完成任务）。\n"
-            "只回一个数字：0 表示这只是普通聊天/闲聊/承接上文的简单提问，不需要 Agent；"
-            "1 表示这是需要调用工具、联网、执行代码、多步骤处理的任务。\n"
-            "不要输出任何其他内容，只要 0 或 1。\n\n"
-            f"用户消息：{msg[:100]}\n"
-        )
+        prompt = format_lang("llm.agent.confirm_entry", msg=msg[:100])
         raw = await call_llm(
             model_cfg,
             [{"role": "user", "content": prompt}],
@@ -248,10 +242,10 @@ async def try_handle_with_agent(
         except Exception:
             _hist = []
         if _hist:
-            task_request = (
-                "以下为最近对话（供理解当前请求的前文，当前请求在最后）：\n"
-                + "\n".join(_hist[-6:])
-                + "\n\n当前请求：" + msg
+            task_request = format_lang(
+                "llm.agent.history_context",
+                history="\n".join(_hist[-6:]),
+                msg=msg,
             )
 
     # 规划：失败 → fallback

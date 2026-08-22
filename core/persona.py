@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from utils.format_lang import format_lang
+
 # 回复情景分类（与需求 Part13 对齐）
 KIND_NORMAL = "normal"              # 正常回复（占位，实际走 LLM）
 KIND_TOOL_FAILED = "tool_failed"    # 工具执行失败
@@ -48,16 +50,21 @@ def persona_uses_meow(core: str = "") -> bool:
     return any(t in core for t in ("喵", "猫", "软萌", "可爱", "猫娘"))
 
 
-def _tail(core: str) -> str:
-    """按人格取句尾语气词。与核心人格一致，不额外引入未配置的语气。"""
-    if persona_uses_meow(core):
-        return "喵"
-    return ""
-
-
 def _me(cfg: dict) -> str:
     """称呼自己：默认 bot 名（幻梦）。"""
     return cfg.get("bot_name") or "幻梦"
+
+
+# 每种情景对应的 lang.toml key（喵系 / 平实 两个版本）
+_KIND_KEYS: dict[str, tuple[str, str]] = {
+    KIND_TOOL_FAILED: ("tool_failed_meow", "tool_failed_plain"),
+    KIND_PERMISSION: ("permission_meow", "permission_plain"),
+    KIND_TIMEOUT: ("timeout_meow", "timeout_plain"),
+    KIND_JSON_PARSE: ("json_parse_meow", "json_parse_plain"),
+    KIND_DB_FALLBACK: ("db_fallback_meow", "db_fallback_plain"),
+    KIND_AGENT_FAILED: ("agent_failed_meow", "agent_failed_plain"),
+    KIND_REPLY_FAILED: ("reply_failed_meow", "reply_failed_plain"),
+}
 
 
 def persona_message(kind: str, *, detail: str = "") -> str:
@@ -68,32 +75,14 @@ def persona_message(kind: str, *, detail: str = "") -> str:
     """
     cfg = _config() or {}
     core = cfg.get("core", "")
-    tail = _tail(core)
     me = _me(cfg)
 
-    t = tail and f"{tail}" or ""
-    if kind == KIND_TOOL_FAILED:
-        base = f"呜…这件事没办成{t}，我换个方式再试试？" if t else \
-            "这件事没办成，我换个方式再试试。"
-    elif kind == KIND_PERMISSION:
-        base = f"这个操作只有主人或管理员能用{t}，不可以哦。" if t else \
-            "这个操作只有主人或管理员能用。"
-    elif kind == KIND_TIMEOUT:
-        base = f"等太久啦，这件事暂时没完成{t}，稍后再试一次？" if t else \
-            "等太久了，这件事暂时没完成，稍后再试一次。"
-    elif kind == KIND_JSON_PARSE:
-        base = f"{me}有点没听懂刚才的内容{t}，不过已经处理到一半了，稍等" if t else \
-            f"{me}有点没听懂刚才的内容，不过已经处理到一半了，稍等。"
-    elif kind == KIND_DB_FALLBACK:
-        base = f"记录功能暂时在降级运行{t}，普通聊天不受影响" if t else \
-            "记录功能暂时在降级运行，普通聊天不受影响。"
-    elif kind == KIND_AGENT_FAILED:
-        base = f"这个任务步骤有点复杂，我漏掉了某一步{t}，换个说法再说一次？" if t else \
-            "这个任务步骤有点复杂，我漏掉了某一步，换个说法再说一次。"
-    elif kind == KIND_REPLY_FAILED:
-        base = f"呜…回复生成失败了{t}" if t else "呜…回复生成失败了。"
-    else:  # KIND_NORMAL 及未知 → 空（正常回复走 LLM，不在此硬编码）
+    keys = _KIND_KEYS.get(kind)
+    if keys is None:  # KIND_NORMAL 及未知 → 空（正常回复走 LLM，不在此硬编码）
         base = ""
+    else:
+        key = keys[0] if persona_uses_meow(core) else keys[1]
+        base = format_lang(f"persona.message.{key}", me=me)
 
     if detail:
         return f"{base}\n{detail}"

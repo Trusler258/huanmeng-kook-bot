@@ -118,6 +118,14 @@ class HuanmengBot:
             await init_db()
             from db.database import db
             info("数据库已就绪 (url=%s)", db.url)
+            # 存量 .md 记忆回填 SQLite（幂等；失败仅降级，不阻断启动）
+            try:
+                from modules.memory import backfill_memories_to_db
+                n = await backfill_memories_to_db()
+                if n:
+                    info("存量记忆已回填 SQLite: %d 条", n)
+            except Exception as e:
+                warning("记忆回填失败（不影响启动）: %s", e)
         except Exception as e:
             warning("数据库初始化失败，进入 Legacy fallback: %s", e)
 
@@ -243,18 +251,7 @@ class HuanmengBot:
         """主循环：启动 khl.py Bot + 后台任务"""
         self._running = True
 
-        # ★ 启动后台任务
-        _asyncio = asyncio
-        _asyncio.ensure_future(self._bg_remind_checker())
-        _asyncio.ensure_future(self._bg_control_watcher())
-        _asyncio.ensure_future(self._bg_eq_poller())
-        _asyncio.ensure_future(self._bg_wdsj_collector())
-        _asyncio.ensure_future(self._bg_pc_status_server())
-        _asyncio.ensure_future(self._bg_tts_server())
-        _asyncio.ensure_future(self._bg_holiday())
-        _asyncio.ensure_future(self._bg_notify_loop())
-        _asyncio.ensure_future(self._bg_update_webhook())
-        _asyncio.ensure_future(self._bg_set_version_status())
+        # ★ 后台任务已迁移至插件 plugins/bg_tasks，由 Plugin Runtime 自动管理
 
         # 注入高风险更新人工审批回调（卡片确认后放行）
         try:
@@ -265,7 +262,7 @@ class HuanmengBot:
         except Exception as e:
             warning("注入高风险更新审批回调失败: %s", e)
 
-        info("后台任务: 提醒+控制+地震+战绩+PC状态:62002+TTS:62003+节假日+通知(性能/GitHub)+更新Webhook:62004")
+        info("后台任务: 已由插件 plugins/bg_tasks 接管")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
         try:
@@ -286,19 +283,6 @@ class HuanmengBot:
                 info("⏳ 5 秒后重试...")
                 await asyncio.sleep(5)
                 await self.khl_bot.start()
-
-    async def _bg_set_version_status(self):
-        """启动后自动设置 KOOK 动态状态"正在听 当前版本: <版本>"，用于在客户端直接看到当前版本"""
-        try:
-            await asyncio.sleep(2)  # 等待 bot 连接就绪
-            from services.music_status import set_music
-            ok, msg = await set_music(f"当前版本: {self.VERSION}", singer=self.VERSION)
-            if ok:
-                info("已设置 KOOK 动态状态: 正在听 当前版本: %s", self.VERSION)
-            else:
-                warning("设置 KOOK 动态状态失败: %s", msg)
-        except Exception as e:
-            warning("设置 KOOK 动态状态失败: %s", e)
 
     def stop(self):
         """触发停止信号"""
@@ -364,178 +348,6 @@ class HuanmengBot:
         from services.llm import _load_skill_sections
         _load_skill_sections()
         info("配置热加载完成（上下文保留）")
-
-    async def _bg_remind_checker(self):
-        """后台任务：提醒轮询"""
-        from modules.remind import remind_checker_loop
-        await remind_checker_loop()
-
-    async def _bg_control_watcher(self):
-        """后台任务：监听控制文件 data/control.txt
-        支持的命令:
-          reload  - 热重载配置
-          stop    - 优雅关闭
-          debug   - 切换 debug 模式
-        用法: echo reload > data/control.txt
-        """
-        from pathlib import Path as _Path
-        ctrl_file = _Path(__file__).resolve().parent / "data" / "control.txt"
-
-        while self._running:
-            try:
-                if ctrl_file.exists():
-                    cmd = ctrl_file.read_text(encoding="utf-8").strip().lower()
-                    ctrl_file.unlink()
-
-                    if cmd == "reload":
-                        info("控制文件触发: reload")
-                        self.handle_reload()
-                    elif cmd == "stop":
-                        info("控制文件触发: stop")
-                        self.stop()
-                    elif cmd == "debug":
-                        info("控制文件触发: debug toggle")
-                        set_debug_mode(not self.cfg.debug_mode)
-                    elif cmd:
-                        warning("控制文件未知命令: %s", cmd)
-            except Exception as e:
-                warning("控制文件读取异常: %s", e)
-
-            await asyncio.sleep(1)
-
-    async def _bg_pc_status_server(self):
-        """PC 状态接收服务器 (端口 62002)"""
-        from services.pc_status import start_pc_server
-        await start_pc_server(62002)
-
-    async def _bg_tts_server(self):
-        """TTS 节点接收服务 (端口 62003)"""
-        from services.tts import start_tts_server
-        await start_tts_server(62003)
-
-    async def _bg_eq_poller(self):
-        """后台任务：地震速报自动轮询"""
-        from modules.earthquake import start_polling
-        await start_polling()
-
-    async def _bg_holiday(self):
-        """后台任务：每日节假日自动刷新"""
-        from modules.holiday import start_holiday_service
-        await start_holiday_service()
-
-    async def _bg_notify_loop(self):
-        """后台任务：性能降级检测 + GitHub 更新检测（KOOK Card 卡片通知）"""
-        from services.notify_system import notify_loop
-        await notify_loop()
-
-    async def _bg_update_webhook(self):
-        """后台任务：GitHub 更新 Webhook（端口 62004，push 后立即触发更新检测）"""
-        from services.update_webhook import start_update_webhook
-        await start_update_webhook()
-
-    async def _bg_wdsj_collector(self):
-        """后台任务：每 4 小时采集战绩（0/4/8/12/16/20 点的第1分钟）"""
-        import asyncio as _asyncio
-        from datetime import datetime, timedelta
-        from pathlib import Path
-        import json
-
-        status_file = Path("data") / "wdsj_collect_status.json"
-        status = "done"
-        if status_file.exists():
-            try:
-                status = json.loads(status_file.read_text(encoding="utf-8")).get("status", "done")
-            except Exception:
-                pass
-
-        if status == "running":
-            logger.info("检测到上次采集未完成，重置状态等待下个整点")
-            status_file.write_text(json.dumps({"status": "done", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
-
-        # ★ 启动兜底：如果上次采集距今超过 4 小时，立即补采一次
-        last_ts = ""
-        if status_file.exists():
-            try:
-                last_ts = json.loads(status_file.read_text(encoding="utf-8")).get("ts", "")
-            except Exception:
-                pass
-        if last_ts:
-            try:
-                last_dt = datetime.fromisoformat(last_ts)
-                if (datetime.now() - last_dt).total_seconds() > 4 * 3600:
-                    logger.info("上次采集 %s 距今超过 4h，启动时立即补采", last_ts[:16])
-                    from services.wdsj_tracker import daily_stats_collect
-                    status_file.write_text(json.dumps({"status": "running", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
-                    await daily_stats_collect()
-                    status_file.write_text(json.dumps({"status": "done", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
-            except Exception as e:
-                logger.error("补采失败: %s", e)
-
-        while True:
-            now = datetime.now()
-            next_hour = (now.hour // 4) * 4
-            target = now.replace(hour=next_hour, minute=1, second=0, microsecond=0)
-            while target <= now:
-                target += timedelta(hours=4)
-            wait = (target - now).total_seconds()
-            logger.info("战绩采集将在 %s 后执行 (%s)", f"{int(wait//3600)}h{int((wait%3600)//60)}m", target.strftime("%H:%M"))
-            await _asyncio.sleep(wait)
-            try:
-                from services.wdsj_tracker import daily_stats_collect
-                status_file.write_text(json.dumps({"status": "running", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
-                await daily_stats_collect()
-                status_file.write_text(json.dumps({"status": "done", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
-
-                # 采集完 → 发日报
-                try:
-                    from services.wdsj_tracker import build_daily_rankings
-                    from modules.commands import _build_daily_rank_html
-                    from modules.changelog import _ensure_browser
-                    from services.sender import send_group_msg
-                    from core.config import get_config
-
-                    now_dt = datetime.now()
-                    if now_dt.hour == 0:
-                        from datetime import timedelta
-                        yesterday = now_dt - timedelta(days=1)
-                        rows, today, new_players, t_start, t_end = build_daily_rankings(
-                            label_date=yesterday.strftime("%Y-%m-%d"), cross_day=True)
-                    else:
-                        rows, today, new_players, t_start, t_end = build_daily_rankings()
-
-                    if rows:
-                        html = _build_daily_rank_html(rows, today, new_players, t_start, t_end)
-                        import time as _time
-                        ts = _time.strftime("%Y%m%d_%H%M%S")
-                        from pathlib import Path as _Path
-                        _tmp = _Path("data") / "img_temp"
-                        _tmp.mkdir(parents=True, exist_ok=True)
-                        out_path = str(_tmp / f"wdsj_daily_{ts}.png")
-                        browser = await _ensure_browser()
-                        page = await browser.new_page(viewport={"width": 540, "height": 600})
-                        await page.set_content(html, timeout=10000)
-                        await page.wait_for_timeout(500)
-                        await page.screenshot(path=out_path, full_page=True)
-                        await page.close()
-                        cq = f"[img:file:{out_path}]"
-                        cfg = get_config()
-                        # ★ 发到所有字频道（优先用配置 wdsj.target_groups，否则全频道）
-                        gids = cfg.config.get("wdsj", {}).get("target_groups", []) if hasattr(cfg, 'config') else []
-                        if not gids:
-                            gids = cfg.group_ids()
-                        logger.info("日榜目标频道: %s", gids)
-                        for gid in gids:
-                            try:
-                                await send_group_msg(cq, int(gid))
-                                logger.info("日榜已发到频道 %d", gid)
-                            except Exception:
-                                pass
-                        logger.info("日榜已推送: %d 人 (%s)", len(rows), today)
-                except Exception as e:
-                    logger.warning("日榜推送失败: %s", e)
-            except Exception as e:
-                logger.warning("战绩采集失败: %s", e)
-                status_file.write_text(json.dumps({"status": "done", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
 
     async def _send_reload_done(self):
         """发送重载完成回执（如果是从 .reload 触发的重启）"""

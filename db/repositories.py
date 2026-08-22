@@ -124,6 +124,20 @@ class MemoryRepository(BaseRepository):
             conversation_id=conversation_id, user_id=user_id, since_ms=since_ms,
         )
 
+    async def recent_for_conversation(self, conversation_id: int,
+                                      limit: int = 20) -> list[Memory]:
+        """取某会话最近 N 条 active 记忆（按时间升序返回，供「长时记忆」读取）。"""
+        stmt = (select(Memory)
+                .where(Memory.conversation_id == conversation_id)
+                .where(Memory.status == "active")
+                .order_by(Memory.id.desc()).limit(limit))
+        result = await self._session.execute(stmt)
+        return list(reversed(result.scalars().all()))
+
+    async def delete_for_conversation(self, conversation_id: int) -> int:
+        """删除某会话的全部记忆行（配合「清空记忆」）。"""
+        return await self.delete_where(conversation_id=conversation_id)
+
 
 # ── memory_links ────────────────────────────────────────────
 class MemoryLinkRepository(BaseRepository):

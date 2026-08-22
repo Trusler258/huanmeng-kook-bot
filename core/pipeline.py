@@ -147,6 +147,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     process_message 签名不匹配直接抛出 TypeError 导致全量消息静默（P0 事故）。
     """
     from core.context_manager import get_context_mgr
+    from core.plugin import get_pipeline_hooks
     cfg = get_config()
     ctx = get_context_mgr()
 
@@ -204,6 +205,27 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     msg_content = cleaned
                 else:
                     return
+
+    # ------插件管道预钩子（on_message）------
+    _pre_hooks = get_pipeline_hooks().all_pre_hooks()
+    if _pre_hooks:
+        _msg_dict = {
+            "msg_type": msg_type, "msg_content": msg_content,
+            "chat_id": chat_id, "sender_name": sender_name,
+            "user_id": user_id, "is_group": is_group,
+            "bot_qq": bot_qq, "raw_message": raw_message,
+            "quoted_msg": quoted_msg, "is_mentioned": is_mentioned,
+            "image_urls": image_urls, "quoted_image_urls": quoted_image_urls,
+        }
+        for hook in _pre_hooks:
+            try:
+                result = await hook(_msg_dict)
+                if isinstance(result, str):
+                    await send_by_chat_type(result, chat_id, is_group=is_group,
+                                           user_id=user_id if not is_group else None)
+                    return
+            except Exception:
+                pass
 
     # ------引用消息注入------
     if quoted_msg:
@@ -1120,6 +1142,38 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             logger.info("LLM主动切换模式: chat=%d → %s", chat_id, mode_switch)
         except Exception:
             pass
+
+    # ------插件管道后钩子（on_reply）------
+    _post_hooks = get_pipeline_hooks().all_post_hooks()
+    if _post_hooks and sentences:
+        _msg_dict = {
+            "msg_type": msg_type, "msg_content": msg_content,
+            "chat_id": chat_id, "sender_name": sender_name,
+            "user_id": user_id, "is_group": is_group,
+            "bot_qq": bot_qq, "raw_message": raw_message,
+            "quoted_msg": quoted_msg, "is_mentioned": is_mentioned,
+            "image_urls": image_urls, "quoted_image_urls": quoted_image_urls,
+        }
+        _filtered = []
+        for s in sentences:
+            for hook in _post_hooks:
+                try:
+                    modified = await hook(s, _msg_dict)
+                    if modified is None:
+                        continue
+                    if modified == "":
+                        s = None
+                        break
+                    s = modified
+                except Exception:
+                    pass
+            if s is not None:
+                _filtered.append(s)
+        sentences = _filtered
+
+    if not sentences:
+        logger.info("插件后钩子拦截了全部回复 [chat=%d]", chat_id)
+        return
 
     # ------发送------
     old_task = ctx.cancel_old_task(chat_id)
