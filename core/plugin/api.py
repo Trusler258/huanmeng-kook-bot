@@ -456,6 +456,43 @@ class PluginCard:
             logger.warning("Plugin %s 天气卡片渲染失败: %s", self._plugin, e)
             return None
 
+    async def render_html(self, html: str, width: int = 480, height: int = 400,
+                          wait_ms: int = 500, wait_selector: Optional[str] = None,
+                          timeout_ms: int = 10000,
+                          output_filename: Optional[str] = None) -> Optional[str]:
+        """把 HTML/SVG 渲染为 PNG 图片，返回图片绝对路径；失败返回 None。
+
+        Args:
+            html: HTML 或 SVG 内容（页面 set_content）
+            width / height: 视口尺寸
+            wait_ms: 渲染稳定等待毫秒数
+            wait_selector: 可选，等待指定选择器出现（如 Leaflet 瓦片）
+            timeout_ms: set_content 超时
+            output_filename: 可选输出文件名
+        """
+        try:
+            from modules.changelog import _ensure_browser
+            import tempfile, os as _os, asyncio as _asyncio
+
+            browser = await _ensure_browser()
+            page = await browser.new_page(viewport={"width": width, "height": height})
+            await page.set_content(html, wait_until="load", timeout=timeout_ms)
+            if wait_selector:
+                try:
+                    await page.wait_for_selector(wait_selector, timeout=min(timeout_ms, 6000))
+                except Exception:
+                    pass
+            if wait_ms:
+                await _asyncio.sleep(wait_ms / 1000.0)
+            fd, png_path = tempfile.mkstemp(suffix=".png")
+            _os.close(fd)
+            await page.screenshot(path=png_path, full_page=True)
+            await page.close()
+            return png_path
+        except Exception as e:
+            logger.warning("Plugin %s HTML 渲染失败: %s", self._plugin, e)
+            return None
+
 
 class PluginPipeline:
     """消息管道钩子：允许插件在消息处理流程中插入逻辑。
