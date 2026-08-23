@@ -153,8 +153,9 @@ def load_llm_config() -> tuple[str, str, str]:
         raise FileNotFoundError("config/bot_config.toml 不存在")
 
     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-    model_cfg = cfg.get("models", {}).get("replyer_1", {})
+    model_cfg = cfg.get("model", {}).get("replyer_1", {})
     provider = model_cfg.get("provider", "")
+    model_name = model_cfg.get("name", "")
 
     # 从 config/.env 读 API key 和 URL
     env = {}
