@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Optional
 from khl import Bot, MessageTypes, Message
 
 from core.logger import get_logger, info, error, warning
-from core.config import get_config, load_bot_config, reload_config, set_debug_mode
+from core.config import get_config, load_bot_config
 from utils.format_lang import load_lang, format_lang
 from services.sender import init_sender, close_sender
 from core.dispatcher import EventDispatcher
@@ -338,15 +338,9 @@ class HuanmengBot:
         print("")  # 空行让日志更清晰
 
     def handle_reload(self):
-        """处理 .reload 指令：重新加载所有配置"""
-        new_cfg = reload_config()
-        self.cfg = new_cfg
-
-        # 清除并重载技能文件缓存
-        from services.llm import reload_skill_cache
-        reload_skill_cache()
-        from services.llm import _load_skill_sections
-        _load_skill_sections()
+        """处理 .reload 指令 / SIGUSR1：全量热重载（config+lang+keywords+skills）"""
+        from core.config import full_reload
+        self.cfg = full_reload()
         info("配置热加载完成（上下文保留）")
 
     async def _send_reload_done(self):

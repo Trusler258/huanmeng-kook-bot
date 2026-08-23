@@ -1240,12 +1240,9 @@ async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_qq):
         return format_lang("reload.permission_denied")
 
     logger.info("管理员 %s(%d) 触发热重载", sender_name, user_id)
-    from modules.judge import reload_keywords
-    from utils.format_lang import load_lang
-    reload_config()
-    reload_keywords()
-    load_lang()  # 热重载语言文件 lang.toml
-    logger.info("热重载完成 (config + keywords + lang)")
+    from core.config import full_reload
+    full_reload()
+    logger.info("热重载完成 (config + keywords + lang + skills)")
     return format_lang("reload.success")
 
 

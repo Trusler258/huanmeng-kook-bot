@@ -505,6 +505,37 @@ def reload_config() -> BotConfig:
     return new_cfg
 
 
+def full_reload() -> BotConfig:
+    """全量热重载（极速，不重启进程）：bot_config + lang.toml + judge 关键词 + 技能缓存。
+
+    `.reload` 命令与 SIGUSR1（bot.handle_reload）共用的统一入口，
+    一次把所有可热载内容刷新到位。返回新的 BotConfig 实例。
+    """
+    import time
+    from core.logger import info
+    t0 = time.time()
+    cfg = reload_config()
+    try:
+        from modules.judge import reload_keywords
+        reload_keywords()
+    except Exception as e:
+        info("关键词重载失败: %s", e)
+    try:
+        from utils.format_lang import load_lang
+        load_lang()
+    except Exception as e:
+        info("语言文件重载失败: %s", e)
+    try:
+        from services.llm import reload_skill_cache, _load_skill_sections
+        reload_skill_cache()
+        _load_skill_sections()
+    except Exception as e:
+        info("技能缓存重载失败: %s", e)
+    info("全量热重载完成（config+lang+keywords+skills），耗时 %.0fms",
+         (time.time() - t0) * 1000)
+    return cfg
+
+
 def load_roles_config() -> dict:
     """加载 roles.toml（供指令系统使用）"""
     roles_path = _CONFIG_DIR / "roles.toml"
