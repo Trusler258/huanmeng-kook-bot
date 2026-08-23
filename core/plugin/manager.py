@@ -97,6 +97,7 @@ class PluginManager:
                 return False, rec.error
             return await load_lua_plugin(self, rec)
 
+        drop_module(rec.manifest)
         module = load_module(rec.manifest)
         if module is None:
             rec.state = STATE_ERROR
