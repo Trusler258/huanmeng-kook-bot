@@ -3456,7 +3456,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_kook, r
             "`.plugin enable <名字>`  启用\n"
             "`.plugin disable <名字>` 禁用\n"
             "`.plugin unload <名字>`  卸载（需二次确认）\n"
-            "`.plugin update [名字]`  插件库一键更新（无参列出可更新项）\n"
+            "`.plugin update [名字|all]`  插件库一键更新（无参/多参/all）\n"
             "`.plugin -pack/-import/-down/-load` 插件打包/导入/下载/加载")
 
 
@@ -3573,27 +3573,53 @@ async def _plugin_update_cmd(non_flags: list[str]) -> str:
         return ("插件库有可用更新：\n" + "\n".join(updates)
                 + "\n用 `.plugin update <名字>` 更新")
 
-    # 带参：更新指定插件（non_flags[1] 才是插件名，non_flags[0] 是子命令词 update）
-    name = non_flags[1]
-    if not PS.validate_name(name):
-        return "❌ 插件名非法（仅限字母/数字/_/-）"
-    ok, info, err = PS.lib_latest(name)
-    if not ok:
-        return "❌ 插件库查询失败: " + err
-    pv = str(info.get("version") or "0.0.0")
-    dl = info.get("download_url") or PS.lib_download_url(name)
-    p = cur.get(name)
-    if not p:
-        return (f"❌ 本地未安装插件 `{name}`（库中 v{pv}），"
-                f"可用 `.plugin -import {dl}` 安装")
-    lv = str(p.get("version") or "0.0.0")
-    if PS.compare_versions(pv, lv) <= 0:
-        return f"✅ `{name}` 已是最新（本地 v{lv}，库 v{pv}）"
+    # 带参：更新指定插件（non_flags[0] 是子命令词 update，后续为插件名）
+    names = non_flags[1:]
+    # "all" → 更新所有可更新插件
+    if len(names) == 1 and names[0] == "all":
+        ok, plugins, err = PS.lib_list()
+        if not ok:
+            return "❌ 插件库不可用: " + err
+        names = []
+        for lp in plugins:
+            p = cur.get(lp.get("name"))
+            if not p:
+                continue
+            lv = str(p.get("version") or "0.0.0")
+            pv = str(lp.get("version") or "0.0.0")
+            if PS.compare_versions(pv, lv) > 0:
+                names.append(lp["name"])
+        if not names:
+            return "✅ 全部插件已是最新"
+    if not names:
+        return "用法: .plugin update <名字> [名字...] 或 .plugin update all"
 
-    ok2, msg2 = PS.download_hmp(dl)
-    if not ok2:
-        return "❌ 下载失败: " + msg2
-    return await _plugin_overwrite_install(name, PS.local_filename_for(dl))
+    results = []
+    for name in names:
+        if not PS.validate_name(name):
+            results.append(f"❌ `{name}` 名称非法")
+            continue
+        ok, info, err = PS.lib_latest(name)
+        if not ok:
+            results.append(f"❌ `{name}` 查询失败: {err}")
+            continue
+        pv = str(info.get("version") or "0.0.0")
+        dl = info.get("download_url") or PS.lib_download_url(name)
+        p = cur.get(name)
+        if not p:
+            results.append(f"❌ `{name}` 未安装（库 v{pv}）")
+            continue
+        lv = str(p.get("version") or "0.0.0")
+        if PS.compare_versions(pv, lv) <= 0:
+            results.append(f"✅ `{name}` 已是最新")
+            continue
+        ok2, msg2 = PS.download_hmp(dl)
+        if not ok2:
+            results.append(f"❌ `{name}` 下载失败: {msg2}")
+            continue
+        r = await _plugin_overwrite_install(name, PS.local_filename_for(dl))
+        results.append(f"{'✅' if '已' in r else '❌'} `{name}`: {r}")
+    return "\n".join(results)
 
 
 def _plugin_cards_data() -> list[dict]:
