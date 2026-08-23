@@ -495,7 +495,10 @@ def reload_config() -> BotConfig:
     from core.logger import info, set_debug_mode
     old_cfg = _instance
     new_cfg = load_bot_config()
-    if old_cfg and old_cfg.bot_qq and not new_cfg.bot_qq:
+    # KOOK bot 的 user_id 以启动时 fetch_me() 注入值为准（bot_id_str 非空即注入过），
+    # 配置文件里的 bot的qq号可能是历史残留/错误值，重载时必须保留注入值，
+    # 否则 @机器人 检测会失配（bot_qq 被覆盖成配置里的错误值）。
+    if old_cfg and old_cfg.bot_id_str:
         new_cfg.bot_qq = old_cfg.bot_qq
         new_cfg.bot_id_str = old_cfg.bot_id_str
         info("保留 fetch_me 注入的 bot_id: %s", old_cfg.bot_id_str)
