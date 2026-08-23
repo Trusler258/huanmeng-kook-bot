@@ -85,9 +85,9 @@ class MessageStore:
         """记录用户消息到 msglog，供长时记忆回溯用户历史对话。"""
         self.log(chat_id, user_id, "group", content)
 
-    def log_bot(self, chat_id, bot_qq, content: str):
+    def log_bot(self, chat_id, bot_kook, content: str):
         """记录 bot 发送的消息到 msglog。"""
-        self.log(chat_id, bot_qq, "bot", content)
+        self.log(chat_id, bot_kook, "bot", content)
 
     def pending(self) -> int:
         return self._queue.qsize()

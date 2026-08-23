@@ -88,7 +88,7 @@ async def test_tool_runtime_timeout_detection():
         req = ToolRequest(
             tool_name="search_web", arguments={"query": "x"},
             user_id=2, group_id=0, sender_name="t",
-            is_group=False, bot_qq=0, timeout=0.1,
+            is_group=False, bot_kook=0, timeout=0.1,
         )
         res = await get_tool_runtime().execute(req)
         assert res.status == TIMEOUT, res.status
@@ -115,7 +115,7 @@ async def test_agent_no_retry_on_timeout():
                     steps=[PlanStep(index=0, action="搜索", tool="search_web",
                                     params={"query": "x"})])
         ctx = AgentContext(user_id=2, group_id=0, chat_id=1,
-                           sender_name="t", is_group=False, bot_qq=0,
+                           sender_name="t", is_group=False, bot_kook=0,
                            original_msg="测试")
         ex = AgentExecutor()
         res = await ex.execute(plan, ctx)

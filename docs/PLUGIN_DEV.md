@@ -33,14 +33,14 @@ modules/
 你的处理函数会收到：
 
 ```python
-async def cmd_mycmd(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_mycmd(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     args:        list[str]  指令参数 ["参数1", "参数2"]
     user_id:     int        发送者的 QQ 号
     group_id:    int        群号（私聊时为 0）
     sender_name: str        发送者显示名
     is_group:    bool       是否群聊
-    bot_qq:      int        机器人 QQ 号
+    bot_kook:      int        机器人 QQ 号
     
     返回值:
         str          纯文本 → 自动发送
@@ -82,7 +82,7 @@ COMMAND_MAP = {
 ```python
 from core.config import get_config
 
-async def cmd_mycmd(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_mycmd(args, user_id, group_id, sender_name, is_group, bot_kook):
     cfg = get_config()
     
     # 仅主人
@@ -191,7 +191,7 @@ import httpx
 from core.config import get_config
 
 
-async def cmd_cat(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_cat(args, user_id, group_id, sender_name, is_group, bot_kook):
     cfg = get_config()
     
     # 权限：主人或分群 OP

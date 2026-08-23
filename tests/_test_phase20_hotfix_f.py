@@ -37,7 +37,7 @@ sys.modules.setdefault("services.sender", _FAKE_SENDER)
 def make_msg(args, author=656176615, chat_id=12345, is_group=True, sender="Tester"):
     return {
         "args": args, "author": author, "chat_id": chat_id,
-        "is_group": is_group, "sender": sender, "bot_qq": 0,
+        "is_group": is_group, "sender": sender, "bot_kook": 0,
     }
 
 

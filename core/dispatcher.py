@@ -90,7 +90,7 @@ class EventDispatcher:
 
         # ── 过滤 bot 消息（防止 bot 互相回复形成循环）──
         # 1. 过滤自己发的消息
-        if user_id_str and user_id_str == str(cfg.bot_qq):
+        if user_id_str and user_id_str == str(cfg.bot_kook):
             return
         if user_id_str and user_id_str == cfg.bot_id_str and cfg.bot_id_str:
             return
@@ -128,7 +128,7 @@ class EventDispatcher:
                 sender_name = msg.author.username or sender_name
 
         # bot_id
-        bot_id = cfg.bot_qq
+        bot_id = cfg.bot_kook
         try:
             bot_id_str = str(bot_id)
         except Exception:
@@ -353,7 +353,7 @@ class EventDispatcher:
                 sender_name=sender_name,
                 user_id=user_id_int,
                 is_group=is_group,
-                bot_qq=bot_id,
+                bot_kook=bot_id,
                 raw_event=msg,
                 raw_message=content,
                 quoted_msg=quoted_text,

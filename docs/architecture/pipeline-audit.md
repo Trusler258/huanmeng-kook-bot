@@ -170,7 +170,7 @@ main.py → bot.py(HuanmengBot) → core/dispatcher.py(EventDispatcher.dispatch/
 - **P2** `sentences` 在"列表 ↔ 字符串（`" || ".join`）↔ 列表"之间反复切换（751→762→776→782），配合 `[CALL:…]`/`[FACE:…]` 正则剥离，极易在后续改动中漏处理一种标记。
 - **P2** 782 行 `_context_reply` 用 `\S+` 清除 `[系统] 已调用:` 后缀，但 769 行写入的是 `"、".join` 的多个名字，`\S+` 只匹配到第一个 token，残留后续名字。
 - **P2** 指令分发存在**双路径**：540 行起 LLM 返回 `calls` 走 700–748 的 CALL 执行（直接 `handle_command` + 重复 `__EQ_CARD__` 处理 867–872），而用户 `.` 指令走 `_handle_command_route`（250、1002–1023）。两条路径对 `__EQ_CARD__`/错误/发送的处理不统一。
-- **P2** 720–727 行 `caller_id = actor["qq"]` 允许 LLM 输出的 `actor` 决定指令执行者身份；虽有 575–576 行的"真实发送者覆盖"，但 `origin=="bot"` 分支（725）会以 `bot_qq` 执行，属权限敏感路径，应在 Agent 层统一鉴权。
+- **P2** 720–727 行 `caller_id = actor["qq"]` 允许 LLM 输出的 `actor` 决定指令执行者身份；虽有 575–576 行的"真实发送者覆盖"，但 `origin=="bot"` 分支（725）会以 `bot_kook` 执行，属权限敏感路径，应在 Agent 层统一鉴权。
 - **P3** 604 行 `_cd_loose` 宽松倒计时正则（短消息 + 纯数字单位）可能误命中普通数字文本。
 - **P3** 819 行 `__import__("time")` 写法怪异，应直接 `import time`。
 

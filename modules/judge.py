@@ -249,13 +249,13 @@ async def should_respond(
     group_id: int,
     context: list[str],
     bot_name: str,
-    bot_qq: int,
+    bot_kook: int,
     reply_threshold_override: int | None = None,
 ) -> bool:
     """完整的三级判断流程。注意：is_arch 已由 pipeline.py 从 call_judgment_pipeline 直接获取。"""
     cfg = get_config()
 
-    if re.search(rf'@{bot_qq}(?!\d)', msg):
+    if re.search(rf'@{bot_kook}(?!\d)', msg):
         logger.info("@机器人检测 → 直接回复")
         return True
 

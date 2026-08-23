@@ -312,7 +312,7 @@ async def _calc(code: str, *args, **kwargs) -> str:
 
 async def _write_code(
     language: str, description: str,
-    user_id: int, group_id: int, sender_name: str, is_group: bool, bot_qq: int,
+    user_id: int, group_id: int, sender_name: str, is_group: bool, bot_kook: int,
 ) -> str:
     """FC 代码生成：单文件发送，多文件 zip"""
     import re, zipfile, tempfile
@@ -391,7 +391,7 @@ async def _write_code(
 
 
 async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
-                         sender_name: str, is_group: bool, bot_qq: int,
+                         sender_name: str, is_group: bool, bot_kook: int,
                          original_msg: str = "") -> str:
     """run_code 工具：转发壳（真实实现已迁移到沙箱插件）。
 
@@ -405,11 +405,11 @@ async def _run_code_tool(arguments: dict, user_id: int, group_id: int,
         return "沙箱执行插件未加载（plugins/sandbox），无法运行代码"
     try:
         return await handler(
-            arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg)
+            arguments, user_id, group_id, sender_name, is_group, bot_kook, original_msg)
     except TypeError:
         # 兼容未接收 original_msg 的旧 handler 签名
         return await handler(
-            arguments, user_id, group_id, sender_name, is_group, bot_qq)
+            arguments, user_id, group_id, sender_name, is_group, bot_kook)
     except Exception as e:
         logger.error("run_code 插件执行失败: %s", e)
         return f"沙箱执行出错: {e}"
@@ -779,7 +779,7 @@ async def execute_tool(
     group_id: int,
     sender_name: str,
     is_group: bool,
-    bot_qq: int,
+    bot_kook: int,
     original_msg: str = "",  # 用户原始消息，用于 write_code 不受 FC 截断
     timeout: float | None = None,  # Phase 6：单工具超时（秒），None 走默认
 ) -> str | None:
@@ -799,7 +799,7 @@ async def execute_tool(
     try:
         result = await asyncio.wait_for(
             _execute_impl(
-                tool_name, arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
+                tool_name, arguments, user_id, group_id, sender_name, is_group, bot_kook, original_msg,
             ),
             timeout=limit,
         )
@@ -834,7 +834,7 @@ async def _execute_impl(
     group_id: int,
     sender_name: str,
     is_group: bool,
-    bot_qq: int,
+    bot_kook: int,
     original_msg: str = "",
 ) -> str | None:
     """工具执行的实际逻辑（execute_tool 的拆分配包）。"""
@@ -848,11 +848,11 @@ async def _execute_impl(
         return await _write_code(
             arguments.get("language", "python"),
             desc,
-            user_id, group_id, sender_name, is_group, bot_qq,
+            user_id, group_id, sender_name, is_group, bot_kook,
         )
     if tool_name == "run_code":
         return await _run_code_tool(
-            arguments, user_id, group_id, sender_name, is_group, bot_qq, original_msg,
+            arguments, user_id, group_id, sender_name, is_group, bot_kook, original_msg,
         )
     if tool_name == "calc":
         return await _calc(arguments.get("code", ""))
@@ -867,7 +867,7 @@ async def _execute_impl(
         if plugin_handler:
             try:
                 return await plugin_handler(
-                    arguments, user_id, group_id, sender_name, is_group, bot_qq)
+                    arguments, user_id, group_id, sender_name, is_group, bot_kook)
             except Exception as e:
                 logger.error("插件工具 %s 执行失败: %s", tool_name, e)
                 return f"插件工具 {tool_name} 执行出错: {e}"
@@ -902,7 +902,7 @@ async def _execute_impl(
         from modules.commands import COMMAND_MAP
         handler = COMMAND_MAP.get("wdsj")
         if handler:
-            await handler([mode, player, "img"], user_id, group_id, sender_name, is_group, bot_qq)
+            await handler([mode, player, "img"], user_id, group_id, sender_name, is_group, bot_kook)
             return f"起床战绩图片已生成 (玩家: {player}, 模式: {mode})"
         return "wdsj 指令未注册"
     elif tool_name == "wdsj_query":
@@ -915,7 +915,7 @@ async def _execute_impl(
         from modules.commands import COMMAND_MAP
         handler = COMMAND_MAP.get("wdsj")
         if handler:
-            result = await handler([mode, player], user_id, group_id, sender_name, is_group, bot_qq)
+            result = await handler([mode, player], user_id, group_id, sender_name, is_group, bot_kook)
             if not result:
                 return f"未找到玩家 {player} 的数据"
             # 从全量数据中提取相关行
@@ -955,7 +955,7 @@ async def _execute_impl(
 
     # 调用 handler
     try:
-        result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
+        result = await handler(args, user_id, group_id, sender_name, is_group, bot_kook)
         if result is None:
             return None
         return str(result)

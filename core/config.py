@@ -49,7 +49,7 @@ class BotConfig:
 
     # ── 机器人身份 ──
     bot_name: str = "KookBot"  # 开源模板默认名，请在 bot_config.toml [bot] 段中修改为你的机器人名称
-    bot_qq: int = 0                   # KOOK bot 的 user_id（转 int）
+    bot_kook: int = 0                   # KOOK bot 的 user_id（转 int）
     bot_id_str: str = ""              # KOOK bot 的原始 user_id 字符串
     reply_interest: int = 10         # 回复兴趣阈值
     context_length: int = 20         # 消息上下文最大条数
@@ -426,19 +426,24 @@ def load_bot_config() -> BotConfig:
             group_list.append(hash(str(g)))
 
     # ── bot_id_str（KOOK bot 自身的 user_id，启动后由 bot.client.fetch_me() 填充）──
-    bot_id_str_raw = bot_section.get("bot的id", "") or bot_section.get("bot的qq号", "")
+    # 配置键统一为 bot的kook；兼容历史键（bot的id / bot的qq号，服务器存量配置未改也能读）
+    bot_id_str_raw = (
+        bot_section.get("bot的kook", "")
+        or bot_section.get("bot的id", "")
+        or bot_section.get("bot的qq号", "")
+    )
     bot_id_str = str(bot_id_str_raw) if bot_id_str_raw else ""
     try:
-        bot_qq_val = int(bot_id_str_raw) if bot_id_str_raw else 0
+        bot_kook_val = int(bot_id_str_raw) if bot_id_str_raw else 0
     except (ValueError, TypeError):
-        bot_qq_val = hash(str(bot_id_str_raw)) if bot_id_str_raw else 0
+        bot_kook_val = hash(str(bot_id_str_raw)) if bot_id_str_raw else 0
 
     instance = BotConfig(
         kook_token=kook_token,
         host=bot_section.get("内部服务地址", "0.0.0.0"),
         port=int(bot_section.get("内部服务端口", 8099)),
         bot_name=bot_section.get("bot的名字", "KookBot"),
-        bot_qq=bot_qq_val,
+        bot_kook=bot_kook_val,
         bot_id_str=bot_id_str,
         reply_interest=bot_section.get("回复兴趣", 10),
         context_length=bot_section.get("消息记录长度", 20),
@@ -497,9 +502,9 @@ def reload_config() -> BotConfig:
     new_cfg = load_bot_config()
     # KOOK bot 的 user_id 以启动时 fetch_me() 注入值为准（bot_id_str 非空即注入过），
     # 配置文件里的 bot的qq号可能是历史残留/错误值，重载时必须保留注入值，
-    # 否则 @机器人 检测会失配（bot_qq 被覆盖成配置里的错误值）。
+    # 否则 @机器人 检测会失配（bot_kook 被覆盖成配置里的错误值）。
     if old_cfg and old_cfg.bot_id_str:
-        new_cfg.bot_qq = old_cfg.bot_qq
+        new_cfg.bot_kook = old_cfg.bot_kook
         new_cfg.bot_id_str = old_cfg.bot_id_str
         info("保留 fetch_me 注入的 bot_id: %s", old_cfg.bot_id_str)
     set_debug_mode(new_cfg.debug_mode)

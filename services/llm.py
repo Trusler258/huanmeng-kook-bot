@@ -876,7 +876,7 @@ async def generate_multi_reply_with_tools(
     max_tokens: int = 8000,
     user_id: int = 0,
     group_id: int = 0,
-    bot_qq: int = 0,
+    bot_kook: int = 0,
     system_text_override: str | None = None,
     tools_override: Optional[list] = None,
     detail_hint: str = "",
@@ -1002,7 +1002,7 @@ async def generate_multi_reply_with_tools(
                 tc, trace_id=get_trace_id(),
                 user_id=user_id, group_id=group_id,
                 chat_id=group_id if is_group else user_id,
-                sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
+                sender_name=speaker_name, is_group=is_group, bot_kook=bot_kook,
                 original_msg=current_msg,
             )
             res = await get_tool_runtime().execute(req)

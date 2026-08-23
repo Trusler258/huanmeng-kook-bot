@@ -26,7 +26,7 @@ async def main():
 
     pc = PluginCapability("demo")
 
-    async def demo_echo(arguments, user_id, group_id, sender_name, is_group, bot_qq):
+    async def demo_echo(arguments, user_id, group_id, sender_name, is_group, bot_kook):
         return f"echo:{arguments.get('text', '')}|u={user_id}|g={group_id}"
 
     pc.register_tool(

@@ -159,7 +159,7 @@ def calc_cost(today_only: bool = False) -> dict:
     }
 
 
-async def cmd_cost(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_cost(args, user_id, group_id, sender_name, is_group, bot_kook):
     """查看 Token 消耗 .cost"""
     data = calc_cost(today_only=False)
     t = data["today"]
@@ -170,7 +170,7 @@ async def cmd_cost(args, user_id, group_id, sender_name, is_group, bot_qq):
     }), ensure_ascii=False)
 
 
-async def cmd_tokens(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tokens(args, user_id, group_id, sender_name, is_group, bot_kook):
     """计算 token 数 .tokens <文本>"""
     if not args:
         return "用法: .tokens <文本>\n计算文本的 token 数和预估费用喵~"

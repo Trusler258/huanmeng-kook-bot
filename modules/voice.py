@@ -124,7 +124,7 @@ async def _synth_one(text: str, mood: str, speaker: str) -> tuple[Path | None, s
     return wav_path, err
 
 
-async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_kook):
     """ .voice <对话内容> — LLM 回复 → 并发 instruct + 串行合成 → 顺序发语音 """
     if not args:
         return ("喵?你想让我说什么?用法:\n"

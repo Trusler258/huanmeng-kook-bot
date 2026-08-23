@@ -113,7 +113,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         is_group=is_group,
         extra_info="\n".join(extra_parts),
         max_tokens=None,
-        user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=cfg.bot_qq,
+        user_id=user_id, group_id=chat_id if is_group else 0, bot_kook=cfg.bot_kook,
     )
 
     if sentences:
@@ -137,7 +137,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
 
 # ------消息处理主入口------
-async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
+async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_kook,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
                           is_mentioned=False, image_urls=None, quoted_image_urls=None,
                           **extra_kwargs):
@@ -213,7 +213,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             "msg_type": msg_type, "msg_content": msg_content,
             "chat_id": chat_id, "sender_name": sender_name,
             "user_id": user_id, "is_group": is_group,
-            "bot_qq": bot_qq, "raw_message": raw_message,
+            "bot_kook": bot_kook, "raw_message": raw_message,
             "quoted_msg": quoted_msg, "is_mentioned": is_mentioned,
             "image_urls": image_urls, "quoted_image_urls": quoted_image_urls,
         }
@@ -284,7 +284,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         else:
             full_cmd = msg_content
             logger.info("指令拦截: '%s' from=%s", full_cmd[:40], sender_name)
-            await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message, raw_event=raw_event)
+            await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_kook, raw_message=raw_message, raw_event=raw_event)
             return
 
     # 消息不以 . 开头，但文本中嵌入了已注册指令（如"你能不能执行 .plugin status"）
@@ -294,7 +294,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if embedded:
         full_cmd = embedded
         logger.info("指令拦截(嵌入): '%s' from=%s", full_cmd[:40], sender_name)
-        await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message, raw_event=raw_event)
+        await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_kook, raw_message=raw_message, raw_event=raw_event)
         return
 
     if msg_type != "文字":
@@ -309,12 +309,12 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     should_reply = False
     import re as _re
     # KOOK: is_mentioned 由 dispatcher 通过 (met)id(met) / mention 列表检测后传入
-    # 兜底: 再检查文本中的 @bot_name / @bot_qq
+    # 兜底: 再检查文本中的 @bot_name / @bot_kook
     if not is_mentioned:
-        is_mentioned = bool(_re.search(rf'@{bot_qq}(?!\d)', msg_content)) or \
+        is_mentioned = bool(_re.search(rf'@{bot_kook}(?!\d)', msg_content)) or \
                        bool(_re.search(rf'@{cfg.bot_name}', msg_content))
-    logger.debug("回复判断: is_mentioned=%s is_group=%s bot_qq=%s content='%s'",
-                 is_mentioned, is_group, bot_qq, msg_content[:40])
+    logger.debug("回复判断: is_mentioned=%s is_group=%s bot_kook=%s content='%s'",
+                 is_mentioned, is_group, bot_kook, msg_content[:40])
     group_setting = cfg.group_settings.get(chat_id, {}) if is_group else {}
     # KOOK: 全局默认 at_only（仅被 @ 时回复），可在 group_settings 中按频道关闭
     at_only = group_setting.get("at_only", True)
@@ -337,7 +337,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         with _trace_span("judge"):
             should_reply = await should_respond(
                 msg_content, msg_type, sender_name, chat_id,
-                ctx.get_context(chat_id), cfg.bot_name, bot_qq,
+                ctx.get_context(chat_id), cfg.bot_name, bot_kook,
                 reply_threshold_override=custom_threshold,
             )
 
@@ -408,7 +408,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             recent_history = ctx.get_context(chat_id)[-8:] or []
             if await try_handle_with_agent(
                 msg_content, user_id=user_id, chat_id=chat_id,
-                sender_name=sender_name, is_group=is_group, bot_qq=bot_qq,
+                sender_name=sender_name, is_group=is_group, bot_kook=bot_kook,
                 intent=intent, recent_history=recent_history,
             ):
                 return
@@ -756,7 +756,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             result = await _write_code(
                 language=lang, description=msg_content[:3000],
                 user_id=user_id, group_id=chat_id, sender_name=sender_name,
-                is_group=is_group, bot_qq=bot_qq,
+                is_group=is_group, bot_kook=bot_kook,
             )
             logger.info("代码生成管道完成: chat=%d result=%s", chat_id, result[:80])
             return
@@ -779,7 +779,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             from core.tools import _run_code_tool
             result = await _run_code_tool(
                 {"language": "python", "code": "", "description": msg_content[:3000]},
-                user_id, chat_id, sender_name, is_group, bot_qq,
+                user_id, chat_id, sender_name, is_group, bot_kook,
             )
             from services.sender import send_group_msg, send_private_msg
             if is_group:
@@ -838,7 +838,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
             is_group=is_group, extra_info=extra_info_for_llm,
             max_tokens=(_complexity.output_max_tokens if _complexity else None),
-            user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
+            user_id=user_id, group_id=chat_id if is_group else 0, bot_kook=bot_kook,
             system_text_override=system_text_override,
             tools_override=fc_schemas,
             detail_hint=_detail_hint or (_complexity.detail_hint if _complexity else ""),
@@ -1023,14 +1023,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                        is_group=True, user_id=None)
                 logger.warning("JSON CALL 无效: %s", cmd_name)
                 continue
-            # 追踪：有人叫bot执行 → 用actor的QQ；bot自己执行 → 用bot_qq
+            # 追踪：有人叫bot执行 → 用actor的QQ；bot自己执行 → 用bot_kook
             caller_id = user_id
             caller_name = sender_name
             if isinstance(actor, dict) and actor.get("qq"):
                 caller_id = int(actor["qq"])
                 caller_name = actor.get("name", sender_name)
             elif origin == "bot":
-                caller_id = bot_qq
+                caller_id = bot_kook
                 caller_name = cfg.bot_name
 
             call_text = f".{cmd_name} {cmd_args}".strip()
@@ -1042,7 +1042,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 call_texts.append((call_text, len(call_results) - 1, caller_id, caller_name))
             else:
                 try:
-                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_qq, raw_message)
+                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_kook, raw_message)
                     call_results.append(result)
                 except Exception as e:
                     import traceback
@@ -1054,7 +1054,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     call_results.append(f"[CALL错误] {e}\n\n堆栈:\n{tb}")
             executed_calls.append((cmd_name, cmd_args))
 
-    is_at_me = raw_message and (f"(met){bot_qq}(met)" in raw_message or f"[CQ:at,qq={bot_qq}]" in raw_message)
+    is_at_me = raw_message and (f"(met){bot_kook}(met)" in raw_message or f"[CQ:at,qq={bot_kook}]" in raw_message)
     if executed_calls and is_group and is_at_me:
         first_call_idx = -1
         for i, s in enumerate(sentences):
@@ -1150,7 +1150,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             "msg_type": msg_type, "msg_content": msg_content,
             "chat_id": chat_id, "sender_name": sender_name,
             "user_id": user_id, "is_group": is_group,
-            "bot_qq": bot_qq, "raw_message": raw_message,
+            "bot_kook": bot_kook, "raw_message": raw_message,
             "quoted_msg": quoted_msg, "is_mentioned": is_mentioned,
             "image_urls": image_urls, "quoted_image_urls": quoted_image_urls,
         }
@@ -1208,7 +1208,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             # 等待文字全部发出后，再执行发文件类 CALL
             for call_text, idx, caller_id, caller_name in call_texts:
                 try:
-                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_qq, raw_message)
+                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_kook, raw_message)
                     call_results[idx] = result
                 except Exception as e:
                     logger.warning("延迟CALL执行失败: %s", e)
@@ -1415,10 +1415,10 @@ async def _async_extract_profile(user_id: int, sender_name: str, msg: str):
 
 
 # ------指令路由------
-async def _handle_command_route(text, user_id, group_id, sender_name, is_group, bot_qq, raw_message="", raw_event=None):
+async def _handle_command_route(text, user_id, group_id, sender_name, is_group, bot_kook, raw_message="", raw_event=None):
     from core.config import get_config
     cfg = get_config()
-    result = await handle_command(text, user_id, group_id, sender_name, is_group, bot_qq, raw_message=raw_message, raw_event=raw_event)
+    result = await handle_command(text, user_id, group_id, sender_name, is_group, bot_kook, raw_message=raw_message, raw_event=raw_event)
     if result is None:
         return
     if result == "__SYS_TEST_CARD__":

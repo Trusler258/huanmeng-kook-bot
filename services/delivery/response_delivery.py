@@ -283,7 +283,7 @@ class ResponseDelivery:
     # ── 消息落盘 ────────────────────────────────────────────
     def _log_bot_sent(self, chat_id, content: str):
         try:
-            self.store.log_bot(chat_id, get_config().bot_qq, content)
+            self.store.log_bot(chat_id, get_config().bot_kook, content)
         except Exception as e:
             logger.warning("_log_bot_sent 失败: %s", e)
 

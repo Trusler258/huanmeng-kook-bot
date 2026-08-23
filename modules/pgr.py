@@ -51,7 +51,7 @@ def _del_token(user_id: int):
     _save_tokens(data)
 
 
-async def cmd_pgr(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_pgr(args, user_id, group_id, sender_name, is_group, bot_kook):
     from core.logger import get_logger
     logger = get_logger("pgr")
 

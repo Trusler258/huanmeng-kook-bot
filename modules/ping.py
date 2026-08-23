@@ -259,7 +259,7 @@ def _format_text(data: dict, target: str, region_hint: str = "") -> str:
 
 # ── 命令入口 ──────────────────────────────────────────────
 
-async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_kook):
     if not args:
         return "用法: .ping <域名或IP> [国家...|城市] [img]\n.ping google.com\n.ping baidu.com CN,JP\n.ping qq.com tcp\n加 img 输出图片卡片"
 

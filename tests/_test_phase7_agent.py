@@ -141,7 +141,7 @@ async def _run_executor(plan, tool_impl, evaluator=None, ctx=None):
     from core.agent.executor import AgentExecutor
     ex = AgentExecutor(evaluator=evaluator)
     c = ctx or AgentContext(user_id=1, group_id=0, chat_id=1,
-                            sender_name="t", is_group=False, bot_qq=0,
+                            sender_name="t", is_group=False, bot_kook=0,
                             original_msg="测试")
     with patch("core.tools.execute_tool", side_effect=tool_impl):
         return await ex.execute(plan, c)
@@ -200,7 +200,7 @@ async def test_executor_tool_timeout():
          patch.object(exmod, "TOTAL_TASK_TIMEOUT", 0.1):
         res = await AgentExecutor().execute(plan, AgentContext(
             user_id=1, group_id=0, chat_id=1, sender_name="t",
-            is_group=False, bot_qq=0, original_msg="测试"))
+            is_group=False, bot_kook=0, original_msg="测试"))
     assert res.status == "TIMEOUT", res.status
     assert res.final_text, "超时也应给出兜底回复"
     print("OK test_executor_tool_timeout (总任务超时 → TIMEOUT + 兜底回复)")
@@ -218,7 +218,7 @@ async def test_executor_cancel_propagates():
 
     ex = AgentExecutor()
     c = AgentContext(user_id=1, group_id=0, chat_id=1, sender_name="t",
-                     is_group=False, bot_qq=0, original_msg="测试")
+                     is_group=False, bot_kook=0, original_msg="测试")
     with patch("core.tools.execute_tool", side_effect=_hanging):
         task = asyncio.create_task(ex.execute(plan, c))
         await asyncio.sleep(0.1)
@@ -250,7 +250,7 @@ async def test_max_plan_steps_limit():
          patch.object(exmod, "MAX_PLAN_STEPS", 5):
         res = await AgentExecutor().execute(plan, AgentContext(
             user_id=1, group_id=0, chat_id=1, sender_name="t",
-            is_group=False, bot_qq=0, original_msg="测试"))
+            is_group=False, bot_kook=0, original_msg="测试"))
     assert len(executed) <= 5, f"执行步骤不应超过 5，实际 {len(executed)}"
     print(f"OK test_max_plan_steps_limit (最大 {MAX_PLAN_STEPS} 步, 实际执行 {len(executed)})")
 
@@ -277,7 +277,7 @@ async def test_max_replanning_limit():
          patch.object(exmod, "MAX_REPLANNING", 2):
         await AgentExecutor(evaluator=_Eval()).execute(plan, AgentContext(
             user_id=1, group_id=0, chat_id=1, sender_name="t",
-            is_group=False, bot_qq=0, original_msg="测试"))
+            is_group=False, bot_kook=0, original_msg="测试"))
     assert replan_calls["n"] <= 2, f"重规划次数应≤2，实际 {replan_calls['n']}"
     print(f"OK test_max_replanning_limit (最多重规划 {MAX_REPLANNING} 次, 实际 {replan_calls['n']})")
 

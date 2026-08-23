@@ -709,7 +709,7 @@ async def _eq_ws_handler(reader, writer):
         except Exception:
             break
 
-async def cmd_eq(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_eq(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     .eq .地震
       .eq             最新 1 条 (M≥0)

@@ -1,7 +1,7 @@
 """
 指令系统（重构版）
 - 所有指令处理函数集中管理
-- 统一签名: async def cmd_xxx(args, user_id, group_id, sender_name, is_group, bot_qq) -> str | None
+- 统一签名: async def cmd_xxx(args, user_id, group_id, sender_name, is_group, bot_kook) -> str | None
 - 全量 i18n + 详细日志
 - 指令注册表 COMMAND_MAP
 - 分发器 handle_command
@@ -34,7 +34,7 @@ from modules.voice import cmd_voice
 try:
     from modules.ping import cmd_ping
 except ImportError:
-    async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_qq):
+    async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_kook):
         return "ping 模块未安装喵~"
 try:
     from modules.op import cmd_op, cmd_persona, cmd_master, cmd_sleep, cmd_hanxu
@@ -53,24 +53,24 @@ from core.token_tracker import cmd_cost, cmd_tokens
 logger = get_logger("commands")
 
 
-async def _cmd_gh(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def _cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
     try:
         from modules.gh import cmd_gh
     except ImportError:
         return "公会登记模块未安装喵~"
-    return await cmd_gh(args, user_id, group_id, sender_name, is_group, bot_qq)
+    return await cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook)
 
 
-async def _cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def _cmd_update(args, user_id, group_id, sender_name, is_group, bot_kook):
     from modules.auto_update import cmd_update
-    return await cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq)
+    return await cmd_update(args, user_id, group_id, sender_name, is_group, bot_kook)
 
 
 # ════════════════════════════════════════════════════════════
 #  指令处理函数
 # ════════════════════════════════════════════════════════════
 
-async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_kook):
     """显示帮助列表 — .help 发送预渲染图片卡片，.help <指令> 查看详细用法"""
     cfg = get_config()
     name = cfg.bot_name
@@ -275,7 +275,7 @@ _HELP_DETAIL = {
 }
 
 
-async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_kook):
     """查看当前聊天的好感度列表"""
     logger.info("指令 .favlist 触发 user=%d chat=%d", user_id, group_id if is_group else user_id)
     cfg = get_config()
@@ -296,7 +296,7 @@ async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "__CARD__:" + json.dumps(build_favlist(rows), ensure_ascii=False)
 
 
-async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_kook):
     """返回系统和运行状态"""
     import platform
     import time as _time
@@ -456,7 +456,7 @@ async def _tr_balance() -> str:
     return "\n".join(lines)
 
 
-async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_kook):
     """余额查询 .balance — 查询当前选中供应商的余额"""
     from core.config import get_config
     cfg = get_config()
@@ -521,7 +521,7 @@ async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "\n".join(lines)
 
 
-async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_kook):
     """查询快递物流信息（KOOK 原生卡片输出）"""
     if not args:
         return format_lang("box.prompt_input")
@@ -638,7 +638,7 @@ def _set_today_luck(user_id: int, value: int):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_kook):
     """每日运势抽签 .luck — 今天内同一人返回相同值"""
     logger.info("指令 .luck 触发 user=%d", user_id)
     
@@ -657,7 +657,7 @@ async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"(met){user_id}(met) 你今天的运气是 {num} 喵"
 
 
-async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_kook):
     """发送测试卡片消息"""
     logger.info("指令 .testsys 触发 user=%d group=%d", user_id, group_id or 0)
 
@@ -665,13 +665,13 @@ async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_qq):
     return "__SYS_TEST_CARD__"
 
 
-async def cmd_testok(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_testok(args, user_id, group_id, sender_name, is_group, bot_kook):
     """测试卡片回调"""
     logger.info("指令 .testok 触发（卡片按钮点击）user=%d", user_id)
     return "test ok"
 
 
-async def cmd_testup(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_testup(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.test-up — 返回 update_test_note.md 的内容（测试用）"""
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
@@ -685,7 +685,7 @@ async def cmd_testup(args, user_id, group_id, sender_name, is_group, bot_qq):
 #  通知系统指令（性能降级 / GitHub 更新提示）
 # ════════════════════════════════════════════════════════════
 
-async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.notify — 配置通知目标频道（卡片按钮选择，仅管理员）"""
     from core.config import get_config
     cfg = get_config()
@@ -733,7 +733,7 @@ async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None
 
 
-async def cmd_notifyset(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_notifyset(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.notifyset <channel_id> — 添加通知目标频道（由卡片按钮点击触发）"""
     from core.config import get_config
     cfg = get_config()
@@ -753,7 +753,7 @@ async def cmd_notifyset(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"频道 {cid} 已在通知列表中"
 
 
-async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.notifycheck — 手动触发一次 GitHub 更新检测（用于验证配置）"""
     from core.config import get_config
     cfg = get_config()
@@ -772,7 +772,7 @@ async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_qq
             f"（无新提交则不会重复推送）")
 
 
-async def cmd_notifyperf(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_notifyperf(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.notifyperf [on|off|status] — 开/关 LLM 性能降级通知（仅管理员）。
 
     用于关闭"KOOK BOT · LLM 服务降级"这类推送，避免在开发/调试期被打扰。
@@ -794,7 +794,7 @@ async def cmd_notifyperf(args, user_id, group_id, sender_name, is_group, bot_qq)
     return f"LLM 性能降级通知当前状态：{'开启' if cur else '已关闭'}"
 
 
-async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.jsonraw <对话内容> → 输出 LLM 原始 JSON"""
     text = " ".join(args) if args else "喵"
     logger.info("指令 .jsonraw 触发 user=%d text='%s'", user_id, text[:40])
@@ -822,7 +822,7 @@ async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     return raw or "LLM 返回为空"
 
 
-async def cmd_md(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_md(args, user_id, group_id, sender_name, is_group, bot_kook):
     """发送 KMarkdown 消息 .md <内容>"""
     if not args:
         return "用法: .md <KMarkdown内容>\\n示例: .md # 标题\\n> 引用\\n**粗体** *斜体*"
@@ -834,7 +834,7 @@ async def cmd_md(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None
 
 
-async def cmd_update_info(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_update_info(args, user_id, group_id, sender_name, is_group, bot_kook):
     """显示更新日志 .up [版本号]，无参数默认最新版本"""
     logger.info("指令 .up 触发 user=%d group=%d args=%s", user_id, group_id or 0, args)
 
@@ -883,7 +883,7 @@ async def cmd_update_info(args, user_id, group_id, sender_name, is_group, bot_qq
 
 # ─── 搜索指令 ──────────────────────────────────────────────
 
-async def cmd_search(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_search(args, user_id, group_id, sender_name, is_group, bot_kook):
     """搜索指令 .search [条数] [数据源] <关键词>，数据源: baidu/baike/bing/all(默认)"""
     if not args:
         return format_lang("search.prompt_input")
@@ -1007,7 +1007,7 @@ async def _fetch_github_contents(owner: str, repo: str, path: str = "", ref: str
     return "GitHub API 返回格式异常"
 
 
-async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.read <URL> — 深度读取网页正文，返回纯文本摘要。支持 GitHub 仓库/文件"""
     if not args:
         return "用法: .read <网页URL>  例如 .read https://github.com/Trusler258/huanmeng-qqbot"
@@ -1049,7 +1049,7 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── WHOIS 指令 ──────────────────────────────────────────────
 
-async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.whois <域名> — 查询域名注册信息（注册商/注册时间/到期时间/NS/状态）"""
     if not args:
         return "用法: .whois <域名>  例如 .whois 01240820.xyz"
@@ -1060,7 +1060,7 @@ async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
     return result
 
 
-async def cmd_kook_user_id(args, user_id, group_id, sender_name, is_group, bot_qq, raw_event=None):
+async def cmd_kook_user_id(args, user_id, group_id, sender_name, is_group, bot_kook, raw_event=None):
     """.kook_user_id <@的人> — 查询被 @ 用户的精确 KOOK user_id
     用法: .kook_user_id @某人
     """
@@ -1072,7 +1072,7 @@ async def cmd_kook_user_id(args, user_id, group_id, sender_name, is_group, bot_q
         if hasattr(raw_event, 'mention') and raw_event.mention:
             mention_list = list(raw_event.mention)
         # 排除 bot 自身
-        bot_id_str = str(bot_qq)
+        bot_id_str = str(bot_kook)
         for m in mention_list:
             m_str = str(m)
             if m_str != bot_id_str:
@@ -1086,7 +1086,7 @@ async def cmd_kook_user_id(args, user_id, group_id, sender_name, is_group, bot_q
         met_match = _re.search(r'\(met\)(\w+)\(met\)', content)
         if met_match:
             uid = met_match.group(1)
-            if uid not in ('here', 'all') and uid != str(bot_qq):
+            if uid not in ('here', 'all') and uid != str(bot_kook):
                 target_uid = uid
 
     # 方法3: 纯数字参数（直接当 user_id）
@@ -1115,7 +1115,7 @@ async def cmd_kook_user_id(args, user_id, group_id, sender_name, is_group, bot_q
     return f"用户 ID: {target_uid}\n昵称: {nick}"
 
 
-async def cmd_kook_channel_id(args, user_id, group_id, sender_name, is_group, bot_qq, raw_event=None):
+async def cmd_kook_channel_id(args, user_id, group_id, sender_name, is_group, bot_kook, raw_event=None):
     """.kook_channel_id — 返回当前频道的精确 ID"""
     channel_id = ""
     if raw_event is not None:
@@ -1130,7 +1130,7 @@ async def cmd_kook_channel_id(args, user_id, group_id, sender_name, is_group, bo
     return f"当前{chat_type} ID: {channel_id}"
 
 
-async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.write_code <描述> — 生成代码文件并发送"""
     if not args:
         return "用法: .write_code <描述>  例如 .write_code 用HTML写一个2048游戏"
@@ -1140,13 +1140,13 @@ async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_qq)
     return await _write_code(
         language=lang, description=desc,
         user_id=user_id, group_id=group_id, sender_name=sender_name,
-        is_group=is_group, bot_qq=bot_qq,
+        is_group=is_group, bot_kook=bot_kook,
     )
 
 
 # ─── 忽略/解除忽略指令 ──────────────────────────────────────
 
-async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.ignore <QQ> — 全群忽略该用户（仅 admin）"""
     cfg = get_config()
     if user_id != cfg.admin_qq:
@@ -1162,7 +1162,7 @@ async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"已忽略 {target}，所有群都不会再收到他的消息"
 
 
-async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.unignore <QQ> — 解除全群忽略（仅 admin）"""
     cfg = get_config()
     if user_id != cfg.admin_qq:
@@ -1189,7 +1189,7 @@ async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 天气指令 ──────────────────────────────────────────────
 
-async def cmd_weather(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_weather(args, user_id, group_id, sender_name, is_group, bot_kook):
     """天气查询指令 .天气 .weather（优先输出精美卡片图片）"""
     if not args:
         return format_lang("weather.prompt_input")
@@ -1232,7 +1232,7 @@ async def cmd_weather(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 管理员指令 ────────────────────────────────────────────
 
-async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_kook):
     """热重载配置（不重启进程）"""
     roles = load_roles_config()
     if user_id != roles.get("admin_qq"):
@@ -1277,7 +1277,7 @@ def _read_provider_cfg() -> tuple[str, str]:
     return m.get("provider", ""), m.get("name", "")
 
 
-async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_kook):
     """切换回复模型供应商 .model / .provider / .供应商
 
     用法:
@@ -1330,7 +1330,7 @@ async def cmd_provider(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"回复模型已切换为: {_PROVIDERS[target]['name']}\n(provider={label}, model={model_name})"
 
 
-async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_kook):
     """添加用户关系（仅管理员私聊）"""
     roles = load_roles_config()
     admin_qq = roles["admin_qq"]
@@ -1368,7 +1368,7 @@ async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_q
         return format_lang("relation.save_fail", error=e)
 
 
-async def cmd_reset_fav(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_reset_fav(args, user_id, group_id, sender_name, is_group, bot_kook):
     """重置好感度数据（仅管理员）"""
     logger.info("指令 .resetfav 触发 user=%d", user_id)
     
@@ -1517,7 +1517,7 @@ async def _send_image_url_fallback(
             await send_private_msg(fallback, user_id)
 
 
-async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_kook):
     """随机二次元图片 .img"""
     logger.info("指令 .img 触发 user=%d group=%d", user_id, group_id or 0)
 
@@ -1536,7 +1536,7 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None  # 后台异步处理
 
 
-async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_kook):
     """轻度 R18 图片 .img18"""
     logger.info("指令 .img18 触发 user=%d group=%d", user_id, group_id or 0)
 
@@ -1556,7 +1556,7 @@ async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 提醒指令 ──────────────────────────────────────────────
 
-async def cmd_remind(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_remind(args, user_id, group_id, sender_name, is_group, bot_kook):
     """设置定时提醒 .remind <时间> <内容>"""
     if not args or len(args) < 2:
         return format_lang("remind.usage")
@@ -1600,7 +1600,7 @@ async def cmd_remind(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 抽签指令 ──────────────────────────────────────────────
 
-async def cmd_chou(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_chou(args, user_id, group_id, sender_name, is_group, bot_kook):
     """随机抽取 .抽 选项A 选项B 选项C 或 .抽 选项A,选项B,选项C"""
     if not args:
         return format_lang("luck.prompt")
@@ -1629,7 +1629,7 @@ async def cmd_chou(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── Minecraft 日志分析（零上下文）─────────────────────────────
 
-async def cmd_analyze(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_analyze(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     零上下文分析 .analyze <日志内容>
     直接发给 LLM，不注入任何聊天记录、记忆、架构上下文。
@@ -1652,7 +1652,7 @@ async def cmd_analyze(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 提示词注入管理 ──────────────────────────────────────────
 
-async def cmd_preset(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_preset(args, user_id, group_id, sender_name, is_group, bot_kook):
     """查看或清除系统提示词注入 .preset [show|clear]"""
     from modules.preset import get_preset, clear_preset
 
@@ -1686,7 +1686,7 @@ async def _wzq_render_and_send(chat_id: int, is_group: bool, group_id: int, user
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
 
 
-async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     五子棋 .wzq <操作>
       duel @某人     发起挑战
@@ -1977,7 +1977,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 翻译 ───────────────────────────────────────────────────
 
-async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     翻译 .tr <目标语言> <文本>
       .tr en 你好
@@ -2026,7 +2026,7 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 中国象棋 ────────────────────────────────────────────────
 
-async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_kook):
     """中国象棋 .xq [start|走法|board|resign|history]"""
     if not is_group:
         return "象棋对战仅支持群聊喵~"
@@ -2108,7 +2108,7 @@ def _save_countdowns(data: list[dict]):
     _COUNTDOWN_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     倒计时 .countdown
       add <日期> <事件>     添加倒计时
@@ -2328,7 +2328,7 @@ def _build_wdsj_summary(data: dict) -> str:
     return "\n".join(lines)
 
 
-async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     洛花星雨战绩查询 .wdsj <模板> <玩家名> [img]
     别名: bw=起床战争 kbw=击退战场 sw=空岛战争 kp=职业战争 ...
@@ -2782,7 +2782,7 @@ def _handle_owner_cmd(args):
 
 # ─── 管理员 ──────────────────────────────────────────────────
 
-async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     配置管理 .owner <action> ...
     
@@ -2986,7 +2986,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 记忆查询 ────────────────────────────────────────────────
 
-async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     三层记忆查询 .memory [瞬时|短时|长时|搜索 <关键词>]
     """
@@ -3073,7 +3073,7 @@ async def _owner_legacy(args, action, admin):
             return admin.config_set(f"adapter.group_settings.{gid}", "null")
     return f"未知操作: {action}"
 
-async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_kook):
     """远程重启 .restart"""
     from core.config import get_config
     cfg = get_config()
@@ -3092,7 +3092,7 @@ async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
 #  指令注册表 & 分发器
 # ════════════════════════════════════════════════════════════
 
-async def cmd_lyric(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_lyric(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.lyric [on|off|status|offset] — 实时歌词推送管理 + 时间偏移远程下发
     offset 通过 PC 状态 TCP 连接下发 CMD:OFFSET_* 给客户端，即刻生效并持久化，无需手动改本地文件"""
     from services.pc_status import set_lyric_channel, get_lyric_channel, request_lyric_offset
@@ -3158,7 +3158,7 @@ async def cmd_lyric(args, user_id, group_id, sender_name, is_group, bot_qq):
             "提示：旧版 `.lyric` 直接带未知参数会被当成 on；现在必须显式写 on 才会开启频道。")
 
 
-async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.listening <歌名> [-s 歌手] [-p 软件] [-o] — bash 风格 + 兼容旧式
 
     通过 KOOK API /api/v3/game/activity 设置 data_type=2 的音乐状态。
@@ -3237,7 +3237,7 @@ async def cmd_listening(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"❌ 设置失败：{msg}"
 
 
-async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.playing <游戏名> [-o] — 设置机器人"正在玩"状态
 
     通过 KOOK API /api/v3/game/activity 设置 data_type=1 的游戏状态。
@@ -3311,7 +3311,7 @@ async def _plugin_action_result(ok: bool, err: str, ok_msg: str) -> str:
     return ok_msg if ok else f"❌ {err}"
 
 
-async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq, raw_event=None):
+async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_kook, raw_event=None):
     """.plugin — 插件管理：状态/启停/分享
     旧式: status|list|reload|enable|disable|unload
     CLI: -pack|-down|-load|-list"""
@@ -3637,7 +3637,7 @@ async def _plugin_status_text() -> str:
     return "\n".join(lines)
 
 
-async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.sys [card|shot|shotdesk] — PC 状态/截屏"""
     from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
     from modules.changelog import render_card_to_image
@@ -3837,7 +3837,7 @@ async def handle_command(
     group_id: int,
     sender_name: str,
     is_group: bool,
-    bot_qq: int,
+    bot_kook: int,
     raw_message: str = "",
     raw_event=None,
 ) -> str | None:
@@ -3889,7 +3889,7 @@ async def handle_command(
         mentions: list[str] = []
         try:
             if hasattr(raw_event, "mention") and raw_event.mention:
-                bid = str(bot_qq)
+                bid = str(bot_kook)
                 for m in raw_event.mention:
                     ms = str(m)
                     if ms and ms != bid:
@@ -3928,7 +3928,7 @@ async def handle_command(
             kwargs["raw_message"] = raw_message
         if "raw_event" in sig.parameters:
             kwargs["raw_event"] = raw_event
-        result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq, **kwargs)
+        result = await handler(args, user_id, group_id, sender_name, is_group, bot_kook, **kwargs)
         if result is not None:
             logger.info("指令执行完成 [%s]: 返回%d字符", cmd_name, len(str(result)))
         else:

@@ -70,7 +70,7 @@ def _parse_update_args(args):
     return yes, quiet, sub, rest
 
 
-async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_update(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.update [check|force|test|resend] [-y] [-q]"""
     yes, quiet, sub, rest = _parse_update_args(args)
 

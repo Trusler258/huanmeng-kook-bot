@@ -113,7 +113,7 @@ class ToolRuntime:
                 req.tool_name, req.arguments,
                 user_id=req.user_id, group_id=req.group_id,
                 sender_name=req.sender_name, is_group=req.is_group,
-                bot_qq=req.bot_qq, original_msg=req.original_msg,
+                bot_kook=req.bot_kook, original_msg=req.original_msg,
                 timeout=req.timeout,
             )
             end_ms = time.perf_counter() * 1000.0

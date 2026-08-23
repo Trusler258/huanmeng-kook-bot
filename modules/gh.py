@@ -66,7 +66,7 @@ def _can_op(user_id: int, group_data: dict) -> bool:
     return _is_admin(user_id) or str(user_id) in group_data.get("opts", [])
 
 
-async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
     """公会登记 .gh [add|del|list|fix|new|op]"""
     if not is_group:
         return "公会登记仅限群聊使用喵~"

@@ -60,7 +60,7 @@ def _has_new_topic(msg: str) -> bool:
     return len(text) >= 2
 
 
-def _clean_agent_msg(msg: str, bot_qq: int = 0) -> str:
+def _clean_agent_msg(msg: str, bot_kook: int = 0) -> str:
     """清洗 Agent 任务消息，剥离提及机器人/他人的 @ 标记，避免污染规划与搜索词。
 
     KOOK 收到的 @ 是 (met)用户ID(met) 格式（发送层会替换为 @QQ 显示），Agent 任务里
@@ -74,8 +74,8 @@ def _clean_agent_msg(msg: str, bot_qq: int = 0) -> str:
     text = _re.sub(r"\(met\)\w+\(met\)", " ", text)
     text = _re.sub(r"\[CQ:at,qq=\d+\]", " ", text)
     # 剥离文本形式 @QQ / @机器人名
-    if bot_qq:
-        text = _re.sub(rf"@\s*{bot_qq}(?!\d)", " ", text)
+    if bot_kook:
+        text = _re.sub(rf"@\s*{bot_kook}(?!\d)", " ", text)
     # 折叠多余空白
     text = _re.sub(r"\s+", " ", text).strip()
     # 剥离后只剩纯 @（如用户只 @ 没说事）→ 空串，让其走原 Fast Path
@@ -170,7 +170,7 @@ async def try_handle_with_agent(
     chat_id: int,
     sender_name: str,
     is_group: bool,
-    bot_qq: int,
+    bot_kook: int,
     intent: str = "",
     recent_history: list = None,
 ) -> bool:
@@ -184,7 +184,7 @@ async def try_handle_with_agent(
     """
     if not AGENT_ENABLED:
         return False
-    msg = _clean_agent_msg(msg, bot_qq=bot_qq)
+    msg = _clean_agent_msg(msg, bot_kook=bot_kook)
     if not msg or not msg.strip():
         return False
 
@@ -202,12 +202,12 @@ async def try_handle_with_agent(
             and not _has_new_topic(msg):
         # Issue1：续说也进入 Agent → 先发入口提示再执行。
         await _send_progress(_agent_entry_text(msg), chat_id, is_group, user_id)
-        continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg)
+        continuation_ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_kook, msg)
         result = await get_executor().try_continue_task(continuation_ctx,
                                                         constraints=constraints)
         if result is not None and result.final_text:
             await _deliver(result.final_text, chat_id, is_group, user_id,
-                           sender_name, bot_qq)
+                           sender_name, bot_kook)
             logger.info("Agent: 续说已处理 chat=%d final=%s",
                         chat_id, result.final_text[:40])
             return True
@@ -256,14 +256,14 @@ async def try_handle_with_agent(
         return False
 
     # 执行：按 Plan 执行 Skill/Tool，得到最终回复
-    ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_qq, msg,
+    ctx = _build_ctx(user_id, chat_id, sender_name, is_group, bot_kook, msg,
                      recent_history=recent_history)
     result = await get_executor().execute(plan, ctx)
 
     # 发送最终回复 + 写上下文
     if result.final_text:
         await _deliver(result.final_text, chat_id, is_group, user_id,
-                       sender_name, bot_qq)
+                       sender_name, bot_kook)
         logger.info("Agent: 已处理并回复 chat=%d status=%s final=%s",
                     chat_id, result.status, result.final_text[:40])
         return True
@@ -274,21 +274,21 @@ async def try_handle_with_agent(
 
 
 def _build_ctx(user_id: int, chat_id: int, sender_name: str, is_group: bool,
-               bot_qq: int, msg: str, recent_history: list = None) -> AgentContext:
+               bot_kook: int, msg: str, recent_history: list = None) -> AgentContext:
     return AgentContext(
         user_id=int(user_id or 0),
         group_id=int(chat_id or 0) if is_group else 0,
         chat_id=int(chat_id or 0),
         sender_name=sender_name or "",
         is_group=bool(is_group),
-        bot_qq=int(bot_qq or 0),
+        bot_kook=int(bot_kook or 0),
         original_msg=msg,
         recent_history=list(recent_history or []),
     )
 
 
 async def _deliver(final_text: str, chat_id: int, is_group: bool, user_id: int,
-                   sender_name: str, bot_qq: int) -> None:
+                   sender_name: str, bot_kook: int) -> None:
     """发送 Agent 最终回复；按句分段发送并回写上下文/缓冲。"""
     from core.context_manager import get_context_mgr
     from core.config import get_config

@@ -194,7 +194,7 @@ class PluginCapability:
         - schema : 完整 OpenAI 工具定义 {"type":"function","function":{...}}。
           缺省时按 name/description 自动生成一个无参 schema。
         - handler: async (arguments: dict, user_id, group_id, sender_name,
-                    is_group, bot_qq) -> str | None，返回自然语言结果文本。
+                    is_group, bot_kook) -> str | None，返回自然语言结果文本。
           缺省时只注册 schema 不绑定 handler（如仅想暴露给 LLM 语义）。
         - description 里的触发关键词会被 CapabilityRouter 用来精准路由：
           只在用户消息命中相关语义时才把该工具 Schema 交给 LLM。

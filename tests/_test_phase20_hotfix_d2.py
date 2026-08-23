@@ -59,7 +59,7 @@ async def test_agent_executor_request_timeout():
         plan = Plan(goal="写代码", steps=[PlanStep(index=0, action="写", tool="write_code",
                                                   params={"language": "python", "description": "LLM api 工具"})])
         ctx = AgentContext(user_id=2, group_id=0, chat_id=1,
-                           sender_name="t", is_group=False, bot_qq=0,
+                           sender_name="t", is_group=False, bot_kook=0,
                            original_msg="python写一个支持openai api格式的LLM api调用工具")
         # 直接调用内部工具执行，避免依赖完整 LLM
         ex_mod = ex

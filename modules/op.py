@@ -422,7 +422,7 @@ def list_group_ops() -> str:
 #  指令入口
 # ════════════════════════════════════════════════════════════
 
-async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_kook):
     """OP 权限管理 .op [add|del <QQ> | group set|del|list]"""
     from core.config import get_config
     cfg = get_config()
@@ -523,7 +523,7 @@ _PERSONA_HELP = (
 )
 
 
-async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_kook):
     """私聊人格切换"""
     if is_group:
         return "人格切换仅支持私聊喵~"
@@ -582,7 +582,7 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"核心人格已设置喵～\n\n当前人格:\n{persona[:2000]}\n\n如需恢复默认: .persona reset"
 
 
-async def cmd_master(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_master(args, user_id, group_id, sender_name, is_group, bot_kook):
     """私聊主人指定 .主人"""
     if is_group:
         return "主人指定仅支持私聊喵~"
@@ -603,7 +603,7 @@ async def cmd_master(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"好的喵！{sender_name}，你以后就是我在私聊里的主人了～"
 
 
-async def cmd_op_list(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_op_list(args, user_id, group_id, sender_name, is_group, bot_kook):
     """查看 OP 状态"""
     return list_group_ops()
 
@@ -707,7 +707,7 @@ def get_narrative_prompt_rule() -> str:
     )
 
 
-async def cmd_hanxu(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_hanxu(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.含蓄 — 切换含蓄叙述风格（仅 admin），仅影响当前聊天"""
     from core.config import get_config
     cfg = get_config()
@@ -728,7 +728,7 @@ async def cmd_hanxu(args, user_id, group_id, sender_name, is_group, bot_qq):
         return "(轻声) 好的…从现在开始会这样说话。像写日记一样，你知道我在陪着你。"
 
 
-async def cmd_sleep(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_sleep(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.sleep — 切换睡觉模式（仅 admin），仅影响当前聊天"""
     from core.config import get_config
     cfg = get_config()

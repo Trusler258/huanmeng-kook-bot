@@ -4,7 +4,7 @@ NASA APOD 指令
 """
 import asyncio
 
-async def cmd_nasa(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_nasa(args, user_id, group_id, sender_name, is_group, bot_kook):
     from services.nasa import get_apod
     from services.sender import send_group_msg, send_private_msg
 

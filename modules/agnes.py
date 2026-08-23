@@ -288,7 +288,7 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
 
 # ── 命令 ────────────────────────────────────────────────
 
-async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     .draw <提示词>  文生图
     .draw 512x512 <提示词>  指定尺寸
@@ -330,7 +330,7 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"(met){user_id}(met) 画好了喵~ (今日剩余 {remaining}/{limit})"
 
 
-async def cmd_video(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_video(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     .video <提示词>  文生视频
     .video <提示词> 512x512  指定尺寸
@@ -381,7 +381,7 @@ async def cmd_video(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"视频生成任务已提交喵~ (今日剩余 {left}/{limit}) 好了会 @你"
 
 
-async def cmd_img2video(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message="", raw_event=None):
+async def cmd_img2video(args, user_id, group_id, sender_name, is_group, bot_kook, raw_message="", raw_event=None):
     """
     .img2video <图片URL>  将图片转为视频
     .img2video <图片URL> 512x512  指定尺寸

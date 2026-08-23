@@ -38,7 +38,7 @@ async def test_execute_tool_timeout():
         req = new_request(conversation_id=1, user_id=2, channel_id="c", message_id="m")
         result = await tools.execute_tool(
             "search_web", {"query": "x"}, user_id=2, group_id=0,
-            sender_name="t", is_group=False, bot_qq=0, timeout=0.1,
+            sender_name="t", is_group=False, bot_kook=0, timeout=0.1,
         )
         assert "超时" in result, result
         calls = get_tool_calls()
@@ -61,7 +61,7 @@ async def test_execute_tool_cancelled():
     try:
         task = asyncio.create_task(tools.execute_tool(
             "weather", {}, user_id=2, group_id=0, sender_name="t",
-            is_group=False, bot_qq=0, timeout=30,
+            is_group=False, bot_kook=0, timeout=30,
         ))
         await asyncio.sleep(0.1)
         task.cancel()

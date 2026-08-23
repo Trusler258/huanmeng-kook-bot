@@ -47,7 +47,7 @@ class AgentContext:
     group_id: int = 0
     sender_name: str = ""
     is_group: bool = True
-    bot_qq: int = 0
+    bot_kook: int = 0
     chat_id: int = 0
     original_msg: str = ""
     recent_history: list[str] = field(default_factory=list)  # 近 N 条对话，供承接句定主题
@@ -246,7 +246,7 @@ class AgentExecutor:
             trace_id=get_trace_id(),
             user_id=ctx.user_id, group_id=ctx.group_id, chat_id=ctx.chat_id,
             sender_name=ctx.sender_name, is_group=ctx.is_group,
-            bot_qq=ctx.bot_qq, original_msg=ctx.original_msg,
+            bot_kook=ctx.bot_kook, original_msg=ctx.original_msg,
             timeout=effective_tool_timeout(step.tool or "", TOOL_TIMEOUT),
         )
         try:

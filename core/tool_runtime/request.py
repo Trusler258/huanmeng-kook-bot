@@ -30,7 +30,7 @@ class ToolRequest:
     chat_id: int = 0
     sender_name: str = ""
     is_group: bool = False
-    bot_qq: int = 0
+    bot_kook: int = 0
     original_msg: str = ""
 
     # 执行策略（Phase 8 统一由调用方/运行时给定）
@@ -67,7 +67,7 @@ class ToolRequest:
             tool_call_id=self.tool_call_id, trace_id=self.trace_id,
             user_id=self.user_id, group_id=self.group_id, chat_id=self.chat_id,
             sender_name=self.sender_name, is_group=self.is_group,
-            bot_qq=self.bot_qq, original_msg=self.original_msg,
+            bot_kook=self.bot_kook, original_msg=self.original_msg,
             timeout=self.timeout, retry_budget=self.retry_budget,
             required_permission=self.required_permission,
             attempt=self.attempt + 1,

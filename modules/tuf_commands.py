@@ -478,7 +478,7 @@ async def _send_tuf_file(file_path: Path, target_id: int, is_group: bool) -> boo
 #  4. 命令处理函数
 # ══════════════════════════════════════════════════════════
 
-async def cmd_tuf_search(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tuf_search(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     搜索 TUF 谱面，生成截图发送（带编号）。
     用法: .tufsearch <关键词> [页码]
@@ -561,7 +561,7 @@ async def cmd_tuf_search(args, user_id, group_id, sender_name, is_group, bot_qq)
     return None
 
 
-async def cmd_tufd(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tufd(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     通过编号下载搜索结果中的谱面。
     用法: .tufd [编号]
@@ -634,7 +634,7 @@ async def cmd_tufd(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"⏳ 正在下载谱面：{level.get('song', '?')}..."
 
 
-async def cmd_tufpage(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tufpage(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     搜索结果翻页。
     用法: .tufpage [页码]
@@ -717,7 +717,7 @@ async def cmd_tufpage(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None
 
 
-async def cmd_tuflevel(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tuflevel(args, user_id, group_id, sender_name, is_group, bot_kook):
     """
     查询 TUF 谱面详情。
     用法: .tuflevel <歌曲名|关卡ID>
@@ -793,6 +793,6 @@ async def cmd_tuflevel(args, user_id, group_id, sender_name, is_group, bot_qq):
 #  别名命令
 # ══════════════════════════════════════════════════════════
 
-async def cmd_tuf_谱面(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def cmd_tuf_谱面(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.tuf谱面 <歌曲名|关卡ID> - 中文别名"""
-    return await cmd_tuflevel(args, user_id, group_id, sender_name, is_group, bot_qq)
+    return await cmd_tuflevel(args, user_id, group_id, sender_name, is_group, bot_kook)

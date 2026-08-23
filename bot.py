@@ -95,14 +95,14 @@ class HuanmengBot:
         self.khl_bot = Bot(token=self.cfg.kook_token)
         info("khl.py Bot 实例已创建")
 
-        # 5. 拉取 bot 自身信息，填充 bot_id_str / bot_qq
+        # 5. 拉取 bot 自身信息，填充 bot_id_str / bot_kook
         try:
             me = await self.khl_bot.client.fetch_me()
             self.cfg.bot_id_str = str(me.id)
             try:
-                self.cfg.bot_qq = int(me.id)
+                self.cfg.bot_kook = int(me.id)
             except (ValueError, TypeError):
-                self.cfg.bot_qq = hash(str(me.id))
+                self.cfg.bot_kook = hash(str(me.id))
             info("Bot 自身信息: id=%s name=%s", self.cfg.bot_id_str, getattr(me, 'username', ''))
         except Exception as e:
             warning("拉取 bot 自身信息失败: %s（启动后仍可工作，但 @检测可能受影响）", e)
@@ -223,7 +223,7 @@ class HuanmengBot:
                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
                 info("卡片按钮点击 value=%s user=%s(%s) target=%s", value[:40], user_id, nickname, target_id)
 
-                result = await handle_command(value, uid, chat_id, "", is_group, cfg.bot_qq)
+                result = await handle_command(value, uid, chat_id, "", is_group, cfg.bot_kook)
 
                 # 点击记录：时间戳 / 点击人昵称 / 频道ID / 按钮值 / 按钮返回内容
                 detail = (

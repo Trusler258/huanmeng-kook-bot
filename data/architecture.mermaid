@@ -43,7 +43,7 @@ graph TB
     %%  核心层
     %% ════════════════════════════════════════════════════════
     subgraph 核心层["Core 核心基础设施"]
-        配置["core/config.py<br/>BotConfig @dataclass<br/>host port bot_name bot_qq<br/>reply_interest context_length<br/>personality white_list<br/>group_settings keywords<br/>anti_spam替换词<br/>build_system_prompt()<br/>get_user_tag() admin/friend/群友<br/>load_bot_config() 首次加载<br/>reload_config() 热重载<br/>set_debug_mode() 动态切换"]
+        配置["core/config.py<br/>BotConfig @dataclass<br/>host port bot_name bot_kook<br/>reply_interest context_length<br/>personality white_list<br/>group_settings keywords<br/>anti_spam替换词<br/>build_system_prompt()<br/>get_user_tag() admin/friend/群友<br/>load_bot_config() 首次加载<br/>reload_config() 热重载<br/>set_debug_mode() 动态切换"]
         日志["core/logger.py<br/>_ColorFormatter 5色终端<br/>_FileFormatter 文件日志<br/>init_logger(debug, file)<br/>get_logger(name) 子模块<br/>set_debug_mode() 动态切换<br/>按天轮转 保留7天"]
         分发器["core/dispatcher.py<br/>EventDispatcher<br/>msg_count 消息统计<br/>dispatch() 事件解析路由<br/>_handle_notice() 戳一戳/撤回<br/>_handle_message() 14步预处理<br/>_handle_recall() 撤回处理<br/>_process_image() 图片异步识别<br/>_fetch_quoted_msg() 引用消息<br/>_fetch_quoted_file() 引用文件"]
         管道["core/pipeline.py<br/>process_message() 14步核心流程<br/>handle_poke_event() 戳一戳<br/>_handle_command_route() 指令路由<br/>Step_1 提示词注入拦截<br/>Step_2 引用消息注入<br/>Step_3 上下文写入<br/>Step_4 指令拦截<br/>Step_5 回复决策(三级判断)<br/>Step_6 刷屏检测<br/>Step_7 自动搜索<br/>Step_8 记忆检索+好感+时间<br/>Step_9 LLM生成多句回复<br/>Step_10 上下文回写<br/>Step_11 任务调度<br/>Step_12 好感度更新<br/>Step_13 自动记忆保存"]
