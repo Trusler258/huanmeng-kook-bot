@@ -144,7 +144,10 @@ def load_protect_list() -> set[str]:
 
 def load_llm_config() -> tuple[str, str, str]:
     """从 config/bot_config.toml 和 .env 读取 LLM 配置"""
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib
     cfg_path = ROOT / "config" / "bot_config.toml"
     if not cfg_path.exists():
         raise FileNotFoundError("config/bot_config.toml 不存在")
