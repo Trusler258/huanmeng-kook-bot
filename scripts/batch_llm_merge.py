@@ -4,19 +4,13 @@
 用法：在 bot 根目录下运行
     python3 scripts/batch_llm_merge.py
 
-功能：
-  1. 读取 data/update_state.json 获取 BASE（上次对齐的 remote_sha）
-  2. 拿 GitHub API 获取最新 master HEAD（REMOTE）
-  3. 遍历仓库所有 .py 文件，对每个文件：
-     - LOCAL == REMOTE → 跳过
-     - LOCAL == BASE  → 直接覆盖为 REMOTE（无本地改动）
-     - LOCAL != BASE  → 三路 LLM 融合（保留本地改动 + 应用远程更新）
-  4. 跳过 >60KB 文件、受保护文件、plugins/ 目录
-  5. 完成后重建 update_state.json 对齐最新 commit
-
-依赖：httpx, toml（服务器通常已有）
+策略：
+  用 git SSH 获取远程内容（不走 GitHub API，无速率限制），
+  compare API 获取 diff 缩小范围，仅对变更文件做三路判断：
+    LOCAL == REMOTE → 跳过
+    LOCAL == BASE  → 直接覆盖为 REMOTE
+    LOCAL != BASE  → 三路 LLM 融合（保留本地 + 应用远程）
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -24,31 +18,95 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import traceback
 from pathlib import Path
 from typing import Optional
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 import httpx
 
-# ── 配置 ───────────────────────────────────────────────────
+# ── 配置 ──
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "Trusler258/huanmeng-kook-bot").strip()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
+GIT_REMOTE = f"git@github.com:{GITHUB_REPO}.git"
 ROOT = Path.cwd()
+GIT_DIR = ROOT / ".git_batch_merge"  # 裸仓库缓存
 
-# 跳过前缀（不处理这些目录/文件）
 SKIP_PREFIXES = (
     "plugins/", "data/", "config/", "server_config_backup/",
     ".update_cache/", "__pycache__/", ".git/", "scripts/",
     "venv/", ".venv/", "env/", ".env", ".gitignore",
     ".bot_protect", "requirements.txt", "phone_tunnel_url.txt",
 )
-
-# 最大文件大小（超过不送 LLM）
 MAX_FILE_SIZE = 60000
 
 
+# ── Git 操作（SSH，无 API 限制）──
+def _git(*args: str, **kwargs) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=no"
+    return subprocess.run(
+        ["git"] + list(args),
+        capture_output=True, text=True, timeout=60, env=env, **kwargs
+    )
+
+
+def ensure_git_repo() -> Path:
+    """确保本地有一个裸仓库（blob-on-demand），返回 repo 路径。"""
+    if not GIT_DIR.exists():
+        print("  首次克隆仓库（blob-on-demand）...")
+        _git("clone", "--bare", "--filter=blob:none", GIT_REMOTE, str(GIT_DIR))
+        print("  克隆完成。")
+    else:
+        # 增量 fetch
+        _git("-C", str(GIT_DIR), "fetch", "--filter=blob:none", "origin", "+refs/heads/*:refs/heads/*")
+    return GIT_DIR
+
+
+def git_head_sha() -> str:
+    ensure_git_repo()
+    r = _git("-C", str(GIT_DIR), "rev-parse", "origin/master")
+    return r.stdout.strip()
+
+
+def git_file_content(rel_path: str, ref: str) -> str:
+    """用 git show 获取指定 ref 的文件内容（按需下载 blob）。"""
+    ensure_git_repo()
+    r = _git("-C", str(GIT_DIR), "show", f"{ref}:{rel_path}")
+    if r.returncode != 0:
+        return ""
+    return r.stdout
+
+
+def git_diff_files(base_sha: str, head_sha: str) -> set[str]:
+    """获取 BASE 到 HEAD 之间变更的文件路径集合。"""
+    if not base_sha:
+        return set()
+    ensure_git_repo()
+    r = _git("-C", str(GIT_DIR), "diff", "--name-only", f"{base_sha}..{head_sha}")
+    if r.returncode != 0:
+        return set()
+    return {line.strip() for line in r.stdout.splitlines() if line.strip()}
+
+
+def git_file_tree() -> list[dict]:
+    """获取 HEAD 的文件树。"""
+    ensure_git_repo()
+    r = _git("-C", str(GIT_DIR), "ls-tree", "-r", "--name-only", "origin/master")
+    if r.returncode != 0:
+        return []
+    return [{"path": line.strip(), "type": "blob"}
+            for line in r.stdout.splitlines() if line.strip()]
+
+
+# ── GitHub API（仅用于 compare API 兜底，用量极小）──
 def _gh_headers() -> dict:
     headers = {"Accept": "application/vnd.github.v3+json"}
     if GITHUB_TOKEN:
@@ -63,27 +121,7 @@ async def _gh_get(url: str) -> dict:
         return resp.json()
 
 
-async def get_head_sha() -> str:
-    data = await _gh_get(f"{GITHUB_API}/commits/master")
-    return data["sha"]
-
-
-async def get_file_tree(sha: str) -> list[dict]:
-    """获取仓库在指定 commit 的完整文件树（递归）"""
-    data = await _gh_get(f"{GITHUB_API}/git/trees/{sha}?recursive=1")
-    return data.get("tree", [])
-
-
-async def fetch_file_content(rel_path: str, ref: str) -> str:
-    """通过 GitHub API 获取某个文件在指定 ref 下的内容（base64 解码）"""
-    url = f"{GITHUB_API}/contents/{rel_path}?ref={ref}"
-    try:
-        data = await _gh_get(url)
-        return base64.b64decode(data.get("content", "") or "").decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-
-
+# ── 本地操作 ──
 def load_update_state() -> dict:
     path = ROOT / "data" / "update_state.json"
     if path.exists():
@@ -109,7 +147,6 @@ def write_local(rel_path: str, content: str) -> None:
 
 
 def compute_blob(rel_path: str) -> str:
-    """计算本地文件的 git blob SHA"""
     p = ROOT / rel_path
     if not p.exists():
         return ""
@@ -134,7 +171,6 @@ def strip_code_fence(text: str) -> str:
 
 
 def load_protect_list() -> set[str]:
-    """读取 .bot_protect 中的保护文件列表"""
     path = ROOT / ".bot_protect"
     if not path.exists():
         return set()
@@ -143,21 +179,14 @@ def load_protect_list() -> set[str]:
 
 
 def load_llm_config() -> tuple[str, str, str]:
-    """从 config/bot_config.toml 和 .env 读取 LLM 配置"""
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib
     cfg_path = ROOT / "config" / "bot_config.toml"
     if not cfg_path.exists():
         raise FileNotFoundError("config/bot_config.toml 不存在")
-
     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     model_cfg = cfg.get("model", {}).get("replyer_1", {})
     provider = model_cfg.get("provider", "")
     model_name = model_cfg.get("name", "")
 
-    # 从 config/.env 读 API key 和 URL
     env = {}
     env_path = ROOT / "config" / ".env"
     if env_path.exists():
@@ -169,44 +198,25 @@ def load_llm_config() -> tuple[str, str, str]:
 
     api_url = env.get(f"{provider.upper()}_URL", "")
     api_key = env.get(f"{provider.upper()}_KEY", "")
-
     if not api_url or not api_key:
         raise RuntimeError(f"未找到 LLM 配置: provider={provider}, URL={api_url}, KEY={bool(api_key)}")
-
     return api_url, api_key, model_name
 
 
 async def call_llm(api_url: str, api_key: str, model: str, prompt: str) -> str:
-    """调用 OpenAI 兼容 API"""
     async with httpx.AsyncClient(timeout=180, verify=False) as cl:
         resp = await cl.post(
             f"{api_url.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 8192,
-                "temperature": 0.1,
-            },
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 8192, "temperature": 0.1},
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return resp.json()["choices"][0]["message"]["content"]
 
 
-async def merge_one(
-    rel_path: str,
-    base_text: str,
-    local_text: str,
-    head_text: str,
-    api_url: str,
-    api_key: str,
-    model: str,
-) -> Optional[str]:
-    """LLM 三路融合一个文件，返回融合后内容；失败返回 None"""
+async def merge_one(rel_path: str, base_text: str, local_text: str,
+                    head_text: str, api_url: str, api_key: str, model: str) -> Optional[str]:
     prompt = (
         "你是资深 Python 工程师。下面给出同一个文件的三个版本：\n\n"
         "# [BASE] 旧基线版本（上次更新时的状态）：\n"
@@ -221,13 +231,12 @@ async def merge_one(
         "3. 两者冲突时，若远程改动是结构性的（改名/重构）则跟随 REMOTE 并保留本地功能意图。\n"
         "输出完整的融合后文件内容：纯代码，不要任何解释，不要 markdown 代码围栏，不要省略号。"
     )
-
     try:
         raw = await call_llm(api_url, api_key, model, prompt)
         if not raw or len(raw) < 50:
             return None
         out = strip_code_fence(raw)
-        compile(out, rel_path, "exec")  # 语法校验
+        compile(out, rel_path, "exec")
         return out
     except SyntaxError as e:
         print(f"  [LLM] 语法错误 {rel_path}:{e.lineno} {e.msg}")
@@ -237,26 +246,12 @@ async def merge_one(
         return None
 
 
-async def get_diff_files(base_sha: str, head_sha: str) -> set[str]:
-    """通过 compare API 获取 BASE 到 HEAD 之间变更的文件路径集合。
-    返回空集表示无法获取（降级为全量处理）。"""
-    if not base_sha:
-        return set()
-    try:
-        url = f"{GITHUB_API}/compare/{base_sha}...{head_sha}"
-        data = await _gh_get(url)
-        return {f["filename"] for f in data.get("files", [])}
-    except Exception as e:
-        print(f"  [WARN] compare API 失败: {e}，将全量处理")
-        return set()
-
-
 async def main():
     print("=" * 60)
-    print("  批量 LLM 三路融合")
+    print("  批量 LLM 三路融合 (git 模式)")
     print("=" * 60)
 
-    # 1. 读配置
+    # 1. LLM 配置
     print("\n[1/5] 读取 LLM 配置...")
     try:
         api_url, api_key, model = load_llm_config()
@@ -266,41 +261,44 @@ async def main():
         print(f"  FAIL: {e}")
         sys.exit(1)
 
-    # 2. 获取远程版本
+    # 2. 版本信息
     print("\n[2/5] 获取远程版本...")
     state = load_update_state()
     base_sha = state.get("remote_sha", "")
     print(f"  BASE (上次对齐): {base_sha[:8] if base_sha else '(无/首次)'}")
 
-    head = await get_head_sha()
+    head = git_head_sha()
     print(f"  HEAD (最新):     {head[:8]}")
 
     if base_sha == head:
         print("  已是最新，无需修复。")
         return
 
-    # 3. 获取文件树 + diff
-    print("\n[3/5] 获取远程文件树...")
-    tree = await get_file_tree(head)
-    py_files = [
-        item for item in tree
-        if item["type"] == "blob" and item["path"].endswith(".py")
-        and not should_skip(item["path"])
-    ]
-    print(f"  远程 .py 文件: {len(py_files)} 个（排除 plugins/ 等）")
+    # 3. 文件树 + diff
+    print("\n[3/5] 获取文件树...")
+    tree = git_file_tree()
+    py_files = [item for item in tree if item["path"].endswith(".py") and not should_skip(item["path"])]
+    print(f"  远程 .py 文件: {len(py_files)} 个")
 
-    # 保护列表
     protect = load_protect_list()
     actionable = [f for f in py_files if f["path"] not in protect]
     if len(actionable) < len(py_files):
         print(f"  受保护排除: {len(py_files) - len(actionable)} 个")
 
-    # 获取 diff（BASE→HEAD 变更文件列表），只处理变更文件，其余跳过
-    diff_set = await get_diff_files(base_sha, head) if base_sha else set()
+    # 优先用 git diff，不可用时回退 API
+    diff_set = git_diff_files(base_sha, head) if base_sha else set()
+    if not diff_set and base_sha:
+        try:
+            url = f"{GITHUB_API}/compare/{base_sha}...{head}"
+            data = await _gh_get(url)
+            diff_set = {f["filename"] for f in data.get("files", [])}
+        except Exception:
+            pass
+
     if diff_set:
         changed = [f for f in actionable if f["path"] in diff_set]
         unchanged = len(actionable) - len(changed)
-        print(f"  BASE→HEAD 变更: {len(changed)} 个文件")
+        print(f"  BASE->HEAD 变更: {len(changed)} 个文件")
         print(f"  未变更（跳过）: {unchanged} 个文件")
         actionable = changed
     else:
@@ -308,7 +306,6 @@ async def main():
 
     if not actionable:
         print("  无需处理。")
-        # 推进 remote_sha
         state["remote_sha"] = head
         save_update_state(state)
         return
@@ -317,17 +314,11 @@ async def main():
     if not sys.stdin.isatty():
         print("  (非交互模式，自动开始)")
     else:
-        if base_sha:
-            input("  按 Enter 开始，Ctrl+C 取消...")
-        else:
-            input("  按 Enter 开始...")
+        input("  按 Enter 开始，Ctrl+C 取消...")
 
     # 4. 逐文件处理
     print("\n[4/5] 逐文件处理...")
-    ok = 0
-    skip = 0
-    merged = 0
-    failed = 0
+    ok = overwrite = llm_ok = failed = 0
     total = len(actionable)
 
     for i, item in enumerate(actionable, 1):
@@ -335,86 +326,60 @@ async def main():
         local_text = read_local(rel)
 
         if not local_text:
-            # 本地缺失 → 直接下载
-            try:
-                head_text = await fetch_file_content(rel, head)
-                if head_text:
-                    write_local(rel, head_text)
-                    ok += 1
-                    print(f"  [{i}/{total}] DOWNLOAD {rel}")
-                else:
-                    failed += 1
-                    print(f"  [{i}/{total}] FAIL {rel} (远程也不存在)")
-            except Exception as e:
+            head_text = git_file_content(rel, head)
+            if head_text:
+                write_local(rel, head_text)
+                ok += 1
+                print(f"  [{i}/{total}] DOWNLOAD {rel}")
+            else:
                 failed += 1
-                print(f"  [{i}/{total}] FAIL {rel}: {e}")
+                print(f"  [{i}/{total}] FAIL {rel} (远程也不存在)")
             continue
 
-        # 获取远程最新
-        try:
-            head_text = await fetch_file_content(rel, head)
-        except Exception as e:
-            print(f"  [{i}/{total}] SKIP {rel} (获取远程失败: {e})")
-            skip += 1
-            continue
-
+        head_text = git_file_content(rel, head)
         if not head_text:
             print(f"  [{i}/{total}] SKIP {rel} (远程无此文件)")
-            skip += 1
             continue
 
-        # LOCAL == REMOTE → 跳过
         if local_text == head_text:
-            skip += 1
             if i % 10 == 0:
                 print(f"  [{i}/{total}] SKIP {rel} (已最新)")
             continue
 
-        # 无 BASE → 首次运行，直接覆盖
         if not base_sha:
             write_local(rel, head_text)
             ok += 1
             print(f"  [{i}/{total}] OVERWRITE {rel}")
             continue
 
-        # 获取 BASE 版本
-        try:
-            base_text = await fetch_file_content(rel, base_sha)
-        except Exception:
-            base_text = ""
+        base_text = git_file_content(rel, base_sha)
 
-        # LOCAL == BASE → 无本地改动，直接覆盖
         if local_text == base_text:
             write_local(rel, head_text)
-            ok += 1
+            overwrite += 1
             print(f"  [{i}/{total}] OVERWRITE {rel} (无本地改动)")
             continue
 
-        # 大小检查
         if len(local_text) > MAX_FILE_SIZE or len(head_text) > MAX_FILE_SIZE:
             print(f"  [{i}/{total}] SKIP {rel} (>60KB，保留本地)")
-            skip += 1
             continue
 
-        # LLM 三路融合
         print(f"  [{i}/{total}] LLM_MERGE {rel} (base={len(base_text)} local={len(local_text)} head={len(head_text)})...")
         result = await merge_one(rel, base_text, local_text, head_text, api_url, api_key, model)
         if result:
             write_local(rel, result)
-            merged += 1
+            llm_ok += 1
             print(f"  [{i}/{total}]   OK  {rel}")
         else:
             failed += 1
             print(f"  [{i}/{total}]   FAIL {rel} (保留本地)")
 
-        # 小延迟避免 API 限流
         await asyncio.sleep(0.3)
 
     # 5. 重建 update_state
     print("\n[5/5] 重建 update_state...")
     state["remote_sha"] = head
     state["files"] = {}
-    # 重新计算所有已处理文件的 blob
     for item in actionable:
         rel = item["path"]
         if not should_skip(rel) and (ROOT / rel).exists():
@@ -427,13 +392,11 @@ async def main():
     # 报告
     print("\n" + "=" * 60)
     print(f"  完成！")
-    print(f"  直接覆盖: {ok}")
-    print(f"  LLM 融合: {merged}")
-    print(f"  跳过:     {skip}")
+    print(f"  直接覆盖: {ok + overwrite}")
+    print(f"  LLM 融合: {llm_ok}")
     print(f"  失败:     {failed}")
     print(f"  总计:     {total}")
     print("=" * 60)
-
     if failed:
         print(f"\n  {failed} 个文件融合失败，本地改动已保留，可手动处理。")
     else:
