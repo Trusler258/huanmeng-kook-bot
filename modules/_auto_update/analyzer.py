@@ -123,7 +123,13 @@ def analyze_python(rel_path: str, content: str) -> FileAnalysis:
 
 
 def extract_imports(content: str) -> list[str]:
-    """从内容中提取 import 语句（顶层，不依赖完整 AST 成功）。"""
+    """从内容中提取 import 语句（顶层，不依赖完整 AST 成功）。
+
+    语义：
+    - `import a.b.c` → "a.b.c"（c 必须是真实模块/包，存在性检查）
+    - `from a.b import c` → "a.b"（c 是包内符号或子模块，静态无法确定，
+      只检查模块 a.b 本身存在，避免把 from-import 的符号误判成缺失子模块）
+    """
     imports: list[str] = []
     try:
         tree = ast.parse(content)
@@ -135,8 +141,9 @@ def extract_imports(content: str) -> list[str]:
                 imports.append(a.name)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
-            for a in node.names:
-                imports.append(f"{base}.{a.name}" if base else a.name)
+            if base:
+                imports.append(base)
+            # 相对导入（module 为空）不参与模块存在性检查
     return imports
 
 
