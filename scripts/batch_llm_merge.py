@@ -285,15 +285,15 @@ async def main():
     if len(actionable) < len(py_files):
         print(f"  受保护排除: {len(py_files) - len(actionable)} 个")
 
-    # 优先用 git diff，不可用时回退 API
-    diff_set = git_diff_files(base_sha, head) if base_sha else set()
-    if not diff_set and base_sha:
+    # 优先用 compare API 拿 diff（1 次请求，不含 blob），失败回退 git diff
+    diff_set = set()
+    if base_sha:
         try:
             url = f"{GITHUB_API}/compare/{base_sha}...{head}"
             data = await _gh_get(url)
             diff_set = {f["filename"] for f in data.get("files", [])}
         except Exception:
-            pass
+            diff_set = git_diff_files(base_sha, head)
 
     if diff_set:
         changed = [f for f in actionable if f["path"] in diff_set]
