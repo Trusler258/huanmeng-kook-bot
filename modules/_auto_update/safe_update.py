@@ -585,7 +585,7 @@ async def _merge_with_llm(root: Path, item: dict, state: dict, head: str) -> boo
         compile(out, rel, "exec")  # 语法校验，失败抛 SyntaxError
         _eng._write_local(root, rel, out.splitlines(keepends=True))
         try:
-            blob = await _eng._get_blob_sha(rel, head)
+            blob = _eng.compute_local_blob(root, rel)
             _eng.set_file_blob(state, rel, blob, 1, 0)
         except Exception:
             pass
@@ -632,7 +632,7 @@ async def _download_via_api(root: Path, item: dict, state: dict, head: str) -> b
             content = base64.b64decode(data.get("content", "") or "").decode("utf-8", errors="replace")
         _eng._write_local(root, rel, content.splitlines(keepends=True))
         try:
-            blob = await _eng._get_blob_sha(rel, head)
+            blob = _eng.compute_local_blob(root, rel)
             _eng.set_file_blob(state, rel, blob, 1, 0)
         except Exception:
             pass
@@ -657,7 +657,7 @@ async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool
                 resp.raise_for_status()
             _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
             try:
-                blob = await _eng._get_blob_sha(rel, head)
+                blob = _eng.compute_local_blob(root, rel)
                 _eng.set_file_blob(state, rel, blob, 1, 0)
             except Exception:
                 pass
@@ -691,7 +691,7 @@ async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) ->
         return False
     _eng._write_local(root, rel, merged)
     try:
-        blob = await _eng._get_blob_sha(rel, head)
+        blob = _eng.compute_local_blob(root, rel)
         _eng.set_file_blob(state, rel, blob, aok, sk)
     except Exception:
         pass
@@ -787,7 +787,7 @@ async def _apply_production(
                 continue
             _eng._write_local(root, rel, merged)
             try:
-                blob = await _eng._get_blob_sha(rel, head)
+                blob = _eng.compute_local_blob(root, rel)
                 _eng.set_file_blob(state, rel, blob, aok, sk)
             except Exception:
                 pass
