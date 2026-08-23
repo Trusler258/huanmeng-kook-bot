@@ -3607,7 +3607,13 @@ async def _plugin_update_cmd(non_flags: list[str]) -> str:
         dl = info.get("download_url") or PS.lib_download_url(name)
         p = cur.get(name)
         if not p:
-            results.append(f"❌ `{name}` 未安装（库 v{pv}）")
+            # 本地未安装 → 直接从库下载安装
+            ok2, msg2 = PS.download_hmp(dl)
+            if not ok2:
+                results.append(f"❌ `{name}` 下载失败: {msg2}")
+                continue
+            r = await _plugin_overwrite_install(name, PS.local_filename_for(dl))
+            results.append(f"{'✅' if '已' in r else '❌'} `{name}` 新装: {r}")
             continue
         lv = str(p.get("version") or "0.0.0")
         if PS.compare_versions(pv, lv) <= 0:
