@@ -322,6 +322,14 @@ class HuanmengBot:
         except Exception:
             pass
 
+        # 刷新图片缓存
+        try:
+            from services.image_api import _get_cache
+            cache = _get_cache()
+            cache.flush()
+        except Exception:
+            pass
+
         # 持久化瞬时上下文（重启不丢记忆）
         from core.context_manager import save_context
         save_context()
@@ -341,6 +349,11 @@ class HuanmengBot:
         """处理 .reload 指令 / SIGUSR1：全量热重载（config+lang+keywords+skills）"""
         from core.config import full_reload
         self.cfg = full_reload()
+        # 清除并重载技能文件缓存
+        from services.llm import reload_skill_cache
+        reload_skill_cache()
+        from services.llm import _load_skill_sections
+        _load_skill_sections()
         info("配置热加载完成（上下文保留）")
 
     async def _send_reload_done(self):

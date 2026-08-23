@@ -1257,7 +1257,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     if is_call_error:
                         # Phase 20 Hotfix C：错误分支同样复用 persona system，避免 NameError
                         from services.llm import _build_system_text
-                        follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
+                        # ★ 私聊 follow-up 也要注入 persona（修复人设割裂）
+                        custom_persona = None
+                        if not is_group:
+                            try:
+                                from modules.op import get_persona
+                                custom_persona = get_persona(user_id, cfg.private_persona_version)
+                            except ImportError:
+                                pass
+                        follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group,
+                                                        custom_persona=custom_persona)
                         err_detail = effective_result.replace("[CALL错误]", "").strip()
                         prompt = (
                             "系统调用的功能执行失败。请用你的语气告诉用户操作失败，然后**原样附上**下面的报错信息（含堆栈）。\n"
@@ -1277,7 +1286,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         max_t = None  # 不限 token
                     else:
                         from services.llm import _build_system_text
-                        follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
+                        # ★ 私聊 follow-up 也要注入 persona（修复人设割裂）
+                        custom_persona = None
+                        if not is_group:
+                            try:
+                                from modules.op import get_persona
+                                custom_persona = get_persona(user_id, cfg.private_persona_version)
+                            except ImportError:
+                                pass
+                        follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group,
+                                                        custom_persona=custom_persona)
                         prompt = (
                             "上面是调用结果，用一句话自然回应。纯文本，不要JSON。\n"
                             f"结果: {effective_result[:500]}"

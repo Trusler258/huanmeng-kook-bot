@@ -103,18 +103,27 @@ async def daily_stats_collect():
 
 
 # ------趋势数据------
-def get_player_trend(player, metric, days=14):
+def get_player_trend(player, metric, days=None):
+    """取趋势序列；每天只保留最后一条记录（按日期去重取最新）
+    days=None 表示从首次记录到最新一条"""
     history = _load_history()
     entry = history.get(player, {})
     for mid, tid, fn, lb in _TREND_METRICS:
         if mid == metric:
-            series = entry.get(tid, [])
-            return [{"ts": s["ts"], "val": int(s["values"].get(fn, 0))} for s in series[-days:]]
+            raw = entry.get(tid, [])
+            if days is not None and days > 0:
+                raw = raw[-days:]
+            # 按日期分组，每天只取最后一条
+            by_day = {}
+            for s in raw:
+                day = s["ts"][:10]  # YYYY-MM-DD
+                by_day[day] = {"ts": s["ts"], "val": int(s["values"].get(fn, 0))}
+            return [by_day[k] for k in sorted(by_day)]
     return []
 
 
 # ------趋势图------
-def generate_trend_chart(player, metric, days=14):
+def generate_trend_chart(player, metric, days=None):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -126,15 +135,6 @@ def generate_trend_chart(player, metric, days=14):
     series = get_player_trend(player, metric, days)
     if not series:
         return None
-
-    # 去重（按时间戳）
-    seen = {}
-    for s in series:
-        seen[s["ts"]] = s["val"]
-    unique = [{"ts": t, "val": v} for t, v in sorted(seen.items())]
-    if not unique:
-        return None
-    series = unique
 
     label = metric
     for mid, tid, fn, lb in _TREND_METRICS:
@@ -165,14 +165,16 @@ def generate_trend_chart(player, metric, days=14):
     vmin, vmax = min(vals), max(vals)
     margin = max((vmax - vmin) * 0.15, 1)
     ax.set_ylim(vmin - margin, vmax + margin)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates) // 10)))
 
+    # 每天一个点，全部标注
     for d, v in zip(dates, vals):
         ax.annotate(str(v), (d, v), textcoords="offset points", xytext=(0, 10),
                     ha="center", fontsize=8, color=line_color)
 
-    ax.set_title(f"{player} - {label} 趋势 ({len(series)}天)", fontsize=13, fontweight="bold", color="#e0e0e0")
+    span = f"{dates[0]:%m/%d} ~ {dates[-1]:%m/%d}"
+    ax.set_title(f"{player} - {label} 趋势 ({len(dates)}天, {span})", fontsize=13, fontweight="bold", color="#e0e0e0")
     ax.tick_params(colors="#999")
     ax.grid(True, alpha=0.2, color="#555")
     fig.patch.set_facecolor("#1a1a2e")
@@ -187,6 +189,65 @@ def generate_trend_chart(player, metric, days=14):
     fig.savefig(out_path, dpi=120, bbox_inches="tight", facecolor="#1a1a2e")
     plt.close(fig)
     return out_path
+
+
+# ------群内总排名------
+async def build_group_rank(group_id, mode_key="bw_kills"):
+    """取所有绑定玩家的最新指标值，排序生成排名卡片图片"""
+    from modules.commands import _load_wdsj_bindings
+    bindings = _load_wdsj_bindings()
+
+    # 指标中文名
+    label = mode_key
+    for mid, tid, fn, lb in _TREND_METRICS:
+        if mid == mode_key:
+            label = lb
+            break
+
+    # 取每个玩家最新一条记录的值
+    rows = []
+    for qq, name in bindings.items():
+        series = get_player_trend(name, mode_key)
+        if series:
+            rows.append((name, series[-1]["val"]))
+    rows.sort(key=lambda x: -x[1])
+
+    if not rows:
+        return "暂无排名数据喵~ 需要先采集几天数据", None
+
+    # 生成 HTML 卡片
+    medal = ["🥇", "🥈", "🥉"]
+    body_rows = []
+    for i, (name, val) in enumerate(rows):
+        rank_icon = medal[i] if i < 3 else f"#{i+1}"
+        body_rows.append(
+            f'<tr><td class="rank">{rank_icon}</td>'
+            f'<td class="name">{name}</td>'
+            f'<td class="val">{val}</td></tr>'
+        )
+
+    html = f"""<div class="rank-card">
+      <div class="rank-header">
+        <h2>群内排名 - {label}</h2>
+        <div class="sub">{len(rows)} 名玩家</div>
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>玩家</th><th>{label}</th></tr></thead>
+        <tbody>
+          {''.join(body_rows)}
+        </tbody>
+      </table>
+    </div>"""
+
+    tmpl_path = Path(__file__).resolve().parent.parent / "data" / "templates" / "wdsj_card.html"
+    tmpl = tmpl_path.read_text(encoding="utf-8")
+    full_html = tmpl.replace("${CARD_CONTENT}", html)
+
+    from modules.changelog import render_card_to_image
+    import uuid
+    filename = f"wdsj_rank_{mode_key}_{uuid.uuid4().hex[:8]}.jpg"
+    img_path = await render_card_to_image(full_html, filename, width=680)
+    return None, img_path
 
 
 # ------每日排名数据------
