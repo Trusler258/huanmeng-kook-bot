@@ -156,9 +156,9 @@ def load_llm_config() -> tuple[str, str, str]:
     model_cfg = cfg.get("models", {}).get("replyer_1", {})
     provider = model_cfg.get("provider", "")
 
-    # 从 .env 读 API key 和 URL
+    # 从 config/.env 读 API key 和 URL
     env = {}
-    env_path = ROOT / ".env"
+    env_path = ROOT / "config" / ".env"
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
