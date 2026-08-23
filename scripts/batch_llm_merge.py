@@ -72,7 +72,7 @@ def ensure_git_repo() -> Path:
 
 def git_head_sha() -> str:
     ensure_git_repo()
-    r = _git("-C", str(GIT_DIR), "rev-parse", "origin/master")
+    r = _git("-C", str(GIT_DIR), "rev-parse", "master")
     return r.stdout.strip()
 
 
@@ -99,7 +99,7 @@ def git_diff_files(base_sha: str, head_sha: str) -> set[str]:
 def git_file_tree() -> list[dict]:
     """获取 HEAD 的文件树。"""
     ensure_git_repo()
-    r = _git("-C", str(GIT_DIR), "ls-tree", "-r", "--name-only", "origin/master")
+    r = _git("-C", str(GIT_DIR), "ls-tree", "-r", "--name-only", "master")
     if r.returncode != 0:
         return []
     return [{"path": line.strip(), "type": "blob"}
