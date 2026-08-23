@@ -12,7 +12,8 @@ Phase 16 代码级更新：安全更新流水线（Huanmeng 2.0）
 - 复用现有 engine.py 的 fetch/compare/patch 能力，不重复实现网络层。
 - 生产应用前先创建 Snapshot；Test 失败 / 启动失败 / Health Check 失败自动 Rollback。
 - 高风险（HIGH）默认要求人工确认，未确认不应用到生产。
-- 禁止 LLM 直接生成完整文件覆盖旧文件，始终走 Git Diff + 最小 Patch。
+- 更新失败（patch 上下文不匹配）先诊断失效文件清单，再对失效文件逐个 LLM 三路融合
+  精准修复（保留本地改动 + 应用远程）；修复失败保留本地，不强制对齐、不破坏他人改动。
 """
 from __future__ import annotations
 
@@ -365,13 +366,13 @@ async def safe_check_and_update(
 
     commit_log = await _eng._fetch_commit_log(base, head) if base else ""
     protect = _eng._load_protect_list()
-    merge_set = _eng._load_merge_list()
 
-    # 过滤掉保护/跳过文件；merge: 标记的文件不跳过（走 LLM 融合保留本地改动）
+    # 过滤掉保护/跳过文件（merge: 标记的行在 _load_protect_list 已被剔除，
+    # 正常参与更新；patch 失效时自动走 LLM 精准修复，无需单独标记）
     actionable = [
         f for f in files
         if f.get("filename", "") and not _skip_prefix(f["filename"])
-        and not (_is_protected(f["filename"], protect) and f["filename"] not in merge_set)
+        and not _is_protected(f["filename"], protect)
     ]
     if not actionable:
         return "无可用更新（全部为受保护/跳过文件）"
@@ -455,7 +456,7 @@ async def safe_check_and_update(
     snap = _snap.create_snapshot(actionable, head)
 
     # 11. Production Apply（走 Diff + 最小 Patch，沿用现有 patcher）
-    res = await _apply_production(actionable, root, head, state, progress, merge_set)
+    res = await _apply_production(actionable, root, head, state, progress)
 
     # P0: 任何文件失败（未落地 / 下载失败）→ 整体回滚，视为事务失败，绝不推进版本
     if res["failed"]:
@@ -463,11 +464,18 @@ async def safe_check_and_update(
         blocked = "\n".join(f"  - {f}" for f in res["failed"])
         return ("更新失败，已整体回滚，未推进版本。\n失败文件:\n" + blocked)
 
-    # P0: 存在 hunk 跳过（本地改动冲突）→ 保留已合并内容，但不假装成功、不推进版本
-    if res["partial"]:
-        return ("更新部分应用（存在本地冲突跳过）：已保留已合并内容，但未提交更新、未推进版本。\n"
-                "请解决本地与远程的冲突后重试。\n"
-                + _format_skip_details(res["skip_details"]))
+    # P0: 存在 hunk 跳过（本地改动冲突）或 LLM 修复失败（保留本地）→
+    # 保留已应用内容，但不推进版本，明确列出未更新的文件（诊断信息）。
+    if res["partial"] or res["not_updated"]:
+        lines = []
+        if res["not_updated"]:
+            lines.append(f"以下 {len(res['not_updated'])} 个文件未能应用更新（本地改动已保留，未被覆盖）：\n"
+                         + "\n".join(f"  - {f}" for f in res["not_updated"]))
+        if res["partial"]:
+            lines.append("部分文件存在 hunk 跳过（保留本地改动）：\n"
+                         + "\n".join(f"  - {f}" for f in res["partial"]))
+        lines.append("未推进版本，可处理后重试 .update（已应用的更新会保留）")
+        return "\n".join(lines)
 
     # 12. Health Check（P0 升级）：语法编译 + 缺失本地模块 + 真实启动冒烟测试
     await _report(progress, "正在健康检查…")
@@ -508,9 +516,9 @@ def _rebuild_baseline(state: dict, files: list[dict], head: str) -> None:
 async def _merge_with_llm(root: Path, item: dict, state: dict, head: str) -> bool:
     """LLM 三路融合：base(remote_sha 基线) + local(服务器本地改动) + head(远程新代码)。
 
-    用于 .bot_protect 中 `merge:` 标记的文件：保留本地未推送的改动意图，
-    同时完整应用别人推送的远程更新。融合结果必须通过语法校验；任何失败返回 False，
-    由调用方回退到强制对齐（远程权威），保证不阻塞更新。
+    用于 patch 行级合并失效（上下文不匹配 / 一个 hunk 都没应用）的文件：
+    保留本地未推送的改动意图，同时完整应用远程最新更新。融合结果必须通过
+    语法校验；任何失败返回 False，由调用方保留本地文件不动（不破坏他人改动）。
     """
     rel = item.get("filename", "")
     local_path = root / rel
@@ -538,9 +546,9 @@ async def _merge_with_llm(root: Path, item: dict, state: dict, head: str) -> boo
 
     local_text = local_path.read_text(encoding="utf-8", errors="replace")
 
-    # 大小保护：超大文件（如 >60KB）超出 LLM 可靠输出范围，回退强制对齐
+    # 大小保护：超大文件（如 >60KB）超出 LLM 可靠输出范围，跳过融合、保留本地
     if len(local_text) > 60000 or len(head_text) > 60000 or len(base_text) > 60000:
-        logger.warning("%s 过大（>60KB），跳过 LLM 融合，回退对齐", rel)
+        logger.warning("%s 过大（>60KB），跳过 LLM 融合，保留本地", rel)
         return False
 
     # 本地已是 head 内容 → 无需融合
@@ -692,49 +700,31 @@ async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) ->
 
 async def _apply_production(
     files: list[dict], root: Path, head: str, state: dict, progress=None,
-    merge_set: Optional[set[str]] = None,
 ) -> dict:
     """逐文件应用 patch/diff 到生产（沿用现有 patcher 行级合并）。
 
+    策略（不破坏本地/他人改动）：
+    - 能 patch 就 patch；patch 对不齐（no_context / 一个 hunk 都没应用）
+      的文件先诊断出来，统一走 LLM 三路融合精准修复（保留本地改动 + 应用远程）；
+    - LLM 修复失败 → 保留本地文件不动，记入 not_updated 报告（不强制覆盖、不整体回滚）；
+    - 只有真正无法落地的缺失文件/下载失败才记入 failed（触发整体回滚）。
+
     事务化返回 dict：
-        ok            成功落地/应用的 hunk 数（含全量下载计 1）
+        ok            成功落地/应用的 hunk 数（含全量下载/LLM 融合计 1）
         skip          被跳过的 hunk 数
         skip_details  跳过明细 {file, old_start, reason}
-        failed        未能落地的文件（无保留价值、会导致半新半旧）→ 触发整体回滚
+        failed        真正失败的缺失/下载失败文件 → 触发整体回滚
         partial       已部分应用（存在 hunk 跳过、保留本地改动）的文件，不推进版本
+        not_updated   LLM 修复失败、保留本地未覆盖的文件，不推进版本
     """
     ok = 0
     skip = 0
     skip_details: list[dict] = []
     failed: list[str] = []
     partial: list[str] = []
+    not_updated: list[str] = []
+    llm_fix: list[dict] = []  # patch 对不齐、待 LLM 精准修复的文件 item
     total = len(files)
-
-    # ── 预检：与远程 base(remote_sha) 失配比例 ──────────────
-    # 同项目多机器人/多部署共享仓库时，本机服务器文件可能与仓库长期脱节
-    # （历史遗留、其他实例改动、手工覆盖等）。若大面积失配说明本地状态整体
-    # 不可信，放弃逐文件 patch，整批以远程为权威全量对齐 HEAD，保证能应用最新更新。
-    base_sha = state.get("remote_sha", "")
-    base_blobs: dict[str, str] = {}
-    mismatch = cmp_total = 0
-    if base_sha:
-        for item in files:
-            rel = item.get("filename", "")
-            if not rel or item.get("status") == "removed" or not (root / rel).exists():
-                continue
-            cmp_total += 1
-            try:
-                b = await _eng._get_blob_sha(rel, base_sha)
-            except Exception:
-                b = ""
-            if b:
-                base_blobs[rel] = b
-                if b != _eng.compute_local_blob(root, rel):
-                    mismatch += 1
-    force_full = cmp_total > 0 and mismatch / cmp_total >= 0.3
-    if force_full:
-        logger.warning("检测到 %d/%d 个文件与远程 base 不一致，服务器状态不可信，整批全量对齐 HEAD",
-                       mismatch, cmp_total)
 
     for idx, item in enumerate(files, start=1):
         rel = item.get("filename", "")
@@ -748,28 +738,6 @@ async def _apply_production(
                 local.unlink()
             ok += 1
             continue
-
-        # force_full：预检发现大面积失配 → 已存在文件全部以远程为权威对齐 HEAD
-        if force_full and (root / rel).exists():
-            if await _download_full(root, item, state, head):
-                ok += 1
-            else:
-                failed.append(rel)
-            continue
-
-        # merge: 标记文件 + 本地有改动（blob ≠ base）→ LLM 三路融合，
-        # 保留本地未推送的改动意图 + 完整应用远程更新；融合失败回退强制对齐。
-        if merge_set and rel in merge_set and (root / rel).exists():
-            base_blob = base_blobs.get(rel, "")
-            if not base_blob or base_blob != _eng.compute_local_blob(root, rel):
-                if await _merge_with_llm(root, item, state, head):
-                    ok += 1
-                    continue
-                if await _download_full(root, item, state, head):
-                    ok += 1
-                    continue
-                failed.append(rel)
-                continue
 
         # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
         # 空文件上除 new-file（@@ -0,0 +1,N @@）外会全体 skip → 永不落盘
@@ -787,20 +755,6 @@ async def _apply_production(
 
         # 本地已存在但无 patch → 本次无内容变更（避免覆盖本地改动），跳过
         if not patch_text:
-            continue
-
-        # ★ 本地与远程 base 强制对齐：diff 的 base 是 state.remote_sha，
-        # 若本地文件 blob ≠ 远程 base blob（被 scp/手动编辑/历史遗留改过），
-        # patch 上下文必然对不上 → 直接以远程为权威全量对齐 HEAD，
-        # 保证"外部改动过的核心文件也能应用最新更新"，而不是 patch 失败 → 回滚。
-        # base_blobs 来自预检缓存（未缓存的文件预检时不存在/removed，不会走到这里）。
-        base_blob = base_blobs.get(rel, "")
-        if base_blob and base_blob != _eng.compute_local_blob(root, rel):
-            logger.warning("文件 %s 本地与远程 base 不一致（外部改动/历史遗留），强制对齐 HEAD", rel)
-            if await _download_full(root, item, state, head):
-                ok += 1
-                continue
-            failed.append(rel)
             continue
 
         hunks = patcher.parse_patch(patch_text)
@@ -822,6 +776,15 @@ async def _apply_production(
             )
             skd = []
         if aok > 0:
+            no_ctx = any(d.get("reason") == "no_context" for d in skd)
+            if no_ctx:
+                # 本地有改动导致上下文不匹配：不写"半应用"结果（避免污染本地），
+                # 交 LLM 三路融合精准修复（保留本地改动 + 应用远程更新）。
+                llm_fix.append(item)
+                for d in skd:
+                    skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
+                                         "reason": d.get("reason", "unknown")})
+                continue
             _eng._write_local(root, rel, merged)
             try:
                 blob = await _eng._get_blob_sha(rel, head)
@@ -831,28 +794,28 @@ async def _apply_production(
             ok += aok
             skip += sk
             if sk > 0:
-                # 存在 hunk 跳过：若为「上下文不匹配」（本地与远程 base 不一致，
-                # 典型如服务器文件停留在更旧版本），hunk 滑动匹配不上 → 用全量下载
-                # 对齐远程，避免"半新半旧 + 不推进版本"卡死循环。
-                no_ctx = any(d.get("reason") == "no_context" for d in skd)
-                if no_ctx and await _download_full(root, item, state, head):
-                    ok += 1
-                    skip -= sk
-                else:
-                    partial.append(rel)  # 有 hunk 跳过 → 未完全落地
+                partial.append(rel)  # 有 hunk 跳过（如保护区重叠）→ 未完全落地
         else:
-            # 有有效 patch 却一个 hunk 都未应用 → 远程代码未落地。
-            # 先尝试全量下载对齐（raw→API 双通道），仍失败才判失败。
-            if await _download_full(root, item, state, head):
-                ok += 1
-            else:
-                failed.append(rel)
+            # 有有效 patch 却一个 hunk 都未应用（对不齐）→ 交 LLM 精准修复，
+            # 本地文件保持不动；不直接覆盖、不判失败回滚。
+            llm_fix.append(item)
         for d in skd:
             skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
                                  "reason": d.get("reason", "unknown")})
+
+    # ── LLM 精准修复失效文件（先诊断出是哪几个，再逐个融合）─────────
+    for item in llm_fix:
+        rel = item.get("filename", "")
+        await _report(progress, f"失效文件 {rel} 走 LLM 精准融合…")
+        if await _merge_with_llm(root, item, state, head):
+            ok += 1
+            logger.info("LLM 修复成功: %s", rel)
+        else:
+            not_updated.append(rel)  # 保留本地，不破坏别人的东西
+
     return {
         "ok": ok, "skip": skip, "skip_details": skip_details,
-        "failed": failed, "partial": partial,
+        "failed": failed, "partial": partial, "not_updated": not_updated,
     }
 
 
