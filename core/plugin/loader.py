@@ -86,6 +86,18 @@ def load_module(manifest: PluginManifest) -> Optional[object]:
         return None
 
 
+def drop_module(manifest: PluginManifest) -> None:
+    """清除插件模块的 import 缓存。
+
+    load_module 会缓存 `_hm_plugin_{name}` 到 sys.modules，命中时直接返回旧模块，
+    导致磁盘代码更新后 reload 仍加载旧代码。卸载/热重载前必须先清掉该缓存。
+    """
+    module_name = f"_hm_plugin_{manifest.name}"
+    if module_name in sys.modules:
+        sys.modules.pop(module_name, None)
+        logger.debug("已清除插件模块缓存: %s", module_name)
+
+
 def locate_plugin_classes(module: object) -> list[type]:
     """从模块中找出 Plugin 类（名为 Plugin 或含 on_load/on_enable 钩子的类）。"""
     classes: list[type] = []

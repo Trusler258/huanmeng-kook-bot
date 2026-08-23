@@ -19,7 +19,7 @@ from typing import Optional
 from core.logger import get_logger
 from core.eventbus import EventBus, get_event_bus, EVENT_PLUGIN_LOADED, EVENT_PLUGIN_UNLOADED, EVENT_PLUGIN_ERROR
 from core.plugin.manifest import PluginManifest, RUNTIME_LUA, RUNTIME_PYTHON
-from core.plugin.loader import discover_plugins, load_module, locate_plugin_classes
+from core.plugin.loader import discover_plugins, load_module, locate_plugin_classes, drop_module
 from core.plugin.api import PluginContext
 
 logger = get_logger("plugin.manager")
@@ -229,6 +229,8 @@ class PluginManager:
             if rec.ctx is not None:
                 rec.ctx.cleanup()
             self._cleanup_instance(rec)
+            # 清除 import 缓存：否则下次 load_module 命中 sys.modules 旧模块，热重载不生效
+            drop_module(rec.manifest)
             await self.bus.publish(EVENT_PLUGIN_UNLOADED, {"name": name})
             self._records.pop(name, None)
             logger.info("Plugin 已卸载: %s", name)

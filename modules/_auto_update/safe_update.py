@@ -504,20 +504,24 @@ def _rebuild_baseline(state: dict, files: list[dict], head: str) -> None:
             state["files"].pop(rel, None)
 
 
-async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool:
-    """全量下载并落盘一个文件（本地缺失 / 无 patch 时使用）。成功返回 True。
+async def _download_via_api(root: Path, item: dict, state: dict, head: str) -> bool:
+    """通过 api.github.com contents API 下载单文件（服务器可直连，raw 被墙时兜底）。
 
-    已有本地内容时避免整体覆盖，仅用于本地缺失文件，保证安全更新不丢本地改动。
+    与 engine._get_blob_sha 同走 api.github.com 通道，返回的 base64 解码后即仓库
+    原始内容（LF 行尾），可直接落盘。成功返回 True（已写盘并更新 blob 追踪）。
     """
     rel = item.get("filename", "")
-    raw_url = item.get("raw_url", "")
-    if not raw_url:
+    if not rel or not _eng.GITHUB_API:
         return False
+    import base64
+    url = f"{_eng.GITHUB_API}/contents/{_eng._normalize_rel_path(rel)}?ref={head}"
     try:
-        async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
-            resp = await dl.get(_eng._normalize_raw_url(raw_url))
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
+            resp = await dl.get(url, headers=_eng._gh_headers())
             resp.raise_for_status()
-        _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
+            data = resp.json()
+            content = base64.b64decode(data.get("content", "") or "").decode("utf-8", errors="replace")
+        _eng._write_local(root, rel, content.splitlines(keepends=True))
         try:
             blob = await _eng._get_blob_sha(rel, head)
             _eng.set_file_blob(state, rel, blob, 1, 0)
@@ -525,8 +529,33 @@ async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool
             pass
         return True
     except Exception as e:
-        logger.warning("下载 %s 失败: %s", rel, e)
+        logger.warning("API 下载 %s 失败: %s", rel, e)
         return False
+
+
+async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool:
+    """全量下载并落盘一个文件（本地缺失 / 无 patch / 冲突对齐时使用）。成功返回 True。
+
+    raw.githubusercontent 优先；raw 被墙/超时自动回退 api.github.com contents API
+    （与 _get_blob_sha 同通道，服务器可直连），两者都失败返回 False。
+    """
+    rel = item.get("filename", "")
+    raw_url = item.get("raw_url", "")
+    if raw_url:
+        try:
+            async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
+                resp = await dl.get(_eng._normalize_raw_url(raw_url))
+                resp.raise_for_status()
+            _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
+            try:
+                blob = await _eng._get_blob_sha(rel, head)
+                _eng.set_file_blob(state, rel, blob, 1, 0)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logger.warning("raw 下载 %s 失败，回退 API: %s", rel, e)
+    return await _download_via_api(root, item, state, head)
 
 
 async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) -> bool:
@@ -650,10 +679,22 @@ async def _apply_production(
             ok += aok
             skip += sk
             if sk > 0:
-                partial.append(rel)  # 有 hunk 跳过 → 未完全落地
+                # 存在 hunk 跳过：若为「上下文不匹配」（本地与远程 base 不一致，
+                # 典型如服务器文件停留在更旧版本），hunk 滑动匹配不上 → 用全量下载
+                # 对齐远程，避免"半新半旧 + 不推进版本"卡死循环。
+                no_ctx = any(d.get("reason") == "no_context" for d in skd)
+                if no_ctx and await _download_full(root, item, state, head):
+                    ok += 1
+                    skip -= sk
+                else:
+                    partial.append(rel)  # 有 hunk 跳过 → 未完全落地
         else:
-            # 有有效 patch 却一个 hunk 都未应用 → 远程代码未落地 → 判为失败（P0）
-            failed.append(rel)
+            # 有有效 patch 却一个 hunk 都未应用 → 远程代码未落地。
+            # 先尝试全量下载对齐（raw→API 双通道），仍失败才判失败。
+            if await _download_full(root, item, state, head):
+                ok += 1
+            else:
+                failed.append(rel)
         for d in skd:
             skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
                                  "reason": d.get("reason", "unknown")})
