@@ -250,6 +250,20 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "读取本程序目录下的文件内容。路径相对于程序根目录，如 data/update_state.json、config/bot_config.toml。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "相对于程序根目录的文件路径，如 data/update_state.json"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -270,6 +284,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "system_status": "",  # 自有实现
     "whois":       "whois",  # ★ 域名查询
     "pgr":         "pgr",
+    "read_file":   "",  # 自有实现
 }
 
 
@@ -661,6 +676,49 @@ async def _read_url(url: str) -> str | None:
     return raw_text
 
 
+async def _read_file(path: str) -> str | None:
+    """读取本程序目录下的文件内容（纯文本），自动截断避免过长"""
+    from pathlib import Path as _Path
+    root = _Path(__file__).resolve().parent.parent
+    # 安全：拒绝绝对路径和 .. 穿越
+    cleaned = (path or "").replace("\\", "/").lstrip("/")
+    if ".." in cleaned or cleaned.startswith("/"):
+        return "拒绝访问：不允许绝对路径或目录穿越"
+    target = root / cleaned
+    try:
+        resolved = target.resolve()
+        if not str(resolved).startswith(str(root.resolve())):
+            return "拒绝访问：路径超出程序目录"
+    except Exception:
+        return "无效路径"
+    if not target.exists():
+        return f"文件不存在: {cleaned}"
+    if target.is_dir():
+        # 列出目录内容
+        try:
+            items = sorted(target.iterdir())
+            lines = [f"目录 {cleaned}/ 内容:"]
+            for item in items[:50]:
+                suffix = "/" if item.is_dir() else ""
+                size = item.stat().st_size if item.is_file() else 0
+                lines.append(f"  {item.name}{suffix}  ({size}B)" if item.is_file() else f"  {item.name}{suffix}")
+            if len(items) > 50:
+                lines.append(f"  ... 还有 {len(items) - 50} 项")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"读取目录失败: {e}"
+    try:
+        content = target.read_text("utf-8")
+    except Exception:
+        try:
+            content = target.read_text("latin-1")
+        except Exception as e:
+            return f"读取失败: {e}"
+    if len(content) > 4000:
+        content = content[:4000] + f"\n\n... (截断，共 {len(content)} 字符)"
+    return content
+
+
 async def _resolve_player(user_id: int, game: str) -> str | None:
     """从玩家绑定数据中查找用户对应游戏ID"""
     import json
@@ -843,6 +901,8 @@ async def _execute_impl(
     # 自有实现（不走 COMMAND_MAP）
     if tool_name == "read_url":
         return await _read_url(arguments.get("url", ""))
+    if tool_name == "read_file":
+        return await _read_file(arguments.get("path", ""))
     if tool_name == "write_code":
         desc = original_msg or arguments.get("description", "")
         return await _write_code(
