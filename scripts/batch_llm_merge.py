@@ -169,7 +169,6 @@ def load_llm_config() -> tuple[str, str, str]:
 
     api_url = env.get(f"{provider.upper()}_URL", "")
     api_key = env.get(f"{provider.upper()}_KEY", "")
-    model_name = model_cfg.get("model", "")
 
     if not api_url or not api_key:
         raise RuntimeError(f"未找到 LLM 配置: provider={provider}, URL={api_url}, KEY={bool(api_key)}")
@@ -238,6 +237,20 @@ async def merge_one(
         return None
 
 
+async def get_diff_files(base_sha: str, head_sha: str) -> set[str]:
+    """通过 compare API 获取 BASE 到 HEAD 之间变更的文件路径集合。
+    返回空集表示无法获取（降级为全量处理）。"""
+    if not base_sha:
+        return set()
+    try:
+        url = f"{GITHUB_API}/compare/{base_sha}...{head_sha}"
+        data = await _gh_get(url)
+        return {f["filename"] for f in data.get("files", [])}
+    except Exception as e:
+        print(f"  [WARN] compare API 失败: {e}，将全量处理")
+        return set()
+
+
 async def main():
     print("=" * 60)
     print("  批量 LLM 三路融合")
@@ -266,7 +279,7 @@ async def main():
         print("  已是最新，无需修复。")
         return
 
-    # 3. 获取文件树
+    # 3. 获取文件树 + diff
     print("\n[3/5] 获取远程文件树...")
     tree = await get_file_tree(head)
     py_files = [
@@ -282,13 +295,32 @@ async def main():
     if len(actionable) < len(py_files):
         print(f"  受保护排除: {len(py_files) - len(actionable)} 个")
 
-    # 报告用户
-    print(f"\n  将处理 {len(actionable)} 个文件。")
-    if base_sha:
-        input("  按 Enter 开始，Ctrl+C 取消...")
+    # 获取 diff（BASE→HEAD 变更文件列表），只处理变更文件，其余跳过
+    diff_set = await get_diff_files(base_sha, head) if base_sha else set()
+    if diff_set:
+        changed = [f for f in actionable if f["path"] in diff_set]
+        unchanged = len(actionable) - len(changed)
+        print(f"  BASE→HEAD 变更: {len(changed)} 个文件")
+        print(f"  未变更（跳过）: {unchanged} 个文件")
+        actionable = changed
     else:
-        print("  首次运行（无 BASE），所有文件将直接覆盖为远程最新。")
-        input("  按 Enter 开始...")
+        print(f"  无 diff 信息，将处理全部 {len(actionable)} 个文件")
+
+    if not actionable:
+        print("  无需处理。")
+        # 推进 remote_sha
+        state["remote_sha"] = head
+        save_update_state(state)
+        return
+
+    print(f"\n  将处理 {len(actionable)} 个文件。")
+    if not sys.stdin.isatty():
+        print("  (非交互模式，自动开始)")
+    else:
+        if base_sha:
+            input("  按 Enter 开始，Ctrl+C 取消...")
+        else:
+            input("  按 Enter 开始...")
 
     # 4. 逐文件处理
     print("\n[4/5] 逐文件处理...")
