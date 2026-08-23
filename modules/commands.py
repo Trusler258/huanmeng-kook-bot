@@ -3725,6 +3725,35 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_kook):
     _owner2 = _cfg2.admin_id_str or str(_cfg2.admin_qq) or "管理员"
     return format_pc_status(owner=_owner2)
 
+
+async def cmd_phone(args, user_id, group_id, sender_name, is_group, bot_kook):
+    """.phone [shot] — 手机状态/截屏"""
+    from services.pc_status import format_phone_status, request_phone_screenshot
+    from services.sender import send_group_msg, send_private_msg
+    import uuid, binascii
+
+    sub = (args[0].lower() if args else "")
+    if sub == "shot":
+        b64 = await request_phone_screenshot(timeout=30.0)
+        if not b64:
+            return "截屏失败（手机客户端未连接或超时）"
+        from pathlib import Path as _Path
+        tmp = _Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"phone_shot_{uuid.uuid4().hex[:8]}.jpg"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(binascii.a2b_base64(b64))
+        cq = f"[img:file:{tmp.as_posix()}]"
+        if is_group:
+            await send_group_msg(cq, group_id)
+        else:
+            await send_private_msg(cq, user_id)
+        return None
+
+    from core.config import get_config
+    cfg = get_config()
+    owner = cfg.admin_id_str or str(cfg.admin_qq) or "管理员"
+    return format_phone_status(owner=owner)
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
@@ -3794,6 +3823,7 @@ COMMAND_MAP: dict[str, callable] = {
     "tokens":     cmd_tokens,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
+    "phone":      cmd_phone,
     "lyric":      cmd_lyric,
     "listening":  cmd_listening,   # ★ 设置机器人"正在听"状态
     "正在听":      cmd_listening,

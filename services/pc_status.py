@@ -753,3 +753,121 @@ async def start_pc_server(port: int = 62002):
     server = await asyncio.start_server(_handle_client, "0.0.0.0", port, limit=4_194_304)
     logger.info("PC 状态 TCP 接收端: 0.0.0.0:%d", port)
     return server
+
+
+# ── 手机状态 ────────────────────────────────────────────
+
+_PHONE_DATA: dict = {}
+_PHONE_LAST_UPDATE: float = 0
+_PHONE_client_writer: asyncio.StreamWriter | None = None
+_PHONE_shots_pending: dict[str, asyncio.Future] = {}
+
+
+async def _handle_phone_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    global _PHONE_DATA, _PHONE_LAST_UPDATE, _PHONE_client_writer
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout=5)
+        if not line:
+            writer.close(); return
+        line = line.decode().strip()
+        if not line.startswith("AUTH ") or line[5:] != _AUTH_KEY:
+            logger.warning("Phone 客户端 AUTH 失败")
+            writer.close(); return
+        _PHONE_client_writer = writer
+        logger.info("Phone 客户端已连接")
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=150)
+            if not line:
+                break
+            try:
+                data = json.loads(line.decode().strip())
+                _PHONE_DATA = data
+                _PHONE_LAST_UPDATE = time.time()
+            except json.JSONDecodeError:
+                pass
+    except (asyncio.TimeoutError, ConnectionResetError, ConnectionAbortedError):
+        pass
+    except Exception as e:
+        logger.warning("Phone 客户端异常: %s", e)
+    finally:
+        _PHONE_client_writer = None
+        writer.close()
+
+
+def get_phone_status() -> dict:
+    """获取最新手机状态数据"""
+    if _PHONE_LAST_UPDATE and (time.time() - _PHONE_LAST_UPDATE) < 300:
+        return dict(_PHONE_DATA)
+    return {}
+
+
+def format_phone_status(owner: str = "管理员") -> str:
+    data = get_phone_status()
+    if not data:
+        return "暂无手机状态数据（可能未连接或未运行采集脚本）"
+    lines = []
+    hostname = data.get("hostname", "未知")
+    lines.append(f"[Phone] {owner}'s {hostname}")
+
+    window = data.get("window", "")
+    app = data.get("app", "")
+    if window:
+        parts = [f"前台: {window}"]
+        if app: parts.append(f"({app})")
+        lines.append(" ".join(parts))
+
+    battery = data.get("battery", -1)
+    if battery >= 0:
+        charging = "充电中" if data.get("charging") else "放电"
+        lines.append(f"电量: {battery}% ({charging})")
+
+    cpu = data.get("cpu_percent", -1)
+    if cpu >= 0:
+        lines.append(f"CPU: {cpu}%")
+
+    mem = data.get("memory", {})
+    if mem:
+        used = mem.get("used", 0)
+        total = mem.get("total", 0)
+        if total:
+            lines.append(f"内存: {used}/{total}MB ({used*100//total}%)")
+
+    network = data.get("network", "")
+    if network:
+        lines.append(f"网络: {network}")
+
+    uptime = data.get("uptime", 0)
+    if uptime:
+        d = uptime // 86400; h = (uptime % 86400) // 3600; m = (uptime % 3600) // 60
+        parts = []
+        if d: parts.append(f"{d}d")
+        if h: parts.append(f"{h}h")
+        parts.append(f"{m}m")
+        lines.append(f"开机: {''.join(parts)}")
+
+    return "\n".join(lines)
+
+
+async def request_phone_screenshot(timeout: float = 30.0) -> str | None:
+    if _PHONE_client_writer is None:
+        return None
+    import uuid
+    req_id = uuid.uuid4().hex[:8]
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    _PHONE_shots_pending[req_id] = fut
+    try:
+        _PHONE_client_writer.write(f'{{"cmd":"SHOT","id":"{req_id}"}}\n'.encode())
+        await _PHONE_client_writer.drain()
+        b64 = await asyncio.wait_for(fut, timeout=timeout)
+        return b64
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        _PHONE_shots_pending.pop(req_id, None)
+
+
+async def start_phone_server(port: int = 62003):
+    server = await asyncio.start_server(_handle_phone_client, "0.0.0.0", port, limit=4_194_304)
+    logger.info("Phone 状态 TCP 接收端: 0.0.0.0:%d", port)
+    return server
