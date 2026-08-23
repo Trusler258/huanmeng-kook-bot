@@ -806,7 +806,7 @@ def format_phone_status(owner: str = "管理员") -> str:
     if not data:
         return "暂无手机状态数据（可能未连接或未运行采集脚本）"
     lines = []
-    hostname = data.get("hostname", "未知")
+    hostname = data.get("hostname", data.get("device", "未知"))
     lines.append(f"[Phone] {owner}'s {hostname}")
 
     window = data.get("window", "")
@@ -816,34 +816,59 @@ def format_phone_status(owner: str = "管理员") -> str:
         if app: parts.append(f"({app})")
         lines.append(" ".join(parts))
 
-    battery = data.get("battery", -1)
-    if battery >= 0:
+    # 电池：Android 上报为嵌套对象 {percent, charging, temperature, ...}
+    battery = data.get("battery", None)
+    if isinstance(battery, dict):
+        pct = battery.get("percent", -1)
+        charging = battery.get("charging", False)
+        if pct >= 0:
+            lines.append(f"电量: {pct:.0f}% ({'充电中' if charging else '放电'})")
+    elif isinstance(battery, (int, float)) and battery >= 0:
         charging = "充电中" if data.get("charging") else "放电"
         lines.append(f"电量: {battery}% ({charging})")
 
-    cpu = data.get("cpu_percent", -1)
-    if cpu >= 0:
-        lines.append(f"CPU: {cpu}%")
+    # CPU：Android 上报 cpu_freq + cpu_temp
+    cpu_freq = data.get("cpu_freq", -1)
+    cpu_temp = data.get("cpu_temp", -1)
+    cpu_count = data.get("cpu_count", 0)
+    cpu_parts = []
+    if cpu_count: cpu_parts.append(f"{cpu_count}核")
+    if cpu_freq > 0: cpu_parts.append(f"{cpu_freq:.1f}GHz")
+    if cpu_temp > 0: cpu_parts.append(f"{cpu_temp:.0f}°C")
+    if cpu_parts:
+        lines.append(f"CPU: {' '.join(cpu_parts)}")
 
+    # 内存：Android 上报 bytes，转换为 GB
     mem = data.get("memory", {})
     if mem:
         used = mem.get("used", 0)
         total = mem.get("total", 0)
-        if total:
-            lines.append(f"内存: {used}/{total}MB ({used*100//total}%)")
+        if total and total > 1024 * 1024:  # > 1MB → 按 GB 显示
+            used_gb = used / (1024**3)
+            total_gb = total / (1024**3)
+            pct = mem.get("percent", used * 100 // total if total else 0)
+            lines.append(f"内存: {used_gb:.1f}/{total_gb:.1f}GB ({pct:.0f}%)")
+        elif total:
+            lines.append(f"内存: {used}/{total}B ({used*100//total}%)")
 
-    network = data.get("network", "")
-    if network:
-        lines.append(f"网络: {network}")
+    # 网络：Android 上报 net 对象
+    net = data.get("net", {})
+    if net:
+        ips = [f"{k}={v}" for k, v in net.items() if v]
+        if ips:
+            lines.append(f"网络: {', '.join(ips)}")
 
-    uptime = data.get("uptime", 0)
-    if uptime:
-        d = uptime // 86400; h = (uptime % 86400) // 3600; m = (uptime % 3600) // 60
-        parts = []
-        if d: parts.append(f"{d}d")
-        if h: parts.append(f"{h}h")
-        parts.append(f"{m}m")
-        lines.append(f"开机: {''.join(parts)}")
+    # 存储
+    disks = data.get("disks", {})
+    if disks:
+        for path, info in disks.items():
+            if isinstance(info, dict):
+                free = info.get("free", 0)
+                total = info.get("total", 0)
+                if total and total > 1024 * 1024:
+                    free_gb = free / (1024**3)
+                    total_gb = total / (1024**3)
+                    lines.append(f"存储: {free_gb:.1f}/{total_gb:.1f}GB")
 
     return "\n".join(lines)
 
