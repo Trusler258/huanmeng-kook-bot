@@ -607,6 +607,33 @@ async def _apply_production(
     failed: list[str] = []
     partial: list[str] = []
     total = len(files)
+
+    # ── 预检：与远程 base(remote_sha) 失配比例 ──────────────
+    # 同项目多机器人/多部署共享仓库时，本机服务器文件可能与仓库长期脱节
+    # （历史遗留、其他实例改动、手工覆盖等）。若大面积失配说明本地状态整体
+    # 不可信，放弃逐文件 patch，整批以远程为权威全量对齐 HEAD，保证能应用最新更新。
+    base_sha = state.get("remote_sha", "")
+    base_blobs: dict[str, str] = {}
+    mismatch = cmp_total = 0
+    if base_sha:
+        for item in files:
+            rel = item.get("filename", "")
+            if not rel or item.get("status") == "removed" or not (root / rel).exists():
+                continue
+            cmp_total += 1
+            try:
+                b = await _eng._get_blob_sha(rel, base_sha)
+            except Exception:
+                b = ""
+            if b:
+                base_blobs[rel] = b
+                if b != _eng.compute_local_blob(root, rel):
+                    mismatch += 1
+    force_full = cmp_total > 0 and mismatch / cmp_total >= 0.3
+    if force_full:
+        logger.warning("检测到 %d/%d 个文件与远程 base 不一致，服务器状态不可信，整批全量对齐 HEAD",
+                       mismatch, cmp_total)
+
     for idx, item in enumerate(files, start=1):
         rel = item.get("filename", "")
         status = item.get("status", "")
@@ -618,6 +645,14 @@ async def _apply_production(
             if local.exists():
                 local.unlink()
             ok += 1
+            continue
+
+        # force_full：预检发现大面积失配 → 已存在文件全部以远程为权威对齐 HEAD
+        if force_full and (root / rel).exists():
+            if await _download_full(root, item, state, head):
+                ok += 1
+            else:
+                failed.append(rel)
             continue
 
         # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
@@ -642,13 +677,8 @@ async def _apply_production(
         # 若本地文件 blob ≠ 远程 base blob（被 scp/手动编辑/历史遗留改过），
         # patch 上下文必然对不上 → 直接以远程为权威全量对齐 HEAD，
         # 保证"外部改动过的核心文件也能应用最新更新"，而不是 patch 失败 → 回滚。
-        base_sha = state.get("remote_sha", "")
-        base_blob = ""
-        if base_sha:
-            try:
-                base_blob = await _eng._get_blob_sha(rel, base_sha)
-            except Exception:
-                base_blob = ""
+        # base_blobs 来自预检缓存（未缓存的文件预检时不存在/removed，不会走到这里）。
+        base_blob = base_blobs.get(rel, "")
         if base_blob and base_blob != _eng.compute_local_blob(root, rel):
             logger.warning("文件 %s 本地与远程 base 不一致（外部改动/历史遗留），强制对齐 HEAD", rel)
             if await _download_full(root, item, state, head):
