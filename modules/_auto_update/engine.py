@@ -90,8 +90,28 @@ def _load_protect_list() -> set[str]:
     entries = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
+        if line and not line.startswith("#") and not line.startswith("merge:"):
             entries.add(line.rstrip("/"))
+    return entries
+
+
+def _load_merge_list() -> set[str]:
+    """读取 .bot_protect 中以 `merge:` 前缀标记的文件。
+
+    语义：这些文件本地存在未推送改动，更新时不能直接覆盖（强制对齐会丢本地功能），
+    也不能像普通保护一样跳过（会漏掉远程更新）→ 走 LLM 三路融合。
+    每行格式：merge: <路径或glob>
+    """
+    path = _root() / ".bot_protect"
+    if not path.exists():
+        return set()
+    entries = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("merge:"):
+            p = line[len("merge:"):].strip().rstrip("/")
+            if p:
+                entries.add(p)
     return entries
 
 

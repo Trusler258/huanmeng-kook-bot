@@ -365,12 +365,13 @@ async def safe_check_and_update(
 
     commit_log = await _eng._fetch_commit_log(base, head) if base else ""
     protect = _eng._load_protect_list()
+    merge_set = _eng._load_merge_list()
 
-    # 过滤掉保护/跳过文件
+    # 过滤掉保护/跳过文件；merge: 标记的文件不跳过（走 LLM 融合保留本地改动）
     actionable = [
         f for f in files
         if f.get("filename", "") and not _skip_prefix(f["filename"])
-        and not _is_protected(f["filename"], protect)
+        and not (_is_protected(f["filename"], protect) and f["filename"] not in merge_set)
     ]
     if not actionable:
         return "无可用更新（全部为受保护/跳过文件）"
@@ -454,7 +455,7 @@ async def safe_check_and_update(
     snap = _snap.create_snapshot(actionable, head)
 
     # 11. Production Apply（走 Diff + 最小 Patch，沿用现有 patcher）
-    res = await _apply_production(actionable, root, head, state, progress)
+    res = await _apply_production(actionable, root, head, state, progress, merge_set)
 
     # P0: 任何文件失败（未落地 / 下载失败）→ 整体回滚，视为事务失败，绝不推进版本
     if res["failed"]:
@@ -502,6 +503,106 @@ def _rebuild_baseline(state: dict, files: list[dict], head: str) -> None:
         state.setdefault("files", {})
         for rel in removed:
             state["files"].pop(rel, None)
+
+
+async def _merge_with_llm(root: Path, item: dict, state: dict, head: str) -> bool:
+    """LLM 三路融合：base(remote_sha 基线) + local(服务器本地改动) + head(远程新代码)。
+
+    用于 .bot_protect 中 `merge:` 标记的文件：保留本地未推送的改动意图，
+    同时完整应用别人推送的远程更新。融合结果必须通过语法校验；任何失败返回 False，
+    由调用方回退到强制对齐（远程权威），保证不阻塞更新。
+    """
+    rel = item.get("filename", "")
+    local_path = root / rel
+    if not local_path.exists():
+        return False
+    base_sha = state.get("remote_sha", "")
+    if not base_sha or not _eng.GITHUB_API:
+        return False
+
+    import base64
+
+    async def _fetch(sha: str) -> str:
+        url = f"{_eng.GITHUB_API}/contents/{_eng._normalize_rel_path(rel)}?ref={sha}"
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
+            resp = await dl.get(url, headers=_eng._gh_headers())
+            resp.raise_for_status()
+            return base64.b64decode(resp.json().get("content", "") or "").decode("utf-8", errors="replace")
+
+    try:
+        base_text = await _fetch(base_sha)
+        head_text = await _fetch(head)
+    except Exception as e:
+        logger.warning("LLM 融合前置下载失败 %s: %s", rel, e)
+        return False
+
+    local_text = local_path.read_text(encoding="utf-8", errors="replace")
+
+    # 大小保护：超大文件（如 >60KB）超出 LLM 可靠输出范围，回退强制对齐
+    if len(local_text) > 60000 or len(head_text) > 60000 or len(base_text) > 60000:
+        logger.warning("%s 过大（>60KB），跳过 LLM 融合，回退对齐", rel)
+        return False
+
+    # 本地已是 head 内容 → 无需融合
+    if head_text == local_text:
+        return True
+
+    prompt = (
+        "你是资深 Python 工程师。下面给出同一个文件的三个版本：\n\n"
+        "# [BASE] 旧基线版本（本次更新前，两者共同的祖先）：\n"
+        "```python\n" + base_text + "\n```\n\n"
+        "# [LOCAL] 服务器本地当前版本（相对 BASE 含有本地未推送的改动，必须保留其功能意图）：\n"
+        "```python\n" + local_text + "\n```\n\n"
+        "# [REMOTE] 远程最新版本（相对 BASE 含有别人已推送的更新，必须完整应用）：\n"
+        "```python\n" + head_text + "\n```\n\n"
+        "请融合这三个版本：\n"
+        "1. 完整保留 LOCAL 相对 BASE 的所有本地改动（这是本机独有功能，不能丢）；\n"
+        "2. 完整应用 REMOTE 相对 BASE 的所有远程更新（不能遗漏）；\n"
+        "3. 两者冲突时，若远程改动是结构性的（改名/重构）则跟随 REMOTE 并保留本地功能意图。\n"
+        "输出完整的融合后文件内容：纯代码，不要任何解释，不要 markdown 代码围栏，不要省略号。"
+    )
+
+    try:
+        from services.llm import call_llm
+        from core.config import get_config
+        raw = await call_llm(
+            get_config().reply_model,
+            [{"role": "user", "content": prompt}],
+            max_tokens=8192, temperature=0.1, timeout=120,
+        )
+        if not raw or len(raw) < 50:
+            logger.warning("LLM 融合返回空/过短: %s", rel)
+            return False
+        out = _strip_code_fence(raw)
+        compile(out, rel, "exec")  # 语法校验，失败抛 SyntaxError
+        _eng._write_local(root, rel, out.splitlines(keepends=True))
+        try:
+            blob = await _eng._get_blob_sha(rel, head)
+            _eng.set_file_blob(state, rel, blob, 1, 0)
+        except Exception:
+            pass
+        logger.info("LLM 三路融合成功: %s (base=%d→local=%d→head=%d)",
+                    rel, len(base_text), len(local_text), len(head_text))
+        return True
+    except SyntaxError as e:
+        logger.warning("LLM 融合结果语法错误 %s 第%d行: %s", rel, e.lineno, e.msg)
+        return False
+    except Exception as e:
+        logger.warning("LLM 融合失败 %s: %s", rel, e)
+        return False
+
+
+def _strip_code_fence(text: str) -> str:
+    """去除 LLM 输出可能包裹的 markdown 代码围栏。"""
+    t = text.strip()
+    if t.startswith("```"):
+        # 去掉首行围栏
+        first_nl = t.find("\n")
+        t = t[first_nl + 1:] if first_nl != -1 else t
+        # 去掉末尾围栏
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.rstrip() + "\n"
 
 
 async def _download_via_api(root: Path, item: dict, state: dict, head: str) -> bool:
@@ -591,6 +692,7 @@ async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) ->
 
 async def _apply_production(
     files: list[dict], root: Path, head: str, state: dict, progress=None,
+    merge_set: Optional[set[str]] = None,
 ) -> dict:
     """逐文件应用 patch/diff 到生产（沿用现有 patcher 行级合并）。
 
@@ -654,6 +756,20 @@ async def _apply_production(
             else:
                 failed.append(rel)
             continue
+
+        # merge: 标记文件 + 本地有改动（blob ≠ base）→ LLM 三路融合，
+        # 保留本地未推送的改动意图 + 完整应用远程更新；融合失败回退强制对齐。
+        if merge_set and rel in merge_set and (root / rel).exists():
+            base_blob = base_blobs.get(rel, "")
+            if not base_blob or base_blob != _eng.compute_local_blob(root, rel):
+                if await _merge_with_llm(root, item, state, head):
+                    ok += 1
+                    continue
+                if await _download_full(root, item, state, head):
+                    ok += 1
+                    continue
+                failed.append(rel)
+                continue
 
         # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
         # 空文件上除 new-file（@@ -0,0 +1,N @@）外会全体 skip → 永不落盘
