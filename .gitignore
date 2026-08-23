@@ -31,6 +31,7 @@ data/memories/
 # 临时文件
 tmp/
 temp/
+phone_tunnel_url.txt
 
 # 运行时日志
 logs/
