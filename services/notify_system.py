@@ -887,6 +887,18 @@ def add_target_channel(channel_id) -> bool:
     return True
 
 
+def remove_target_channel(channel_id) -> bool:
+    cfg = load_cfg()
+    lst = cfg.get("target_channels", [])
+    cid = int(channel_id)
+    if cid not in lst:
+        return False
+    lst.remove(cid)
+    cfg["target_channels"] = lst
+    save_cfg(cfg)
+    return True
+
+
 def set_perf_enabled(enabled: bool) -> tuple[bool, bool]:
     """开/关 LLM 性能降级通知（perf_enabled）。返回 (成功与否, 当前开关状态)。
 

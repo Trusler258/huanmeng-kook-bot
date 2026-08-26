@@ -706,17 +706,17 @@ async def cmd_notify(args, user_id, group_id, sender_name, is_group, bot_kook):
         mark = "✓" if int(cid) in targets else "○"
         markdown_content += f"{mark} `{name}`（{cid}）\n"
 
-    # KOOK 按钮: 放在 action-group 模块里，click=return-val，点击后通过
-    # message_btn_click 事件把 value(指令字符串) 回传给 bot
+    # KOOK 按钮: 已选频道点击移除，未选频道点击添加
     kook_buttons = []
     for cid, ch in channels:
         name = (getattr(ch, 'name', None) or getattr(ch, 'channel_name', None) or str(cid))[:20]
+        is_in = int(cid) in targets
         kook_buttons.append({
             "type": "button",
-            "theme": "primary",
-            "value": f".notifyset {cid}",
+            "theme": "danger" if is_in else "primary",
+            "value": f".notifydel {cid}" if is_in else f".notifyset {cid}",
             "click": "return-val",
-            "text": {"type": "plain-text", "content": name},
+            "text": {"type": "plain-text", "content": ("✕ " if is_in else "") + name},
         })
     # 每个 action-group 最多 4 个按钮，频道多时分多组
     groups = [kook_buttons[i:i + 4] for i in range(0, len(kook_buttons), 4)]
@@ -751,6 +751,27 @@ async def cmd_notifyset(args, user_id, group_id, sender_name, is_group, bot_kook
     if add_target_channel(cid):
         return f"已添加通知目标频道：{cid}\n现在回复 .notifycheck 可立即测试；性能降级/GitHub更新将推送至该频道"
     return f"频道 {cid} 已在通知列表中"
+
+
+async def cmd_notifydel(args, user_id, group_id, sender_name, is_group, bot_kook):
+    """.notifydel <channel_id> — 移除通知目标频道"""
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return "权限不足喵~"
+
+    if not args:
+        return "用法：.notifydel <频道ID>，如 .notifydel 1010983873136793"
+
+    try:
+        cid = int(args[0])
+    except (ValueError, TypeError):
+        return "频道 ID 无效喵~"
+
+    from services.notify_system import remove_target_channel
+    if remove_target_channel(cid):
+        return f"已移除通知目标频道：{cid}"
+    return f"频道 {cid} 不在通知列表中"
 
 
 async def cmd_notifycheck(args, user_id, group_id, sender_name, is_group, bot_kook):
@@ -3788,6 +3809,7 @@ COMMAND_MAP: dict[str, callable] = {
     "test-up":    cmd_testup,
     "notify":     cmd_notify,
     "notifyset":  cmd_notifyset,
+    "notifydel":  cmd_notifydel,
     "notifycheck": cmd_notifycheck,
     "notifyperf":  cmd_notifyperf,
     "jsonraw":    cmd_jsonraw,
