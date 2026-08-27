@@ -104,6 +104,14 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
 
     def _cut(b: bytes, max_output: int = MAX_OUTPUT) -> str:
         text = b.decode("utf-8", errors="replace")
+        # 剥离 ANSI 转义与控制字符：沙箱脚本若 import 了带彩色日志的模块（如
+        # /root/bot 的 logger），其输出会夹杂 \x1b[38;5;240m 等 ESC 序列，这些
+        # 控制字符会让 KOOK KMD 发送失败（表现为 `.run` 回显"没听清"兜底）。
+        # 统一在沙箱输出源头清掉，避免把转义串透传给上层/用户。
+        text = re.sub(
+            r'\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x1b\x07]*(?:\x1b\\|\x07)|[()][^A-Za-z0-9][^\x1b]*)',
+            "", text)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', "", text)
         if len(text) > max_output:
             # 保留头尾：末尾常是最终结果（如 uptime / 退出信息 / 报错栈），不能整段丢
             total = len(text)
