@@ -757,6 +757,8 @@ _CLOCK_drift_trim_ms: int = 0
 _CLOCK_drift_target_ms: int = 0
 # 上次 drift 校正检查的 wall_ts（time.time()，每 30s 一次）
 _CLOCK_last_drift_check_ts: float = 0.0
+# ══ v7.02 直接强制对准：上次 force_align 的 perf 时间戳（每 ~2s 一次）
+_CLOCK_force_align_ts: float = 0.0
 # 锚定时记录的 pos_ms（用于 seek 检测，若 SMTC 下一次 pos 与本地理想值差 >3s 判定 seek）
 _CLOCK_last_anchor_snapshot_ms: int = 0
 # 上次 poll_smtc 拿到的原始 pos（用于检测 SMTC 位置是否真的发生了跳变）
@@ -843,9 +845,46 @@ def _apply_drift_step() -> None:
             _CLOCK_drift_trim_ms += int(step)
             _CLOCK_drift_target_ms = int(remaining_after)
 
+
+def _clock_force_align() -> None:
+    """v7.02 直接强制对准本地时钟 ≈ SMTC 进度。
+    用户选择"直接强制对准"（而非温和漂移/不校准）：
+      - 每 ~2s 用当前 SMTC pos 重新核对本地积分；
+      - |偏差| >= 120ms 时直接把锚点暴力对准 SMTC（消除"播放到一半对不上"的线性漂移）；
+      - 酷狗等 SMTC 恒报 0（pos 卡死）→ 跳过，避免被拖回 0；
+      - |偏差| > 3s → 疑似 seek/切歌，交给 ②-3 seek / 切歌锚定逻辑，不在此暴力拽。"""
+    global _CLOCK_force_align_ts
+    try:
+        if not _SMTC_STATE or not _SMTC_STATE.get("song", ""):
+            _CLOCK_force_align_ts = 0.0
+            return
+        tnow = time.perf_counter()
+        if _CLOCK_force_align_ts and (tnow - _CLOCK_force_align_ts) < 2.0:
+            return
+        _CLOCK_force_align_ts = tnow
+        with _CLOCK_lock:
+            stuck = _CLOCK_smtc_pos_stuck_count
+        if stuck >= 2:
+            return  # SMTC pos 卡死（酷狗恒报0）→ 不可信，依赖本地积分
+        eff = get_local_eff_ms()
+        smtc = _SMTC_STATE.get("progress_ms", 0)
+        local_wo_ofs = eff - int(_LYRIC_OFFSET_MS or 0)
+        diff = smtc - local_wo_ofs   # +:本地落后 smtc更快；-:本地超前
+        if abs(diff) < 120:
+            return  # 已足够准，不折腾
+        if abs(diff) > 3000:
+            return  # 超大偏差→疑似 seek/切歌，交给专门锚定逻辑
+        _anchor_clock(int(smtc), reason=f"force_align diff={int(diff)}ms")
+    except Exception:
+        pass
+
 _last_song_change_ts = 0.0 # 切歌时刻
 _smtc_song_intro_emitted_at = 0.0  # v6.64: 切歌提示刚发出时间戳（poll_smtc 立刻打了就记这里，tick_lyric 防重复）
 _last_playing_state = None # 播放/暂停状态切换检测
+# ══ v7.02 切歌误判暂停修正 ══
+_pause_suspect_since = None  # 检测到"停止播放"的时间戳（None=当前不是可疑暂停）；用于去抖确认真实暂停 vs 切歌一闪而过
+_force_media_recheck = False # 置 True 时，下一轮 poll_smtc 强制重读媒体属性（Kugou 切歌 title 需重新确认）
+_PAUSE_DEBOUNCE_S = 1.0       # 停止播放持续超过该秒数才确认真实暂停并上报"已暂停"；窗口内恢复则视为切歌
 _lyrics_fetched_for = ""   # 已经为哪首歌启动过歌词搜索（避免重复）
 _cover_fetched_for = ""    # 已经为哪首歌启动过封面搜索
 
@@ -943,7 +982,12 @@ def _catchup_lyrics_until(song_key: str, target_idx: int):
                         cur_song = _SMTC_STATE.get("song")
                         playing = _SMTC_STATE.get("playing", True)
                     if cur_song != song_key or _catchup_thread_song != song_key:
-                        log(f"歌词补位中断: song已变化({cur_song!r}!={song_key!r}) 或被 cancel，已发 {i}/{n} 句")
+                        # v7.02 fix: 分开打印两个判定条件——旧日志只打 song 对比，真正的失败
+                        # 往往在 _catchup_thread_song!=song_key（补位被 cancel/误清标记），
+                        # 导致同串报"song已变化"的假象。
+                        _song_changed = cur_song != song_key
+                        _mark_invalid = _catchup_thread_song != song_key
+                        log(f"歌词补位中断: song_changed={_song_changed} mark_invalid={_mark_invalid} cur_song={cur_song!r} song_key={song_key!r} catchup_mark={_catchup_thread_song!r} 已发 {i}/{n} 句")
                         return
                     if not playing:
                         # 暂停就停在当前句不再继续发（用户暂停说明不想看了）
@@ -1089,16 +1133,20 @@ def _catchup_lyrics_until(song_key: str, target_idx: int):
 
 
     t = threading.Thread(target=_run, daemon=True)
+    # v7.02 fix: 先把旧补句线程（最多 1s）停干净，再占用 补位 标记并立即 start。
+    # 旧逻辑先设 _catchup_thread_song=目标 再 join(old)：join 延时最长 1s 期间，线程对象
+    # 已存在但 is_alive()=False，tick_lyric/Timer._cb 把"未 start 的线程"误判成"已退出线程"
+    # 清掉标记 → 新补位线程一起跑就被 _catchup_thread_song!=song_key 中断（"song已变化" 假报）。
     with _catchup_lock:
         old = _catchup_thread
-        _catchup_thread = t
-        _catchup_thread_song = song_key
-    # 先等旧补句线程（最多 1s）让它停干净再启动新的，避免两首歌同时补造成乱序
     if old and old.is_alive() and old is not t:
         try:
             old.join(timeout=1.0)
         except Exception:
             pass
+    with _catchup_lock:
+        _catchup_thread = t
+        _catchup_thread_song = song_key
     t.start()
 
 
@@ -1148,9 +1196,11 @@ def _schedule_next_lyric_at(song_key: str, timeline, trans_timeline, next_idx: i
                         if _LYRIC_SYNC_LOG:
                             log(f"[LYRIC_SYNC] TIMER:DROP_muted_catchup_alive song={song_key!r} next_idx={next_idx}")
                         return
-                    if (ct is None or not ct.is_alive()) and _catchup_thread_song == song_key:
+                    if (ct is None) and _catchup_thread_song == song_key:
                         with _catchup_lock:
-                            if _catchup_thread_song == song_key:
+                            # v7.02 fix: 与 tick 同样只在 线程对象彻底为空 时才清标记，
+                            # 避免 join 旧线程期间(线程未 start → is_alive=False)误清启动中的补位。
+                            if _catchup_thread is None and _catchup_thread_song == song_key:
                                 _catchup_thread_song = ""
                 except Exception:
                     pass
@@ -1578,6 +1628,7 @@ def poll_smtc():
     """
     global _last_smtc_ts, _last_song_key, _last_song_change_ts, _lyrics_fetched_for, _cover_fetched_for
     global _CLOCK_play_rate, _CLOCK_paused, _CLOCK_last_playing_state, _CLOCK_last_playback_rate, _CLOCK_last_drift_check_ts, _CLOCK_drift_target_ms
+    global _force_media_recheck
     mgr = _ensure_smtc_mgr()
     if mgr is None:
         return False
@@ -1624,8 +1675,10 @@ def poll_smtc():
         cur_key = ""
         media_info = None
         song_changed = False
+        force_recheck = _force_media_recheck   # v7.02: 切歌误判暂停后强制重读媒体，确认真实新歌
+        _force_media_recheck = False
         with _state_lock:
-            if not _SMTC_STATE["song"] or abs(pos_sec * 1000 - _SMTC_STATE["progress_ms"]) > 15000 or _SMTC_STATE["duration_str"] != duration_str:
+            if not _SMTC_STATE["song"] or abs(pos_sec * 1000 - _SMTC_STATE["progress_ms"]) > 15000 or _SMTC_STATE["duration_str"] != duration_str or force_recheck:
                 # 进度跳变或时长变化 → 可能切歌，强查媒体属性
                 try:
                     import asyncio as _aio
@@ -1792,6 +1845,15 @@ def poll_smtc():
         if playing and (not _CLOCK_last_playing_state):
             need_anchor = True
             anchor_reason = "paused→resumed"
+            # v7.02: Kugou/SMTC 切到下一首歌时，旧会话常先短暂报 paused 再 resumed，且位置重置回起点(pos≈0)。
+            #         此时置强制重读媒体属性，下一轮 poll 重新拉 title 确认真实新歌，避免"切到下一首却一直停留上一首"。
+            if pos_ms_raw < 3000:
+                _force_media_recheck = True
+                if _LYRIC_SYNC_LOG:
+                    try:
+                        log(f"[LYRIC_PROFILE] PAUSE_RESUME_AT_START pos_ms_raw={pos_ms_raw}ms<3000 → 置强制媒体重读(疑似切歌)")
+                    except Exception:
+                        pass
         # ②-2: 倍速变化 → 顺手重锚（保证 play_rate 更新后基准正确）
         elif abs(playback_rate - _CLOCK_last_playback_rate) > 0.01:
             need_anchor = True
@@ -3283,6 +3345,8 @@ def _format_lyric_line(text: str, trans_text: str = "") -> str:
 def tick_lyric():
     """每次 tick 做一次: SMTC 轮询 + 歌词推算 + 播放/暂停状态切换提示"""
     global _last_lyric_raw, _last_trans_raw, _last_lyric_idx, _last_trans_idx, _lyric_pending, _last_playing_state, _last_emit_wall_ts_ms
+    # v7.02: 切歌误判暂停去抖 / 强制媒体重读 标志
+    global _pause_suspect_since, _force_media_recheck
     # v6.6：tick_lyric L2074 顺手清理残留标记时 会写入 _catchup_thread_song / 读 _catchup_thread
     #      所以必须 global，否则 Python 当局部变量处理 → 赋值前引用 UnboundLocalError
     global _catchup_thread_song, _catchup_thread
@@ -3339,35 +3403,72 @@ def tick_lyric():
             tick_lyric._last_song_sent = song
 
         # ── 播放/暂停状态切换提示 ──
-        if _last_playing_state is not None and _last_playing_state != playing:
-            # 暂停：取消所有正在等的定时器 + 中断补位（恢复时 tick 兜底会重新挂）
-            if not playing:
-                _cancel_all_lyric_timers(song + "#paused")
-                _cancel_catchup(song + "#paused")
-            if since_change > 0.3:
-                if playing:
-                    formatted = "**\u25b6 继续播放**"
-                    log_text = "▶ 继续播放"
-                else:
+        # v7.02: 加去抖，修复 Kugou/SMTC「切歌被误判成 暂停→继续播放」。
+        #         Kugou 切到下一首时，旧会话常先短暂报 paused（几百 ms）再 resumed，且位置重置回起部。
+        #         处理：检测到停止播放 → 记录 _pause_suspect_since + 立即取消定时器/补位（防卡顿），
+        #         但不立刻上报"已暂停"；若去抖窗口 _PAUSE_DEBOUNCE_S 内恢复播放 → 判定为切歌，
+        #         静默跳过，并置 _force_media_recheck 让 poll_smtc 重读媒体确认真实新歌；
+        #         持续暂停超窗口才确认真实暂停上报。
+        _now_p = time.time()
+        # ── v7.03 修复 v7.02 bug：真实暂停永远无法上报「已暂停」 ═─
+        #    v7.02 在首次检测到停止播放时立即 `_last_playing_state = playing(False)`，
+        #    此后每轮 tick playing 恒为 False，外层状态切换 guard `_last_playing_state != playing`
+        #    恒为 False → 去抖超时分支成为死代码，「真实暂停 >窗口」永远不发提示。
+        #    修复：把窗口到期判断独立出来，用 _pause_suspect_since 单独轮询，无需依赖状态再次切换。
+        if not playing and _pause_suspect_since is not None:
+            if (_now_p - _pause_suspect_since) >= _PAUSE_DEBOUNCE_S:
+                # 窗口内一直未恢复 → 确认为真实暂停
+                _pause_suspect_since = None
+                _last_playing_state = playing
+                if since_change > 0.3:
                     formatted = "**\u23f8 已暂停**"
                     log_text = "⏸ 已暂停"
-                ts = time.time()
-                # v6.79：统一走 _stage_lyric_event（防溢出覆盖丢句）
-                _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
-                # ══ v6.5 修：暂停/继续 状态提示 绝对不能 reset _last_lyric_idx / _last_trans_idx！
-                #    之前设成 -1 会导致「暂停 3s → 继续」时：
-                #      _last_lyric_idx >= 0 这个条件变成 False，L2025 的「防跳句夹逼」被绕过，
-                #      tick 直接按 eff_ms 推算 idx=23（补位刚到 10），跳过了 11..22 全漏句；
-                #      而且 Timer 回调那边仍然要求 next_idx == last+1（要求 last=22 才会发 23），
-                #      于是 tick+Timer 两边判据打架，最终歌词卡死半天不动。
-                #    正确做法：last 继续保留原值，tick 会从 last+1 正常推进，什么都不会漏。
-                #    _last_lyric_raw 改成状态占位符避免下一句相同歌词被误判重复即可。═
-                _last_lyric_raw = f"__STATE__{playing}__"
-                _last_trans_raw = ""
-                _last_emit_wall_ts_ms = 0.0  # ══ v6.67 分析：状态切换后下一句为 FIRST，避免暂停时长污染gap
-                log(f"状态提示 [{ts:.3f}] offset={_LYRIC_OFFSET_MS}ms: {log_text}")
+                    ts = time.time()
+                    _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
+                    # ══ v6.5 修：暂停/继续 状态提示 绝对不能 reset _last_lyric_idx / _last_trans_idx！
+                    #    只把 raw 置状态占位符，避免下一句相同歌词被误判重复；last 保留原值推进。═
+                    _last_lyric_raw = f"__STATE__{playing}__"
+                    _last_trans_raw = ""
+                    _last_emit_wall_ts_ms = 0.0  # ══ v6.67 状态切换后下一句为 FIRST，避免暂停时长污染gap
+                    log(f"状态提示 [{ts:.3f}] offset={_LYRIC_OFFSET_MS}ms: {log_text}")
+                # 已确认真实暂停：停在暂停态，跳过后方歌词推进逻辑
+                return
+
+        if _last_playing_state is not None and _last_playing_state != playing:
+            if not playing:
+                # 暂停方向：取消所有正在等的定时器 + 中断补位（恢复时 tick 兜底会重新挂）
+                _cancel_all_lyric_timers(song + "#paused")
+                _cancel_catchup(song + "#paused")
+                if _pause_suspect_since is None:
+                    # 停止播放首次出现 → 记起点，等去抖窗口（不在此处上报，等上方独立轮询确认）
+                    _pause_suspect_since = _now_p
+                    _last_playing_state = playing
+                    if _LYRIC_SYNC_LOG:
+                        log(f"[LYRIC_PROFILE] PAUSE_DEBOUNCE 检测到停止播放，等待 {_PAUSE_DEBOUNCE_S}s 确认（切歌或真实暂停）")
+                    return
+                # 已有可疑起点：窗口到期确认已由上方独立块处理，这里仅同步状态并静默等待
                 _last_playing_state = playing
                 return
+            else:
+                # playing，且之前是停止播放状态 → 恢复
+                _resumed_quick = (_pause_suspect_since is not None and (_now_p - _pause_suspect_since) < _PAUSE_DEBOUNCE_S)
+                _pause_suspect_since = None
+                _last_playing_state = playing
+                if _resumed_quick:
+                    # 去抖窗口内即恢复 → 大概率是切歌，不打印"继续播放"，置强制媒体重读确认真实新歌
+                    _force_media_recheck = True
+                    if _LYRIC_SYNC_LOG:
+                        log(f"[LYRIC_PROFILE] PAUSE_DEBOUNCE 暂停<{int(_PAUSE_DEBOUNCE_S*1000)}ms 即恢复 → 判定为切歌，静默跳过 已暂停/继续播放 上报")
+                    return
+                if since_change > 0.3:
+                    formatted = "**\u25b6 继续播放**"
+                    log_text = "▶ 继续播放"
+                    ts = time.time()
+                    _stage_lyric_event(formatted, f"{formatted}|{ts:.3f}")
+                    _last_lyric_raw = f"__STATE__{playing}__"
+                    _last_trans_raw = ""
+                    _last_emit_wall_ts_ms = 0.0
+                    log(f"状态提示 [{ts:.3f}] offset={_LYRIC_OFFSET_MS}ms: {log_text}")
         _last_playing_state = playing
 
         if not playing and eff_ms == 0:
@@ -3407,7 +3508,11 @@ def tick_lyric():
             pass
         if (not catchup_alive) and _catchup_thread_song == song:
             with _catchup_lock:
-                if _catchup_thread_song == song:
+                # v7.02 fix: 只有 补位线程对象已彻底为空(ct is None) 才清理标记，防止误清启动窗口。
+                # 仅凭 is_alive()=False 判断"线程已退出"不成立：线程刚创建、或 join 旧线程期间
+                # is_alive()=False 但线程即将 start，此刻清标记会让补位被误判中断。
+                _ct = _catchup_thread
+                if _catchup_thread_song == song and _ct is None:
                     _catchup_thread_song = ""
         elif catchup_alive and _catchup_thread_song == song:
             if _LYRIC_SYNC_LOG:
@@ -3496,7 +3601,12 @@ def _lyric_tick_loop():
             import traceback
             log(f"歌词tick异常: {e}")
             log(traceback.format_exc())
-        # ══ v7.01：用户要求不自动校准SMTC → 移除 _apply_drift_step() 调用
+        # ══ v7.02：用户选择"直接强制对准" → 周期性把本地时钟强制对准 SMTC（酷狗 pos 卡死自动跳过）。
+        #    替换 v7.01 被禁用的 _apply_drift_step()（纯单锚点积分中途无校正 → 播到一半对不上）。
+        try:
+            _clock_force_align()
+        except Exception:
+            pass
         time.sleep(LYRIC_TICK_MS / 1000.0)
 
 
