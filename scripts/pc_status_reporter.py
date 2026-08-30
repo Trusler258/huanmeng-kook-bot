@@ -759,6 +759,9 @@ _CLOCK_drift_target_ms: int = 0
 _CLOCK_last_drift_check_ts: float = 0.0
 # ══ v7.02 直接强制对准：上次 force_align 的 perf 时间戳（每 ~2s 一次）
 _CLOCK_force_align_ts: float = 0.0
+# ══ v7.03 force_align 可信度保护：SMTC 位置若"播放中却停在0"或"与本地呈恒定偏移（连续几轮 diff 几乎不变）"→ 视为 SMTC 不可信，不再每2s反复拽回本地时钟 ═─
+_CLOCK_force_align_last_diff: int | None = None  # 上一次 force_align 算出的 diff
+_CLOCK_force_align_flat_count: int = 0          # diff 与上轮几乎相同的连续轮数（恒定偏移计数）
 # 锚定时记录的 pos_ms（用于 seek 检测，若 SMTC 下一次 pos 与本地理想值差 >3s 判定 seek）
 _CLOCK_last_anchor_snapshot_ms: int = 0
 # 上次 poll_smtc 拿到的原始 pos（用于检测 SMTC 位置是否真的发生了跳变）
@@ -853,10 +856,12 @@ def _clock_force_align() -> None:
       - |偏差| >= 120ms 时直接把锚点暴力对准 SMTC（消除"播放到一半对不上"的线性漂移）；
       - 酷狗等 SMTC 恒报 0（pos 卡死）→ 跳过，避免被拖回 0；
       - |偏差| > 3s → 疑似 seek/切歌，交给 ②-3 seek / 切歌锚定逻辑，不在此暴力拽。"""
-    global _CLOCK_force_align_ts
+    global _CLOCK_force_align_ts, _CLOCK_force_align_last_diff, _CLOCK_force_align_flat_count
     try:
         if not _SMTC_STATE or not _SMTC_STATE.get("song", ""):
             _CLOCK_force_align_ts = 0.0
+            _CLOCK_force_align_last_diff = None
+            _CLOCK_force_align_flat_count = 0
             return
         tnow = time.perf_counter()
         if _CLOCK_force_align_ts and (tnow - _CLOCK_force_align_ts) < 2.0:
@@ -870,6 +875,23 @@ def _clock_force_align() -> None:
         smtc = _SMTC_STATE.get("progress_ms", 0)
         local_wo_ofs = eff - int(_LYRIC_OFFSET_MS or 0)
         diff = smtc - local_wo_ofs   # +:本地落后 smtc更快；-:本地超前
+        if smtc <= 0:
+            # v7.03：SMTC 播放中却报 pos=0 → 不可信（酷狗恒报0类），绝不把本地时钟拽回0，
+            #       否则每 ~2s 清 0 → 歌词永远停在第 3 句。直接依赖本地积分即可。
+            return
+        # v7.03：恒定偏移（切歌/缓冲期 SMTC 滞后）≠ 真正漂移。
+        #       若连续几轮 diff 几乎不变（同一首歌内不增长）→ SMTC 相对本地是固定滞后/偏移，
+        #       反复重锚只是"拽回再走满"死循环；真正的线性漂移会随播放时长递增，能被下面的同类判断区分。
+        if _CLOCK_force_align_last_diff is not None and abs(diff - _CLOCK_force_align_last_diff) < 150:
+            _CLOCK_force_align_flat_count += 1
+            if _CLOCK_force_align_flat_count >= 2:
+                if _LYRIC_SYNC_LOG:
+                    log(f"[LYRIC_PROFILE] FORCE_ALIGN_SKIP 恒定偏移 {diff}ms 连续>{_CLOCK_force_align_flat_count} 轮不增长 → 判为 SMTC 滞后/偏移，停止拽回本地时钟")
+                _CLOCK_force_align_last_diff = diff
+                return
+        else:
+            _CLOCK_force_align_flat_count = 0
+        _CLOCK_force_align_last_diff = diff
         if abs(diff) < 120:
             return  # 已足够准，不折腾
         if abs(diff) > 3000:
