@@ -729,16 +729,18 @@ _KUGOU_UNIT = None            # 10=厘秒(默认); 1=毫秒
 _KUGOU_PROBE_DISABLED = False
 
 
-def _kugou_find_hwnd() -> int:
-    """枚举可见窗口，找 kugou/kgmusic 主窗口，返回 hwnd（找不到返回 0）。"""
-    global _KUGOU_HWND
+def _kugou_find_hwnds() -> list:
+    """枚举所有可见的 kugou/kgmusic 顶层窗口，返回 hwnd 列表。
+    ⚠ v7.05 关键修复：酷狗常有两个窗口 —— 一个空的壳窗口(class=kugou_ui title='')，
+       真正的进度条在"_歌名_酷狗音乐标题"的子窗口/另一个顶层窗口里。
+       旧版只取第一个窗口导致找不到滑块，真实进度永远读不到。这里必须全部收集再逐个找滑块。"""
     try:
         import win32gui as _wg, win32process as _wp, psutil as _ps
     except Exception:
-        return 0
+        return []
     target = ("kugou", "kgmusic", "kglow")
+    hwnds = []
     def _cb(hwnd, _acc):
-        global _KUGOU_HWND
         try:
             if not _wg.IsWindowVisible(hwnd):
                 return True
@@ -748,19 +750,17 @@ def _kugou_find_hwnd() -> int:
         except Exception:
             return True
         if any(t in name for t in target) or "kgmusic" in (_wg.GetClassName(hwnd) or "").lower():
-            _KUGOU_HWND = hwnd
-            return False
+            hwnds.append(hwnd)
         return True
-    _KUGOU_HWND = 0
     try:
         _wg.EnumWindows(_cb, None)
     except Exception:
-        return 0
-    return _KUGOU_HWND
+        return []
+    return hwnds
 
 
-def _kugou_find_slider(hwnd):
-    """遍历窗口 UI 树，返回"进度条" SliderControl（Name 含 进度/播放/时间 才算命中）。"""
+def _kugou_slider_in_hwnd(hwnd):
+    """在单个窗口 UI 树里找"进度条" SliderControl（Name 含 进度/播放/时间 才算命中）。"""
     try:
         import uiautomation as _auto
         root = _auto.ControlFromHandle(hwnd)
@@ -802,13 +802,27 @@ def _kugou_find_slider(hwnd):
     return found[0]
 
 
+def _kugou_find_slider():
+    """遍历所有 kugou 窗口，返回 (hwnd, slider)；任一窗口有进度条即返回。"""
+    hwnds = _kugou_find_hwnds()
+    for hwnd in hwnds:
+        try:
+            slider = _kugou_slider_in_hwnd(hwnd)
+        except Exception:
+            continue
+        if slider is not None:
+            return hwnd, slider
+    return 0, None
+
+
 def _reset_kugou_prog():
     with _KUGOU_PROG_LOCK:
         _KUGOU_PROG["valid"] = False
 
 
 def _kugou_probe_once():
-    """读一次酷狗进度条真实位置/时长，写快照。失败/无酷狗→快照 invalid。"""
+    """读一次酷狗进度条真实位置/时长，写快照。失败/无酷狗→快照 invalid。
+    v7.05：改遍历所有酷狗窗口找滑块（修复只找第一个空壳窗口导致读不到真实进度）。"""
     global _KUGOU_HWND, _KUGOU_SLIDER, _KUGOU_SLIDER_FAILS, \
            _KUGOU_RAW_V, _KUGOU_RAW_TS, _KUGOU_UNIT, _KUGOU_PROBE_DISABLED
     try:
@@ -820,18 +834,25 @@ def _kugou_probe_once():
             _KUGOU_PROBE_DISABLED = True
             _reset_kugou_prog()
             return
-        hwnd = _KUGOU_HWND or _kugou_find_hwnd()
-        if not hwnd:
-            _reset_kugou_prog()
-            return
+        # 拿到有效 (hwnd, slider)：优先用缓存，缓存失效则重找
+        hwnd = _KUGOU_HWND
         slider = _KUGOU_SLIDER
         if slider is None:
-            slider = _kugou_find_slider(hwnd)
+            hwnd, slider = _kugou_find_slider()
+            if slider is None and hwnd == 0 and not _kugou_find_hwnds():
+                # 完全没有任何酷狗窗口 → 静默失能，快照 invalid
+                _reset_kugou_prog()
+                return
+            _KUGOU_HWND = hwnd
             _KUGOU_SLIDER = slider
         if slider is None:
             _KUGOU_SLIDER_FAILS += 1
             if _KUGOU_SLIDER_FAILS >= 6:
-                _KUGOU_HWND = 0      # 连续找不到→窗口可能变了，强制重找
+                try:
+                    log(f"[KUGOU_PROBE] 连续{_KUGOU_SLIDER_FAILS}次找不到进度条，强制重找窗口")
+                except Exception:
+                    pass
+                _KUGOU_HWND = 0
                 _KUGOU_SLIDER = None
                 _KUGOU_SLIDER_FAILS = 0
             _reset_kugou_prog()
@@ -852,7 +873,7 @@ def _kugou_probe_once():
             if _KUGOU_UNIT is None:
                 _KUGOU_UNIT = 10 if abs(ups - 100) < 150 else 1
                 try:
-                    log(f"[KUGOU_PROBE] 进度单位判定 unit={_KUGOU_UNIT} (rate={ups:.1f} unit/s)")
+                    log(f"[KUGOU_PROBE] 进度单位判定 hwnd=0x{hwnd:X} unit={_KUGOU_UNIT} (rate={ups:.1f} unit/s)")
                 except Exception:
                     pass
         _KUGOU_RAW_V = v
@@ -860,11 +881,18 @@ def _kugou_probe_once():
         unit = _KUGOU_UNIT if _KUGOU_UNIT else 10
         pos_ms = max(0, int(v * unit))
         dur_ms = max(0, int(m * unit))
+        was_valid = _KUGOU_PROG.get("valid", False)
         with _KUGOU_PROG_LOCK:
             _KUGOU_PROG["valid"] = True
             _KUGOU_PROG["pos_ms"] = pos_ms
             _KUGOU_PROG["dur_ms"] = dur_ms
             _KUGOU_PROG["ts"] = time.time()
+        # 首次成功/首次读到时打一次日志，便于确认真正锚定的位置（不再报 0）
+        if not was_valid:
+            try:
+                log(f"[KUGOU_PROBE] 获取真实进度 hwnd=0x{hwnd:X} pos_ms={pos_ms}(={pos_ms/1000:.1f}s/{dur_ms/1000:.1f}s) → 将覆盖 SMTC 的 0")
+            except Exception:
+                pass
     except Exception:
         try:
             _reset_kugou_prog()
