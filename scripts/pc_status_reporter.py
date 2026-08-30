@@ -709,6 +709,218 @@ _lyric_event_queue: collections.deque = collections.deque(maxlen=64)  # v6.79：
 _last_emit_wall_ts_ms = 0.0  # ══ v6.67 分析：上一句歌词 emit 的墙上时间戳(ms)，0=切歌/暂停后首句 ══
 _LYRIC_OFFSET_MS = 0       # 全局歌词毫秒偏移（正=延后 负=提前），持久化
 
+# ═══════════════════════════════════════════════════════════════
+# v7.04 酷狗适配：UI Automation 真实播放进度源
+#   酷狗 SMTC 恒报 0 → 本地时钟永远锚在 0，中途启动/切歌/长播全部从歌曲开头算词。
+#   用 Windows UI Automation 直接读酷狗"进度条" RangeValue（单位厘秒 ×10=毫秒），
+#   由独立后台线程 ~1s 刷新一次快照，poll_smtc 只消费这份廉价快照覆盖 SMTC pos。
+#   依赖（可选）：pip install uiautomation
+# ═══════════════════════════════════════════════════════════════
+_KUGOU_PROG = {"valid": False, "pos_ms": 0, "dur_ms": 0, "ts": 0.0}
+_KUGOU_PROG_LOCK = threading.Lock()
+_KUGOU_PROBE_THREAD = None
+_KUGOU_PROBE_START_LOCK = threading.Lock()
+_KUGOU_HWND = 0
+_KUGOU_SLIDER = None          # 缓存的进度条 Control
+_KUGOU_SLIDER_FAILS = 0
+_KUGOU_RAW_V = -1.0           # 上次 RangeValue 原始值（单位判定用）
+_KUGOU_RAW_TS = 0.0
+_KUGOU_UNIT = None            # 10=厘秒(默认); 1=毫秒
+_KUGOU_PROBE_DISABLED = False
+
+
+def _kugou_find_hwnd() -> int:
+    """枚举可见窗口，找 kugou/kgmusic 主窗口，返回 hwnd（找不到返回 0）。"""
+    global _KUGOU_HWND
+    try:
+        import win32gui as _wg, win32process as _wp, psutil as _ps
+    except Exception:
+        return 0
+    target = ("kugou", "kgmusic", "kglow")
+    def _cb(hwnd, _acc):
+        global _KUGOU_HWND
+        try:
+            if not _wg.IsWindowVisible(hwnd):
+                return True
+            _, pid = _wp.GetWindowThreadProcessId(hwnd)
+            p = _ps.Process(pid)
+            name = (p.name() or "").lower()
+        except Exception:
+            return True
+        if any(t in name for t in target) or "kgmusic" in (_wg.GetClassName(hwnd) or "").lower():
+            _KUGOU_HWND = hwnd
+            return False
+        return True
+    _KUGOU_HWND = 0
+    try:
+        _wg.EnumWindows(_cb, None)
+    except Exception:
+        return 0
+    return _KUGOU_HWND
+
+
+def _kugou_find_slider(hwnd):
+    """遍历窗口 UI 树，返回"进度条" SliderControl（Name 含 进度/播放/时间 才算命中）。"""
+    try:
+        import uiautomation as _auto
+        root = _auto.ControlFromHandle(hwnd)
+    except Exception:
+        return None
+    found = [None]
+    want = ("进度", "播放", "时间")
+    class _Stop(Exception):
+        pass
+    def _walk(ctrl, depth):
+        if depth > 30 or ctrl is None:
+            return
+        try:
+            ct = (ctrl.ControlTypeName or "") or ""
+            name = (ctrl.Name or "").strip() or ""
+        except Exception:
+            return
+        if ct and ("slider" in ct.lower() or "progress" in ct.lower()) and any(w in name for w in want):
+            found[0] = ctrl
+            raise _Stop()
+        try:
+            child = ctrl.GetFirstChildControl()
+            n = 0
+            while child is not None and n < 2500:
+                _walk(child, depth + 1)
+                try:
+                    child = child.GetNextSiblingControl()
+                except Exception:
+                    break
+                n += 1
+        except Exception:
+            pass
+    try:
+        _walk(root, 0)
+    except _Stop:
+        pass
+    except Exception:
+        pass
+    return found[0]
+
+
+def _reset_kugou_prog():
+    with _KUGOU_PROG_LOCK:
+        _KUGOU_PROG["valid"] = False
+
+
+def _kugou_probe_once():
+    """读一次酷狗进度条真实位置/时长，写快照。失败/无酷狗→快照 invalid。"""
+    global _KUGOU_HWND, _KUGOU_SLIDER, _KUGOU_SLIDER_FAILS, \
+           _KUGOU_RAW_V, _KUGOU_RAW_TS, _KUGOU_UNIT, _KUGOU_PROBE_DISABLED
+    try:
+        if _KUGOU_PROBE_DISABLED:
+            return
+        try:
+            import uiautomation
+        except Exception:
+            _KUGOU_PROBE_DISABLED = True
+            _reset_kugou_prog()
+            return
+        hwnd = _KUGOU_HWND or _kugou_find_hwnd()
+        if not hwnd:
+            _reset_kugou_prog()
+            return
+        slider = _KUGOU_SLIDER
+        if slider is None:
+            slider = _kugou_find_slider(hwnd)
+            _KUGOU_SLIDER = slider
+        if slider is None:
+            _KUGOU_SLIDER_FAILS += 1
+            if _KUGOU_SLIDER_FAILS >= 6:
+                _KUGOU_HWND = 0      # 连续找不到→窗口可能变了，强制重找
+                _KUGOU_SLIDER = None
+                _KUGOU_SLIDER_FAILS = 0
+            _reset_kugou_prog()
+            return
+        _KUGOU_SLIDER_FAILS = 0
+        rv = slider.GetRangeValuePattern()
+        v = float(rv.Value)
+        m = float(rv.Maximum)
+        if m <= 0 or v < 0 or v > m:
+            _reset_kugou_prog()
+            return
+        now = time.monotonic()
+        # 单位判定：隔 ≥0.5s 对比 RangeValue 增量，≈100/s=厘秒，≈1000/s=毫秒
+        if _KUGOU_RAW_V >= 0 and (now - _KUGOU_RAW_TS) >= 0.5:
+            dt = now - _KUGOU_RAW_TS
+            dv = v - _KUGOU_RAW_V
+            ups = (dv / dt) if dt > 0 else 0
+            if _KUGOU_UNIT is None:
+                _KUGOU_UNIT = 10 if abs(ups - 100) < 150 else 1
+                try:
+                    log(f"[KUGOU_PROBE] 进度单位判定 unit={_KUGOU_UNIT} (rate={ups:.1f} unit/s)")
+                except Exception:
+                    pass
+        _KUGOU_RAW_V = v
+        _KUGOU_RAW_TS = now
+        unit = _KUGOU_UNIT if _KUGOU_UNIT else 10
+        pos_ms = max(0, int(v * unit))
+        dur_ms = max(0, int(m * unit))
+        with _KUGOU_PROG_LOCK:
+            _KUGOU_PROG["valid"] = True
+            _KUGOU_PROG["pos_ms"] = pos_ms
+            _KUGOU_PROG["dur_ms"] = dur_ms
+            _KUGOU_PROG["ts"] = time.time()
+    except Exception:
+        try:
+            _reset_kugou_prog()
+        except Exception:
+            pass
+
+
+def _kugou_probe_loop():
+    """后台 ~1s 刷新一次酷狗真实进度快照（daemon）。"""
+    while True:
+        try:
+            _kugou_probe_once()
+        except Exception:
+            try:
+                _reset_kugou_prog()
+            except Exception:
+                pass
+        time.sleep(1.0)
+
+
+def _kugou_ensure_probe():
+    """确保后台探测线程已启动（幂等，可被每 tick 调用）。"""
+    global _KUGOU_PROBE_THREAD
+    if _KUGOU_PROBE_THREAD is not None:
+        return
+    with _KUGOU_PROBE_START_LOCK:
+        if _KUGOU_PROBE_THREAD is not None:
+            return
+        t = threading.Thread(target=_kugou_probe_loop, name="kugou_probe", daemon=True)
+        _KUGOU_PROBE_THREAD = t
+        t.start()
+
+
+def _kugou_read_progress_ms():
+    """廉价读快照（每 tick 调用）。有效且新鲜(<5s)返回 pos_ms，否则 None。"""
+    _kugou_ensure_probe()
+    try:
+        with _KUGOU_PROG_LOCK:
+            if _KUGOU_PROG["valid"] and (time.time() - _KUGOU_PROG["ts"]) < 5.0:
+                return _KUGOU_PROG["pos_ms"]
+    except Exception:
+        pass
+    return None
+
+
+def _kugou_duration_ms():
+    """廉价读快照里的真实时长（毫秒），无效返回 None。"""
+    try:
+        with _KUGOU_PROG_LOCK:
+            if _KUGOU_PROG["valid"] and (time.time() - _KUGOU_PROG["ts"]) < 5.0:
+                return _KUGOU_PROG["dur_ms"]
+    except Exception:
+        pass
+    return None
+
+
 def _stage_lyric_event(line: str, event: str):
     """v6.79 P0 统一的歌词事件写入入口（7处写入全走这里）：
     - 若 pending 槽空闲 → 直接写入 _SMTC_STATE + 置 pending=True（99%场景，0额外开销）
@@ -1692,6 +1904,25 @@ def poll_smtc():
             pos_sec = 0
             total_sec = 0
         duration_str = _format_duration(total_sec)
+
+        # ── v7.04 酷狗适配：SMTC 进度恒 0 → 用 UI Automation 真实进度覆盖 pos_sec ──
+        #    覆盖后贯穿 媒体重读判定 / 切歌锚定 / seek 检测 / 进度上报，全链路用真实位置，
+        #    这才是「播到一半启动也能跟上」的关键（否则锚在 0 点从头算词）。
+        try:
+            _kp = _kugou_read_progress_ms()
+            if _kp is not None and _kp >= 0:
+                smtc_pos = int(pos_sec * 1000)
+                # 仅当 SMTC 明显不可信(pos≈0)或与真实差>3s 才覆盖，避免干扰正常播放器
+                if smtc_pos < 3000 or abs(smtc_pos - _kp) > 3000:
+                    pos_sec = _kp / 1000.0
+                    # 兜底：SMTC 未给时长时，用酷狗真实时长校准 total_sec
+                    if total_sec <= 0:
+                        _kdur = _kugou_duration_ms()
+                        if _kdur and _kdur > 0:
+                            total_sec = _kdur / 1000.0
+                            duration_str = _format_duration(total_sec)
+        except Exception:
+            pass
 
         # ── 媒体属性（仅在切歌或首次时读，避免频繁 RPC）──
         cur_key = ""
@@ -3829,6 +4060,13 @@ def run():
     if not HAS_WIN32: log("WARN: pywin32/psutil 未安装，仅基础信息")
 
     _ensure_smtc_loop()
+    # ══ v7.04：启动即同步读一次酷狗真实进度，保证「播到一半启动」首次锚定就是真实位置
+    #    （否则后台线程要 ~1s 才有第一份快照，首锚会落在 SMTC 的 0 点上）
+    try:
+        _kugou_ensure_probe()
+        _kugou_probe_once()
+    except Exception:
+        pass
     threading.Thread(target=_lyric_tick_loop, daemon=True).start()
 
     socks = connect_tcp()
