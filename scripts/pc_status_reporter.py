@@ -369,6 +369,40 @@ def get_fps():
             try: _Release_f(factory)
             except Exception: pass
 
+# ══ v7.07 P0 B：DXGI FPS 探测移出上报线程 ══
+#   get_fps() 内部是 ctypes COM(DXGI) 调用。在 GTX 960 等老驱动上该原生调用**可能阻塞**：
+#   旧版它每次主循环同步跑在任何执行上报的线程里，一旦卡住那个线程 → 上报循环停摆、
+#   主线程若恰在同一线程则 ^C 也失效（整进程观感"卡死"）。现在改为独立 daemon worker
+#   后台每 ~1s 刷一次快照，上报/主线程只读 _fps_snapshot，DXGI 卡死只影响 FPS 这一个指标，
+#   绝不拖垮采集与歌词上报。这属于"非阻塞采样"的稳定性加固，与 P0 banner 的 DXGI 承诺一致。
+_fps_snapshot = 0               # 最近一次 FPS 快照（上报线程只读，不碰 COM）
+_fps_worker_started = False     # 幂等标记
+
+def _fps_worker_loop():
+    """后台 daemon：在自己的线程里调 get_fps()（DXGI），刷新 _fps_snapshot。"""
+    global _fps_snapshot
+    while True:
+        try:
+            _fps_snapshot = get_fps()
+        except Exception:
+            pass
+        time.sleep(1.0)
+
+def _start_fps_worker():
+    """幂等启动 FPS 探针线程。"""
+    global _fps_worker_started
+    if _fps_worker_started:
+        return
+    _fps_worker_started = True
+    try:
+        threading.Thread(target=_fps_worker_loop, name="fps_probe", daemon=True).start()
+    except Exception:
+        pass
+
+def _read_fps_snapshot() -> int:
+    """上报线程读取 FPS 快照（不触发任何 COM/DXGI 调用）。"""
+    return _fps_snapshot
+
 # ── GPU (NVIDIA) ──
 try:
     import pynvml
@@ -487,13 +521,43 @@ def _get_gpu_info():
         return None
 
 
+_WMI_VOLT_LOCAL = threading.local()   # 每线程一份 WMI 连接（WMI COM 对象线程亲和，跨线程复用会失败）
+
+_LAST_VOLT_ERR_TS = 0.0                # 电压错误去抖：避免 worker 每 2s 刷屏
+
+
+def _get_vvolt_conn():
+    """在**当前线程**按需建立 WMI 电压连接并缓存到线程本地。
+    模块导入时在主线程建的 _WMI_VOLT 不能跨线程使用（COM 线程亲和），
+    worker/上报线程必须各自现建，否则报 'winmgmts:root/OpenHardwareMonitor.Sensor' 失败。"""
+    try:
+        conn = getattr(_WMI_VOLT_LOCAL, "conn", None)
+        if conn is None:
+            import wmi as _wmi
+            conn = None
+            for _ns in [r"root\OpenHardwareMonitor", r"root\LibreHardwareMonitor"]:
+                try:
+                    conn = _wmi.WMI(namespace=_ns)
+                except Exception:
+                    conn = None
+                if conn is not None:
+                    break
+            if conn is not None:
+                _WMI_VOLT_LOCAL.conn = conn
+        return conn
+    except Exception:
+        return None
+
+
 def _get_voltages():
-    """从 WMI 读取所有电压传感器"""
-    if not HAS_VOLT or not _WMI_VOLT:
+    """从 WMI 读取所有电压传感器。v7.07：改用当前线程的 WMI 连接（线程本地缓存）。"""
+    global _LAST_VOLT_ERR_TS
+    volts_conn = _get_vvolt_conn()
+    if not volts_conn:
         return None
     try:
         result = {}
-        for sensor in _WMI_VOLT.Sensor(SensorType="Voltage"):
+        for sensor in volts_conn.Sensor(SensorType="Voltage"):
             name = sensor.Name
             val = sensor.Value
             if val is None or val == 0:
@@ -521,7 +585,15 @@ def _get_voltages():
                     result[key] = round(val, 3)
         return result if result else None
     except Exception as e:
-        log(f"电压采集错误: {e}")
+        # v7.07 去抖：worker 每 2s 采一次，失败时最多 30s 报一条，避免刷屏
+        global _LAST_VOLT_ERR_TS
+        try:
+            now_e = time.time()
+            if now_e - _LAST_VOLT_ERR_TS > 30:
+                _LAST_VOLT_ERR_TS = now_e
+                log(f"电压采集错误: {e}")
+        except Exception:
+            pass
         return None
 
 
@@ -636,6 +708,47 @@ def _get_system_info():
     return info
 
 
+# ══ v7.07 P0 C-2：系统采集(WMI 电压/GPU/磁盘/网速)移出上报线程 ══
+#   _get_system_info() 里的 WMI 查询(OpenHardwareMonitor 的 _WMI_VOLT.Sensor)在 provider 无响应时
+#   可能阻塞数秒到更久。旧版它每主循环同步跑在上报线程 → 上报循环**静默**卡住（不持 GIL，所以
+#   kugou/歌词线程照常，但上报与 30s 调试日志停摆）→ 表现"卡住但没报错、没有下一步"。
+#   现在独立 daemon worker 后台每 ~2s 刷一份快照，上报线程只读 _sys_snapshot，WMI 慢/卡只影响
+#   电压/GPU 这些指标本身，绝不拖垮上报与歌词。
+_sys_snapshot = {}            # 最近一份系统信息快照（上报线程只读）
+_sys_snapshot_lock = threading.Lock()
+_sys_worker_started = False
+
+def _sys_snapshot_worker_loop():
+    """后台 daemon：每 ~2s 采集一次系统信息（含 WMI），刷 _sys_snapshot。
+    v7.07：先在本线程 CoInitialize，且 _get_voltages 已改线程本地 WMI 连接。"""
+    _coinit_current_thread()
+    global _sys_snapshot
+    while True:
+        try:
+            snap = _get_system_info() or {}
+            with _sys_snapshot_lock:
+                _sys_snapshot = snap
+        except Exception:
+            pass
+        time.sleep(2.0)
+
+def _start_sys_snapshot_worker():
+    """幂等启动系统采集 worker。"""
+    global _sys_worker_started
+    if _sys_worker_started:
+        return
+    _sys_worker_started = True
+    try:
+        threading.Thread(target=_sys_snapshot_worker_loop, name="sys_probe", daemon=True).start()
+    except Exception:
+        pass
+
+def _read_sys_snapshot():
+    """上报线程读系统快照（不触发任何 WMI/psutil 采集，绝不阻塞）。"""
+    with _sys_snapshot_lock:
+        return _sys_snapshot
+
+
 # ── 音乐播放器进程检测 ──
 _MUSIC_PLAYERS = {
     "spotify": "Spotify", "cloudmusic": "网易云音乐",
@@ -690,6 +803,18 @@ _state_lock = threading.RLock()  # v6.79：Lock→RLock（可重入），允许�
 _smtc_event_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
 _smtc_events_subscribed = False
 
+# ══ v7.06 SMTC worker 线程 ══
+#   根因修复：酷狗等播放器的 SMTC winrt RPC（get_sessions/get_playback_info/try_get_media_properties_async）
+#   **可能永久阻塞**（OS 原生层，即使 ^C 也无法打断）。旧版 tick_lyric / 主循环直接同步调用 poll_smtc，
+#   一旦 RPC 卡死 → 整进程死锁（只剩独立线程 KUGOU_PROBE 还活着）。
+#   现在：所有 SMTC 调用收敛到唯一 worker 线程 _smtc_poll_worker；
+#         tick_lyric / 主循环只读 _SMTC_STATE 快照 + 用 _smtc_poll_wake 唤醒 worker，绝不直接碰 winrt。
+#         worker 单次 poll 卡死只影响该线程，主循环 / tick / KUGOU 全部不受影响。
+_smtc_poll_worker = None                 # SMTC 唯一轮询线程
+_smtc_poll_wake = threading.Event()      # 唤醒信号：tick/主循环 dequeue 到事件时 set，worker 立即 poll
+_smtc_poll_idle_s = 0.5                  # 无事件时 worker 最小轮询间隔（秒）
+_smtc_poll_dead = False                  # 最近一次 poll 是否超时/异常（诊断用）
+
 # ══ v6.74 P1-2 进度平滑滤波 ══
 _PROGRESS_WINDOW_MAX = 5
 _progress_window: "list[tuple[float, int]]" = []
@@ -708,6 +833,7 @@ _lyric_pending = False     # 有新歌词需上报（v6.79：仅作"槽位非空
 _lyric_event_queue: collections.deque = collections.deque(maxlen=64)  # v6.79：80ms内连续写≥2句时的缓冲队列（最多64句，防爆内存），主循环消费完槽自动从队首补
 _last_emit_wall_ts_ms = 0.0  # ══ v6.67 分析：上一句歌词 emit 的墙上时间戳(ms)，0=切歌/暂停后首句 ══
 _LYRIC_OFFSET_MS = 0       # 全局歌词毫秒偏移（正=延后 负=提前），持久化
+_LYRIC_OFFSET_BASE = 1000  # v7.13: 用户实测 +1000ms 才准，以此作为新的"0"基准（默认/RESET 落点）
 
 # ═══════════════════════════════════════════════════════════════
 # v7.04 酷狗适配：UI Automation 真实播放进度源
@@ -720,6 +846,14 @@ _KUGOU_PROG = {"valid": False, "pos_ms": 0, "dur_ms": 0, "ts": 0.0}
 _KUGOU_PROG_LOCK = threading.Lock()
 _KUGOU_PROBE_THREAD = None
 _KUGOU_PROBE_START_LOCK = threading.Lock()
+_KUGOU_TITLE_THREAD = None          # v7.19: 标题（歌名锚点）独立读线程
+# ══ v7.19 切歌防卡：酷狗 UIA Control 是线程亲和对象（在 kugou_probe 线程 CoInitialize 创建）。
+#    SMTC worker 切歌锚定时若直接跨线程调 _kugou_read_now() 里的 GetRangeValuePattern()，
+#    歌曲结束/切歌瞬间酷狗重建进度条窗口，该 COM 调用会**永久阻塞** → SMTC worker 冻结
+#    → 切歌检测/歌词链路全部停摆（用户报"切歌一点东西也没有"+ Ctrl+C 卡死）。
+#    解法：切歌只需请求 kugou_probe 线程立刻多探一轮，SMTC worker 只读新鲜快照，绝不跨线程碰 UIA。══
+_KUGOU_REFRESH_NOW = threading.Event()   # 置位 → 探针线程立即多跑一轮 _kugou_probe_once()
+_KEY_ADJ_THREAD = None         # 方向键微调线程（v7.06）
 _KUGOU_HWND = 0
 _KUGOU_SLIDER = None          # 缓存的进度条 Control
 _KUGOU_SLIDER_FAILS = 0
@@ -727,6 +861,14 @@ _KUGOU_RAW_V = -1.0           # 上次 RangeValue 原始值（单位判定用）
 _KUGOU_RAW_TS = 0.0
 _KUGOU_UNIT = None            # 10=厘秒(默认); 1=毫秒
 _KUGOU_PROBE_DISABLED = False
+# ══ v7.12: 酷狗窗口标题 → 真实歌名（SMTC title 常不更新，用它兜底切歌）══
+_KUGOU_TITLE = ""             # 最近读到的酷狗窗口标题
+_KUGOU_TITLE_TS = 0.0         # 最近标题时间戳（新鲜度判断）
+# 滚动标题去抖：新歌名需**连续稳定读两次**才确认（避免滚动截断瞬时噪声误判切歌）
+_KUGOU_TITLE_DB = {"key": "", "n": 0}
+_KUGOU_TITLE_LOG_TS = 0.0     # 周期性标题状态日志节流（v7.16，便于观察锚点是否持续在读）
+_KUGOU_TITLE_FAIL_TS = 0.0    # 标题读取失败日志节流（v7.16，读不到时明报，便于定位）
+_KUGOU_TITLE_RAW_PREV = ""    # 探针上次解析出的歌名（v7.17，歌名变化立即打普通日志定位切歌）
 
 
 def _kugou_find_hwnds() -> list:
@@ -802,8 +944,70 @@ def _kugou_slider_in_hwnd(hwnd):
     return found[0]
 
 
+# 酷狗常见进度条/轨道条控件类（Win32 原生 Trackbar 毫秒级可定位，无需 UIA 全树遍历）
+_KR_TRACKBAR_CLASSES = ("msctls_trackbar32", "TrackBar20W", "UIProgressBar", "ComctlSlider")
+
+
+def _uia_apply_fast():
+    """降低 uiautomation 全局搜索超时/等待，避免慢查询（默认 10s）拖住首次遍历。"""
+    try:
+        import uiautomation as _auto
+        try:
+            _auto.SetGlobalSearchTimeout(0.8)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _kugou_find_slider_fast():
+    """毫秒级快路径：对每个酷狗顶层窗口用 EnumChildWindows 直接找**标准 Trackbar 类**子窗口，
+    命中即转成 uiautomation Control 返回 (hwnd, slider)。避免整棵 UIA 控件树逐节点属性 RPC（这才是首遍历十几秒的根因）。
+    找不到返回 (0, None)，由调用方回退 UIA 全树遍历。"""
+    try:
+        import win32gui as _wg
+        import uiautomation as _auto
+    except Exception:
+        return 0, None
+    hwnds = _kugou_find_hwnds()
+    found = []
+    for top in hwnds:
+        found.clear()
+        def _cb(hwnd, acc):
+            try:
+                _wg.IsChild(top, hwnd)  # 确保是子窗口
+            except Exception:
+                return True
+            try:
+                cls = (_wg.GetClassName(hwnd) or "") or ""
+            except Exception:
+                return True
+            if any(c in cls for c in _KR_TRACKBAR_CLASSES):
+                try:
+                    ctrl = _auto.ControlFromHandle(hwnd)
+                    if ctrl is not None:
+                        acc.append((hwnd, ctrl))
+                except Exception:
+                    pass
+            return True
+        try:
+            _wg.EnumChildWindows(top, _cb, found)
+        except Exception:
+            pass
+        if found:
+            return found[0]
+    return 0, None
+
+
 def _kugou_find_slider():
-    """遍历所有 kugou 窗口，返回 (hwnd, slider)；任一窗口有进度条即返回。"""
+    """遍历所有 kugou 窗口，返回 (hwnd, slider)；任一窗口有进度条即返回。
+    v7.09：先走毫秒级 Trackbar 快路径，命中即返回；未命中再回退 UIA 全树遍历。"""
+    try:
+        hwnd, slider = _kugou_find_slider_fast()
+        if slider is not None:
+            return hwnd, slider
+    except Exception:
+        pass
     hwnds = _kugou_find_hwnds()
     for hwnd in hwnds:
         try:
@@ -887,6 +1091,7 @@ def _kugou_probe_once():
             _KUGOU_PROG["pos_ms"] = pos_ms
             _KUGOU_PROG["dur_ms"] = dur_ms
             _KUGOU_PROG["ts"] = time.time()
+        # ══ v7.15: 标题读取已移到 _kugou_probe_loop 每轮无条件执行（不依赖进度是否成功）══
         # 首次成功/首次读到时打一次日志，便于确认真正锚定的位置（不再报 0）
         if not was_valid:
             try:
@@ -900,8 +1105,115 @@ def _kugou_probe_once():
             pass
 
 
+def _kugou_read_window_title(hwnd: int) -> str:
+    """读酷狗窗口标题（准确锚点=完整 Win32 caption，**不随显示滚动**，稳定）。
+    实测：酷狗有 2 个窗口——空壳(0x31E1E title='') + 真窗(0x31E20 title='歌手 - 歌名 - 酷狗音乐')。
+    先从传入 hwnd 拿祖先，标题为空则枚举所有酷狗窗口取含"酷狗"的那个。失败返回空串。"""
+    import ctypes
+
+    def _gt(h):
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            n = ctypes.windll.user32.GetWindowTextW(h, buf, 512)
+            return buf.value[:200] if n and n > 0 else ""
+        except Exception:
+            return ""
+
+    try:
+        hroot = ctypes.windll.user32.GetAncestor(hwnd, 2)   # GA_ROOT → 顶层
+        t = _gt(hroot)
+        if t and "酷狗" in t:
+            return t
+    except Exception:
+        pass
+    try:
+        for h in _kugou_find_hwnds():
+            t = _gt(h)
+            if t and "酷狗" in t:
+                return t
+    except Exception:
+        pass
+    return ""
+
+
+def _kugou_title_song():
+    """从最近酷狗窗口标题解析 (artist, title)。
+    酷狗常规标题形如「Maroon 5、Wiz Khalifa - Payphone－酷狗音乐」→ 歌手在前、歌名在后。
+    标题不新鲜/无法解析 → ("","")。只返回能稳定识别出的歌名。"""
+    global _KUGOU_TITLE, _KUGOU_TITLE_TS
+    try:
+        with _KUGOU_PROG_LOCK:
+            raw = _KUGOU_TITLE
+            ts = _KUGOU_TITLE_TS
+        if not raw or (time.time() - ts) >= 6.0:
+            return "", ""
+        t = raw.replace("酷狗音乐", "").replace("KuGou", "").replace("kuGou", "")
+        t = t.strip(" \u2014\u2502|\u00b7\uff1a:\uff0d\t\r\n")
+        # 将各种分隔（全半角横线/竖线）统一成 " - " 再切分
+        t = t.replace("\uff0d", " - ").replace("\u2014", " - ").replace("\u2502", " - ").replace("|", " - ")
+        parts = [p.strip(" \uff0d-\u2014\u2502|") for p in t.split(" - ") if p and p.strip(" -\uff0d\u2014\u2502|")]
+        parts = [p for p in parts if p]
+        if not parts:
+            return "", ""
+        # 酷狗：歌手在「 - 」前，歌名在后；多歌手用「、」连接保留原样
+        artist = parts[0] if len(parts) >= 1 else ""
+        title = parts[1] if len(parts) >= 2 else ""
+        title = title.strip()
+        if not title:
+            return "", ""
+        return artist, title
+    except Exception:
+        return "", ""
+
+
+def _kugou_confirmed_title_song():
+    """标题锚点确认：GetWindowText 是完整 caption、**不随显示滚动**，一次读到即稳定。
+    只做"读到的歌名≠上一次记录的"这一轻判断（防切歌瞬间探针暂时读到空/旧占位），
+    不再要求连续 2 次——那会导致切歌延迟/漏切。"""
+    _ka, _kt = _kugou_title_song()
+    if not _kt:
+        return "", ""
+    key = f"{_ka} - {_kt}"
+    try:
+        with _KUGOU_PROG_LOCK:
+            prev_key = _KUGOU_TITLE_DB.get("key", "")
+            _KUGOU_TITLE_DB["key"] = key   # 记录本次，供下次比较是否换歌
+            if key != prev_key:
+                try:
+                    with _KUGOU_PROG_LOCK:
+                        _raw = _KUGOU_TITLE
+                    log(f"[KUGOU_TITLE] 切歌歌名: {_ka} - {_kt} (窗口标题='{str(_raw)[:80]}')")
+                except Exception:
+                    pass
+                return _ka, _kt
+    except Exception:
+        pass
+    return "", ""
+
+
+def _coinit_current_thread():
+    """在**当前线程**初始化 COM 公寓（COINIT_APARTMENTTHREADED=2）。失败静默。
+    v7.07: uiautomation(kugou) 等托管 COM 在后台线程/上报线程使用时必须先 CoInitialize，
+          否则报 '[WinError -2147221008] 尚未调用 CoInitialize' 和 'Can not load UIAutomationCore.dll'。
+    注：一个线程只能以同一种公寓模型初始化一次；若后续仍要改线（如 part32），CoUninitialize 再重进。"""
+    try:
+        from ctypes import windll
+        windll.ole32.CoInitializeEx(None, 2)
+    except Exception:
+        pass
+
+
 def _kugou_probe_loop():
-    """后台 ~1s 刷新一次酷狗真实进度快照（daemon）。"""
+    """后台 ~1s 刷新一次酷狗真实进度快照（daemon）。
+    v7.07: uiautomation 必须在**当前线程**先 CoInitialize 建立 COM 公寓，覆盖 kugou_probe 线程。
+    v7.09: 首次即加速 uiautomation 超时 + 用毫秒级 Trackbar 快路径找滑块。
+    v7.19: **标题（歌名锚点）已独立出去**到 _kugou_title_loop 单独线程 —— 只因在此线程内
+           _kugou_probe_once() 的 UIA 进度读取可能阻塞（歌曲结束/切歌瞬间酷狗重建进度条窗口），
+           若标题读取排在此之后会被一并拖住 → 切歌检测失效。现在本线程只负责进度快照。"""
+    _coinit_current_thread()
+    _uia_apply_fast()
     while True:
         try:
             _kugou_probe_once()
@@ -910,13 +1222,58 @@ def _kugou_probe_loop():
                 _reset_kugou_prog()
             except Exception:
                 pass
+        # ══ v7.19: 等 ~1s，但允许被 _KUGOU_REFRESH_NOW 打断提前多探一轮（SMTC 切歌锚定用）══
+        _KUGOU_REFRESH_NOW.clear()
+        _KUGOU_REFRESH_NOW.wait(1.0)
+
+
+def _kugou_title_loop():
+    """v7.19: 独立线程专门读酷狗窗口标题（歌名锚点，切歌检测唯一信号源）。
+    用纯 Win32 GetWindowText/EnumWindows（非 UIA），永不阻塞、与进度探针彻底隔离——
+    进度读 UIA 卡住也不影响这块，保证切歌永远能感知新歌。"""
+    _coinit_current_thread()
+    while True:
+        global _KUGOU_TITLE, _KUGOU_TITLE_TS, _KUGOU_TITLE_FAIL_TS, _KUGOU_TITLE_RAW_PREV
+        try:
+            # ══ v7.18: **无条件**调用标题读取（内部对 hwnd 无效时自动枚举酷狗窗口兜底），
+            #    不再依赖 _KUGOU_HWND / slider 是否有效——否则切歌瞬间酷狗重绘进度条导致
+            #    _KUGOU_HWND 被 reset 成 0，标题读取整个停掉，_KUGOU_TITLE 停在旧歌 → 切歌检测失效。
+            _tg = _kugou_read_window_title(_KUGOU_HWND)
+            if _tg:
+                with _KUGOU_PROG_LOCK:
+                    _KUGOU_TITLE = _tg
+                    _KUGOU_TITLE_TS = time.time()
+            elif time.time() - _KUGOU_TITLE_FAIL_TS >= 20.0:
+                _KUGOU_TITLE_FAIL_TS = time.time()
+                log(f"[KUGOU_TITLE] WARN 读不到酷狗窗口标题 hwnd=0x{_KUGOU_HWND or 0:X}（切歌检测将失效）")
+            # ══ v7.17: 歌名一旦变化立即打普通日志（与 [KUGOU_PROBE] 同级，不被诊断高水位丢弃），
+            #    用于判断探针到底有没有捕获新歌——是"没读到新标题"还是"读到却没触发切歌"。══
+            _la_t, _lt_t = _kugou_title_song()
+            _nk = (f"{_la_t} - {_lt_t}").strip(" -") if (_la_t or _lt_t) else ""
+            if _nk and _nk != _KUGOU_TITLE_RAW_PREV:
+                _old_p = _KUGOU_TITLE_RAW_PREV or "(起点)"
+                _KUGOU_TITLE_RAW_PREV = _nk
+                try:
+                    log(f"[KUGOU_TITLE] 歌名变更: {_old_p} -> {_nk}")
+                except Exception:
+                    pass
+                # ══ v7.21: 标题线程检测到歌名变化 → 驱动切歌（不依赖 SMTC 判定）══
+                # ══ v7.22: 切歌改丢后台线程执行——切歌内部 _await_kugou_pos 最长阻塞 15s，
+                #    若在标题线程同步跑，会把标题读取线程卡死 → 换下一首时检测不到（"切歌没响应"）。
+                try:
+                    threading.Thread(target=_kugou_only_song_change, name="kugou_cut", daemon=True).start()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         time.sleep(1.0)
 
 
 def _kugou_ensure_probe():
     """确保后台探测线程已启动（幂等，可被每 tick 调用）。"""
-    global _KUGOU_PROBE_THREAD
+    global _KUGOU_PROBE_THREAD, _KUGOU_TITLE_THREAD
     if _KUGOU_PROBE_THREAD is not None:
+        # v7.19: 进度线程在跑即代表启动逻辑已完成（标题线程在首次启动时一并拉起）
         return
     with _KUGOU_PROBE_START_LOCK:
         if _KUGOU_PROBE_THREAD is not None:
@@ -924,6 +1281,14 @@ def _kugou_ensure_probe():
         t = threading.Thread(target=_kugou_probe_loop, name="kugou_probe", daemon=True)
         _KUGOU_PROBE_THREAD = t
         t.start()
+        # v7.19: 标题（歌名锚点）读线程独立启动，与进度探针彻底隔离，切歌检测永不受进度 UIA 阻塞影响
+        try:
+            if _KUGOU_TITLE_THREAD is None:
+                tt = threading.Thread(target=_kugou_title_loop, name="kugou_title", daemon=True)
+                _KUGOU_TITLE_THREAD = tt
+                tt.start()
+        except Exception:
+            pass
 
 
 def _kugou_read_progress_ms():
@@ -935,6 +1300,55 @@ def _kugou_read_progress_ms():
                 return _KUGOU_PROG["pos_ms"]
     except Exception:
         pass
+    return None
+
+
+def _kugou_read_now():
+    """切歌/锚定前**请求探针线程立刻多探一轮**并读最新快照（SAME-THREAD 防卡）。
+    ══ v7.19 根修：旧版在此线程直接调 UIA GetRangeValuePattern()——这是跨线程使用
+    在 kugou_probe 线程创建的 COM Control，歌曲结束/切歌瞬间酷狗重建进度条窗口时该调用
+    永久阻塞，把调用方（SMTC worker）冻死 → 切歌检测/歌词全部停摆。
+    现在只置 _KUGOU_REFRESH_NOW 让探针线程立刻多探一轮，本函数只轮询新鲜快照（纯 lock 读，
+    绝不碰 UIA/COM），因此**永不可能阻塞**。返回 (pos_ms, dur_ms)；超时读不到返回 None。"""
+    _kugou_ensure_probe()
+    # 请求探针立刻多探一轮（最多等 ~1.2s，探针在 wait(1.0) 处被唤醒即多跑一轮）
+    try:
+        _KUGOU_REFRESH_NOW.set()
+    except Exception:
+        pass
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        try:
+            with _KUGOU_PROG_LOCK:
+                if _KUGOU_PROG["valid"] and (time.time() - _KUGOU_PROG["ts"]) < 1.0:
+                    return (int(_KUGOU_PROG["pos_ms"]), int(_KUGOU_PROG["dur_ms"]))
+        except Exception:
+            pass
+        time.sleep(0.03)
+    return None
+
+
+# 切歌/启动首轮：SMTC 恒报 0（酷狗）时，最多等这么久拿真实进度再锚定，避免从头播词。
+# 冷启动首次 UIA 遍历实测可达 ~11s（酷狗窗口控件树遍历慢），故等待须覆盖它，否则首锚回 0；
+# 已热探针下切歌用 _kugou_read_now() 同步直读，毫秒级返回，不进这个等待。
+_SG_INIT_KUGOU_WAIT_S = 15.0
+
+
+def _await_kugou_pos(timeout_s: float):
+    """切歌/启动首轮锚定前调用：先**主动同步直读**一次（热状态瞬间拿到真实进度），
+    拿不到才回退等后台线程周期快照（覆盖冷启动首次遍历场景）。
+    返回 int(pos_ms)；超时或一直拿不到有效值返回 None。
+    调用方务必在 **SMTC worker** 线程内调用（本函数短暂阻塞是可接受的切歌开销）。"""
+    _kugou_ensure_probe()
+    r = _kugou_read_now()
+    if r is not None and r[0] > 0:
+        return int(r[0])
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        p = _kugou_read_progress_ms()
+        if p is not None and p > 0:
+            return int(p)
+        time.sleep(0.05)
     return None
 
 
@@ -1146,6 +1560,7 @@ _last_playing_state = None # 播放/暂停状态切换检测
 # ══ v7.02 切歌误判暂停修正 ══
 _pause_suspect_since = None  # 检测到"停止播放"的时间戳（None=当前不是可疑暂停）；用于去抖确认真实暂停 vs 切歌一闪而过
 _force_media_recheck = False # 置 True 时，下一轮 poll_smtc 强制重读媒体属性（Kugou 切歌 title 需重新确认）
+_last_media_recheck_ts = 0.0 # v7.11: 周期性强制重读媒体属性的上次时间戳（兜底酷狗 SMTC 歌名滞后）
 _PAUSE_DEBOUNCE_S = 1.0       # 停止播放持续超过该秒数才确认真实暂停并上报"已暂停"；窗口内恢复则视为切歌
 _lyrics_fetched_for = ""   # 已经为哪首歌启动过歌词搜索（避免重复）
 _cover_fetched_for = ""    # 已经为哪首歌启动过封面搜索
@@ -1701,9 +2116,9 @@ def _apply_offset_cmd(cmd: str, arg: str = ""):
     cmd = cmd.upper()
     if cmd == "RESET":
         old = _LYRIC_OFFSET_MS
-        _LYRIC_OFFSET_MS = 0
+        _LYRIC_OFFSET_MS = _LYRIC_OFFSET_BASE   # v7.13: RESET 落到"新 0"基准(+1000)
         _save_local_config()
-        return (f"歌词偏移重置: {old}ms → 0ms", f"OFFSET_CURRENT:{_LYRIC_OFFSET_MS}\n")
+        return (f"歌词偏移重置: {old}ms → {_LYRIC_OFFSET_BASE}ms", f"OFFSET_CURRENT:{_LYRIC_OFFSET_MS}\n")
     if cmd == "GET":
         return (f"歌词偏移查询: {_LYRIC_OFFSET_MS}ms", f"OFFSET_CURRENT:{_LYRIC_OFFSET_MS}\n")
     try:
@@ -1721,6 +2136,171 @@ def _apply_offset_cmd(cmd: str, arg: str = ""):
         _save_local_config()
         return (f"歌词偏移调整: {old}ms + {val}ms = {_LYRIC_OFFSET_MS}ms", f"OFFSET_CURRENT:{_LYRIC_OFFSET_MS}\n")
     return (f"未知 OFFSET 子命令: {cmd}", f"OFFSET_ERROR:UNKNOWN {cmd}\n")
+
+
+# ══ v7.06 方向键实时微调歌词偏移 ══
+#   ← = 提前(偏移减)   → = 延后(偏移加)
+#   点按一次按 _KEY_ADJ_STEP_MS 调整；长按每 _KEY_ADJ_REPEAT_MS 连续调整（快速拉大档）。
+#   用 pywin32 的 GetAsyncKeyState 轮询，不阻塞主循环（独立 daemon 线程）。
+_KEY_ADJ_STEP_MS = 100     # 每次单次点按/一次长按钟的调整量（毫秒）
+_KEY_ADJ_REPEAT_MS = 150   # 长按连续调整的最小间隔（毫秒）
+_KEY_ADJ_KEYMAP = {0x25: -_KEY_ADJ_STEP_MS, 0x27: _KEY_ADJ_STEP_MS}  # VK_LEFT / VK_RIGHT
+_KEY_ADJ_STATE = {}        # vk -> [held_last, last_adj_perf]
+
+
+def _adjust_offset_by(key_delta_ms: int):
+    """方向键驱动：把 _LYRIC_OFFSET_MS 增加 delta，并持久化 + 打日志。"""
+    global _LYRIC_OFFSET_MS
+    old = _LYRIC_OFFSET_MS
+    _LYRIC_OFFSET_MS += key_delta_ms
+    _save_local_config()
+    try:
+        log(f"方向键调整歌词偏移: {old}ms → {_LYRIC_OFFSET_MS}ms ({key_delta_ms:+d}ms) OFFSET_CURRENT:{_LYRIC_OFFSET_MS}")
+    except Exception:
+        pass
+
+
+# ══ v7.08 方向键全局键盘钩子（补充）：低级别钩子与焦点/窗口无关，
+#    即使游戏等前台应用用独占/raw input 吞掉方向键，钩子链仍能捕获到按键。
+#    与 GetAsyncKeyState 轮询互为冗余：钩子装不上时回退轮询。
+_KEY_ADJ_HOOK_LAST = {}   # vk -> 上次调整 perf_counter
+_hook_proc_cb = None
+_hHook = None
+_user32 = None
+
+
+def _console_foreground() -> bool:
+    """方向键仅在**本脚本控制台获得焦点**时才响应（不全局）。
+    生效的是前台窗口 == 本进程 console 窗口。无法判定时（拿不到句柄）放行 True。"""
+    try:
+        import ctypes
+        fg = ctypes.windll.user32.GetForegroundWindow()
+        con = ctypes.windll.kernel32.GetConsoleWindow()
+        if con == 0:
+            return True
+        return fg == con
+    except Exception:
+        return True
+
+
+def _hook_proc(nCode, wParam, lParam):
+    """低级别键盘钩子回调：观察方向键按下，驱动同样的 _adjust_offset_by()。
+    返回 CallNextHookEx 传递（不吞键），避免抢走游戏里本来的方向键用途。"""
+    try:
+        import ctypes
+        if nCode == 0:  # HC_ACTION
+            kbd = ctypes.cast(lParam, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+            if wParam in (0x0100, 0x0104) and kbd.vkCode in (0x25, 0x27):  # WM_KEYDOWN / WM_SYSKEYDOWN
+                delta = 100 if kbd.vkCode == 0x27 else -100
+                now = time.perf_counter()
+                if (now - _KEY_ADJ_HOOK_LAST.get(kbd.vkCode, 0.0)) * 1000.0 >= _KEY_ADJ_REPEAT_MS:
+                    _KEY_ADJ_HOOK_LAST[kbd.vkCode] = now
+                    _adjust_offset_by(delta)
+    except Exception:
+        pass
+    try:
+        return _user32.CallNextHookEx(_hHook, nCode, wParam, lParam)
+    except Exception:
+        return 1
+
+
+def _install_global_key_hook():
+    """安装 WH_KEYBOARD_LL 全局低级键盘钩子。成功返回 hHook，否则 None。"""
+    global _hook_proc_cb, _hHook, _user32, _KBDLLHOOKSTRUCT, _HOOKPROC
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("vkCode", wintypes.DWORD),
+                ("scanCode", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        _HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_size_t, ctypes.c_size_t)
+        _user32 = ctypes.WinDLL("user32", use_last_error=True)
+        _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, wintypes.HMODULE, wintypes.DWORD]
+        _user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        _user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_size_t]
+        _user32.CallNextHookEx.restype = ctypes.c_long
+        _user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+        _user32.GetMessageW.restype = ctypes.c_int
+        _user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        _hook_proc_cb = _HOOKPROC(_hook_proc)
+        hHook = _user32.SetWindowsHookExW(
+            13, _hook_proc_cb, ctypes.windll.kernel32.GetModuleHandleW(None), 0)
+        if not hHook:
+            _hook_proc_cb = None
+            return None
+        _hHook = hHook
+        return hHook
+    except Exception:
+        return None
+
+
+def _pump_key_hook():
+    """在钩子线程跑消息泵（阻塞），钩子回调在此线程被系统调用。"""
+    import ctypes
+    msg = ctypes.wintypes.MSG()
+    while True:
+        r = _user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+        if r in (0, -1):
+            return
+        _user32.TranslateMessage(ctypes.byref(msg))
+        _user32.DispatchMessageW(ctypes.byref(msg))
+
+
+def _keyboard_adjust_loop():
+    """后台 daemon：GetAsyncKeyState 轮询方向键微调歌词偏移。
+    v7.14: **不做全局**——仅当本脚本控制台处于前台焦点时才处理方向键，
+    否则前台是游戏/其它程序时按下方向键不会误调偏移。"""
+    try:
+        import win32api
+    except Exception:
+        return
+    while True:
+        try:
+            if not _console_foreground():
+                # 本控制台无焦点：忽略按键，并复位按压状态，避免回到前台后误触发一次
+                for vk in _KEY_ADJ_KEYMAP:
+                    _KEY_ADJ_STATE[vk] = [False, 0.0]
+                time.sleep(0.03)
+                continue
+            now_perf = time.perf_counter()
+            for vk, delta in _KEY_ADJ_KEYMAP.items():
+                try:
+                    pressed = (win32api.GetAsyncKeyState(vk) & 0x8000) != 0
+                except Exception:
+                    pressed = False
+                st = _KEY_ADJ_STATE.get(vk, [False, 0.0])
+                held, last_adj = st
+                if pressed:
+                    if not held:
+                        _adjust_offset_by(delta)              # 上升沿（刚按下）立即调一次
+                        _KEY_ADJ_STATE[vk] = [True, now_perf]
+                    elif _KEY_ADJ_REPEAT_MS and (now_perf - last_adj) * 1000.0 >= _KEY_ADJ_REPEAT_MS:
+                        _adjust_offset_by(delta)              # 长按持续调整
+                        _KEY_ADJ_STATE[vk] = [True, now_perf]
+                else:
+                    if held:
+                        _KEY_ADJ_STATE[vk] = [False, 0.0]     # 松开复位
+        except Exception:
+            pass
+        time.sleep(0.03)
+
+
+def _start_keyboard_adjust():
+    """启动方向键微调线程（幂等）。v7.14：仅本控制台前台时响应；win32api 不可用则静默跳过。"""
+    global _KEY_ADJ_THREAD
+    if _KEY_ADJ_THREAD is not None and _KEY_ADJ_THREAD.is_alive():
+        return
+    _KEY_ADJ_THREAD = threading.Thread(target=_keyboard_adjust_loop, daemon=True)
+    _KEY_ADJ_THREAD.start()
+
 
 # ── SMTC 初始化与轮询 ──
 
@@ -1881,6 +2461,110 @@ def _thumbnail_to_base64(thumb_stream_ref) -> str:
             stream = None
 
 
+def _kugou_only_song_change():
+    """v7.19/v7.21: 用酷狗窗口标题（歌名锚点）驱动切歌，完全独立于 SMTC。
+    复用它依赖的所有叶子函数（_kugou_title_song/_await_kugou_pos/_anchor_clock/
+    _stage_lyric_event/歌词&封面缓存）。只认当前标题 → 与 _last_song_key 一致则幂等不动。
+    由标题线程在检测到歌名变更时调用（主驱动），poll_smtc 无 session 分支也兜底调用。"""
+    global _last_song_key, _last_song_change_ts, _lyrics_fetched_for, _cover_fetched_for
+    global _CLOCK_play_rate, _CLOCK_last_playback_rate, _CLOCK_paused, _CLOCK_last_playing_state
+    global _smtc_song_intro_emitted_at, _lyric_pending
+    # 直接读当前标题（标题线程已确保 _KUGOU_TITLE 新鲜），不靠 DB 变化判定——避免与 poll_smtc 竞态消费。
+    _ka, _kt = _kugou_title_song()
+    if not _kt:
+        return
+    cur_key = f"{_ka} - {_kt}".strip(" -") if _ka else _kt
+    if not cur_key or cur_key == _last_song_key:
+        return
+    # 防并发与 poll_smtc 常规切歌路径竞态：仅当当前状态还没有这首歌才切
+    with _state_lock:
+        if _SMTC_STATE.get("song", "") == cur_key and _last_song_key == cur_key:
+            return
+        _last_song_change_ts = time.time()
+        _SMTC_STATE["song"] = cur_key
+        _SMTC_STATE["artist"] = _ka
+        _SMTC_STATE["title"] = _kt
+        _SMTC_STATE["cover"] = ""
+        _SMTC_STATE["lyric_line"] = ""
+        _SMTC_STATE["lyric_event"] = ""
+        _SMTC_STATE["timeline"] = []
+        _SMTC_STATE["trans_timeline"] = []
+        _lyric_pending = False
+    _last_song_key = cur_key
+    print(f"[CUT) {time.strftime('%H:%M:%S')} 短语开始 cur_key={cur_key!r} ka={_ka!r} kt={_kt!r}", flush=True)
+    log(f"SMTC 切歌(kugou标题兜底): {cur_key}")
+    t_p0 = time.time()
+    formatted_intro = f"**\u25b6 {cur_key}**"
+    _smtc_song_intro_emitted_at = t_p0
+    try:
+        _lyric_event_queue.clear()
+    except Exception:
+        pass
+    _stage_lyric_event(formatted_intro, f"{formatted_intro}|{t_p0:.3f}")
+    global _last_lyric_idx, _last_trans_idx, _last_lyric_raw, _last_trans_raw, _last_emit_wall_ts_ms
+    _last_lyric_idx = -1
+    _last_trans_idx = -1
+    _last_lyric_raw = ""
+    _last_trans_raw = ""
+    _last_emit_wall_ts_ms = 0.0
+    _cancel_all_lyric_timers(cur_key)
+    _cancel_catchup(cur_key)
+    try:
+        tick_lyric._last_song_sent = cur_key
+    except Exception:
+        pass
+    # ══ 本地时钟：切歌 → 用酷狗真实进度锚定（避免从头算词）══
+    _CLOCK_play_rate = 1.0
+    _CLOCK_last_playback_rate = 1.0
+    _CLOCK_paused = False
+    _CLOCK_last_playing_state = True
+    _pos_init = 0
+    _kp_init = _await_kugou_pos(_SG_INIT_KUGOU_WAIT_S)
+    if _kp_init is not None and _kp_init > 0:
+        _pos_init = int(_kp_init)
+    # ══ v7.23 防旧切歌线程误锚：本线程在 _await_kugou_pos(最长15s) 等待期间，标题线程可能已
+    #    再次 spawn kugou_cut 切到下一首（_SMTC_STATE["song"] 已变为新歌）。若此刻仍用旧歌
+    #    位置 _anchor_clock()，会把新歌本地时钟拉回旧歌位置 → 新歌"切歌没响应"、歌词从错误进度
+    #    重启。等待结束后歌若已换，直接放弃本次锚定与后续写入（索引/定时器在新歌切歌里已被重置）。══
+    with _state_lock:
+        if _SMTC_STATE.get("song") != cur_key:
+            return
+    _anchor_clock(_pos_init, reason=f"song_init(kugou_only) {cur_key!r}")
+    print(f"[CUT) {time.strftime('%H:%M:%S')} 锚定完成 pos={_pos_init}", flush=True)
+    log(f"切歌锚定 [{t_p0:.3f}] {cur_key!r} → pos_ms={_pos_init}")
+    # ══ 歌词 & 封面：缓存优先，未命中并发搜索 ══
+    if _ka and _kt:
+        _lyrics_fetched_for = cur_key
+        _cover_fetched_for = cur_key
+        cached_lyric = _cache_get_lyric(_ka, _kt)
+        if cached_lyric:
+            name, tl, trans = cached_lyric
+            tl_clean = _sanitize_timeline(tl, tag="cache_timeline")
+            trans_clean = _sanitize_timeline(trans or [], tag="cache_trans") if trans else []
+            with _state_lock:
+                if _SMTC_STATE["song"] == cur_key:
+                    _SMTC_STATE["timeline"] = tl_clean
+                    if trans_clean:
+                        _SMTC_STATE["trans_timeline"] = trans_clean
+            log(f"切歌提示 [{t_p0:.3f}] offset={_LYRIC_OFFSET_MS}ms: {cur_key} | 歌词=缓存命中{len(tl_clean)}行 +翻译={len(trans_clean)}行")
+            log(f"歌词: 缓存命中 {name} ({len(tl_clean)} 行)" + (f" +翻译 {len(trans_clean)} 行" if trans_clean else ""))
+            _force_emit_current_lyric(cur_key)
+        else:
+            log(f"切歌提示 [{t_p0:.3f}] offset={_LYRIC_OFFSET_MS}ms: {cur_key} | 歌词=未命中 立刻并发搜索")
+            threading.Thread(target=_fetch_lyrics_bg, args=(_ka, _kt, cur_key, t_p0), daemon=True).start()
+        cached_cover = _cache_get_cover(_ka, _kt)
+        if cached_cover:
+            csrc, curl = cached_cover
+            with _state_lock:
+                if _SMTC_STATE["song"] == cur_key:
+                    cnow = _SMTC_STATE.get("cover", "")
+                    if not cnow or cnow.startswith("data:"):
+                        _SMTC_STATE["cover"] = curl
+            log(f"封面: 缓存命中 {csrc} → {curl[:70]}...")
+        else:
+            threading.Thread(target=_fetch_cover_bg, args=(_ka, _kt, cur_key), daemon=True).start()
+
+
 def poll_smtc():
     """
     每轮调用一次：
@@ -1890,7 +2574,7 @@ def poll_smtc():
     """
     global _last_smtc_ts, _last_song_key, _last_song_change_ts, _lyrics_fetched_for, _cover_fetched_for
     global _CLOCK_play_rate, _CLOCK_paused, _CLOCK_last_playing_state, _CLOCK_last_playback_rate, _CLOCK_last_drift_check_ts, _CLOCK_drift_target_ms
-    global _force_media_recheck
+    global _force_media_recheck, _last_media_recheck_ts
     mgr = _ensure_smtc_mgr()
     if mgr is None:
         return False
@@ -1903,7 +2587,18 @@ def poll_smtc():
         with _state_lock:
             _SMTC_STATE["hasSong"] = False
             _SMTC_STATE["playing"] = False
+        # ══ v7.23 删除此处的【同步】_kugou_only_song_change() ══
+        #    v7.19 曾在这里同步调用它作为切歌兜底，但该函数内部 _await_kugou_pos(15s) 在冷启动
+        #    首次切歌时会同步阻塞最长 15s → 直接冻住本线程。而本函数既被 smtc_poll worker 调，
+        #    也被 tick_lyric 的 poll_smtc 调：tick_lyric 是唯一持续推算/发歌词的线程，被冻 15s
+        #    = 切歌后 15s 内没有任何后续 lyric_event（用户日志：intro 弹出后 30s 无歌词）。
+        #    它的检测源与标题线程完全同源（都读 _kugou_title_song），无任何新增覆盖，纯阻塞。
+        #    酷狗标题驱动切歌已由 _kugou_title_loop 独立线程(v7.21)检测，并丢到**非阻塞**后台
+        #    kugou_cut 线程(v7.22)执行，故此处不再需要同步兜底 → 保证切歌后歌词线程不被冻结。
         return False
+
+    # v7.08: 本轮是否已用酷狗真实进度完成切歌锚定（②-5 需据此跳过，避免把真实锚点拽回 0）
+    _song_init_kugou_anchored = False
 
     # 取第一个有媒体内容的会话
     session = None
@@ -1952,14 +2647,22 @@ def poll_smtc():
         except Exception:
             pass
 
-        # ── 媒体属性（仅在切歌或首次时读，避免频繁 RPC）──
+        # ── 媒体属性（仅在切歌/首次/周期强制时读，避免频繁 RPC）──
         cur_key = ""
         media_info = None
         song_changed = False
         force_recheck = _force_media_recheck   # v7.02: 切歌误判暂停后强制重读媒体，确认真实新歌
         _force_media_recheck = False
+        # ══ v7.11: 酷狗 SMTC 歌名滞后——切歌瞬间(或进度被实时覆盖后)进度差恒≈0，media 只在
+        #    force_recheck 时重读一次；若那次酷狗 SMTC 还没更新到新歌，就永久卡在上一首。
+        #    这里每 ~2s 强制重读一次媒体：一旦酷狗 SMTC 把 title 更新到新歌，立即触发切歌。══
+        _now_mr = time.time()
+        media_force = force_recheck
+        if _now_mr - _last_media_recheck_ts >= 2.0:
+            media_force = True
+            _last_media_recheck_ts = _now_mr
         with _state_lock:
-            if not _SMTC_STATE["song"] or abs(pos_sec * 1000 - _SMTC_STATE["progress_ms"]) > 15000 or _SMTC_STATE["duration_str"] != duration_str or force_recheck:
+            if not _SMTC_STATE["song"] or abs(pos_sec * 1000 - _SMTC_STATE["progress_ms"]) > 15000 or _SMTC_STATE["duration_str"] != duration_str or media_force:
                 # 进度跳变或时长变化 → 可能切歌，强查媒体属性
                 try:
                     import asyncio as _aio
@@ -1975,11 +2678,43 @@ def poll_smtc():
                 except Exception:
                     media_info = None
 
+        # ══ v7.12: 酷狗窗口标题兜底切歌（SMTC title 常不更新，导致切歌/跟随全部失效）══
+        #    SMTC 拿到的 title 若与当前歌相同(没识别出新歌)或为空 → 用酷狗窗口标题解析出的
+        #    真实歌名构造 media_info，让下方切歌判定能发现新歌并切歌/换词。
+        if media_info is not None and media_info.title:
+            _mk = f"{media_info.artist or ''} - {media_info.title}".strip(" -") if (media_info.artist or "") else media_info.title
+        else:
+            _mk = ""
+        if not _mk or _mk == _last_song_key or not _last_song_key:
+            _ka, _kt = _kugou_confirmed_title_song()
+            if _kt and f"{_ka} - {_kt}".strip(" -") != _last_song_key:
+                try:
+                    import types
+                    _onew = media_info
+                    media_info = types.SimpleNamespace(
+                        artist=_ka, title=_kt,
+                        thumbnail=(None if _onew is None else getattr(_onew, "thumbnail", None)))
+                except Exception:
+                    pass
+
         if media_info is not None and media_info.title:
             artist = media_info.artist or ""
             title = media_info.title or ""
             cur_key = f"{artist} - {title}" if artist else title
-            if cur_key and cur_key != _last_song_key:
+            # ══ v7.22 防双切歌覆盖：kugou 标题驱动切歌后（_last_song_key 已注入），SMTC 的 title 若与当前
+            #     song 的 title 相同（如 kugou 带"何流、宋晓峰"、SMTC 只给"何流"，title 一致），不算切歌，
+            #     避免"何流、宋晓峰 - XX" → "何流 - XX" 反复覆盖 key、歌词从 0 重发。 ══
+            _cur_song = _SMTC_STATE.get("song", "")
+            _same_title = False
+            try:
+                if _cur_song and title:
+                    _cur_title_stripped = _cur_song.split(" - ", 1)[-1].strip() if " - " in _cur_song else _cur_song.strip()
+                    _new_title_stripped = title.strip()
+                    if _cur_title_stripped and _new_title_stripped and _cur_title_stripped == _new_title_stripped:
+                        _same_title = True
+            except Exception:
+                _same_title = False
+            if cur_key and cur_key != _last_song_key and not _same_title:
                 song_changed = True
                 _last_song_key = cur_key
                 _last_song_change_ts = time.time()
@@ -2044,11 +2779,27 @@ def poll_smtc():
                 _cancel_all_lyric_timers(cur_key)
                 _cancel_catchup(cur_key)
                 tick_lyric._last_song_sent = cur_key
-                # ══ v7.00 本地时钟：切歌 → 初始化 clock state 变量，下面再按 pos 锚定
+                # ══ v7.00 本地时钟：切歌 → 初始化 clock state 变量 ══
                 _CLOCK_play_rate = 1.0
                 _CLOCK_last_playback_rate = 1.0
                 _CLOCK_paused = (not playing)
                 _CLOCK_last_playing_state = playing
+                # ══ v7.08 切歌/启动首轮锚定：必须在拆歌词/发歌词**之前**用真实进度锚定，
+                #    否则酷狗 SMTC 恒报 0 → 本地时钟锚在 0 → 歌词从头 burst，直到酷狗真实进度
+                #    （探针线程首次遍历约需数秒）才拿得到，而此时错词已经发出去。
+                #    用自己的常量是因为 pos_sec 此时仍是 SMTC 的 0（顶部酷狗覆盖当时快照无效）。
+                _song_init_kugou_anchored = False
+                _sg_init_pos_ms = int(pos_sec * 1000)
+                # 仅当播放中且 SMTC 位置不可信(pos≈0)才等酷狗真实进度；其它播放器 SMTC 给真实 pos 则直接锚，不白等。
+                if playing and _sg_init_pos_ms < 3000:
+                    _kp_init = _await_kugou_pos(_SG_INIT_KUGOU_WAIT_S)
+                    if _kp_init is not None and _kp_init > 0:
+                        _sg_init_pos_ms = int(_kp_init)
+                        _song_init_kugou_anchored = True
+                elif not playing:
+                    _sg_init_pos_ms = 0
+                _anchor_clock(_sg_init_pos_ms, reason=f"song_init {cur_key!r}" + (" kugou" if _song_init_kugou_anchored else ""))
+                log(f"切歌锚定 [{t_p0:.3f}] {cur_key!r} → pos_ms={_sg_init_pos_ms} kugou={'Y' if _song_init_kugou_anchored else 'N'}")
                 # ── 歌词 & 封面：先查本地缓存，命中就不走网络，严格 0ms 抢第一句 ──
                 if artist and title:
                     _lyrics_fetched_for = cur_key
@@ -2088,11 +2839,7 @@ def poll_smtc():
                             log(f"封面: 缓存命中 {csrc} → {curl[:70]}...")
                         else:
                             threading.Thread(target=_fetch_cover_bg, args=(artist, title, cur_key), daemon=True).start()
-                # ══ v7.00 本地时钟：切歌 → 按当前读到的 SMTC pos 立刻首次锚定（下一轮会自愈修正0点问题）
-                pos_ms_tmp = int(pos_sec * 1000)
-                if not playing:
-                    pos_ms_tmp = 0
-                _anchor_clock(pos_ms_tmp, reason=f"song_init {cur_key!r}")
+                # ══ v7.08 首次锚定已在切歌块顶部完成（含酷狗真实进度等待），此处不再重复锚定 ══
         else:
             # 没拿到 media_info，但已有 song，仍更新 duration_str 兜底
             if duration_str and cur_key == "":
@@ -2181,11 +2928,32 @@ def poll_smtc():
             need_anchor = True
             anchor_reason = "first_poll_after_start"
         # ②-5: 切歌1s内 anchor_snapshot 与 pos差 >5s 兜底自愈
-        if (not need_anchor) and _SMTC_STATE.get("song", "") and (time.time()-_last_song_change_ts < 1.0):
+        #        v7.08: 若本轮已用酷狗真实进度完成切歌锚定，则跳过——此时 pos_ms_raw 仍是 SMTC 的 0，
+        #              触发只会把刚锚好的真实位置又拽回 0，破坏"播到一半追上"。
+        if (not need_anchor) and (not _song_init_kugou_anchored) and _SMTC_STATE.get("song", "") and (time.time()-_last_song_change_ts < 1.0):
             try:
                 if abs(_CLOCK_last_anchor_snapshot_ms - pos_ms_raw) > 5000:
                     need_anchor = True
                     anchor_reason = "song_changed_snapshot_gap_heal"
+            except Exception:
+                pass
+        # ── ②-6: 酷狗真实进度兜底强制对齐（v7.08）──
+        #    切歌/启动首轮若首锚没等到真实进度（如首次遍历超时）而锚在 0，此后 SMTC 恒 0 会让
+        #    seek 的 stuck_count≥2 永久禁用重锚，导致探针拿到真实进度后也永远不拽回——歌词一直从头播。
+        #    这里每个周期拿探针快照：本地时钟与真实进度偏差 >2s 时，无视 stuck 禁用，强制重锚到真实进度。
+        if (not need_anchor) and (not _song_init_kugou_anchored):
+            try:
+                _kp_snap = _kugou_read_progress_ms()
+                if _kp_snap is not None and _kp_snap > 0:
+                    # ══ v7.14: 剔除 offset 再比真实进度——offset 是用户补偿(常为正,把歌词延后)，
+                    #    若不剔除，get_local_eff_ms() 会把 offset 算进"本地",导致 diff≈-offset 每轮恒>2s，
+                    #    ②-6 便反复把本地拽回真实、把 offset 抵消掉 → 歌词表现为不受 offset 影响 → "越播越慢/要不停加偏移"。
+                    _local_clock_raw = get_local_eff_ms() - int(_LYRIC_OFFSET_MS or 0)
+                    _kugou_diff = _kp_snap - _local_clock_raw
+                    if abs(_kugou_diff) > 2000:
+                        need_anchor = True
+                        anchor_reason = f"kugou_real_time_align diff={_kugou_diff:+d}ms"
+                        pos_ms_raw = int(_kp_snap)
             except Exception:
                 pass
         # ── ③ 执行 anchor ──
@@ -4046,7 +4814,8 @@ def _reconnect_port(port, ip, socks_dict):
 
 
 def _smtc_drain_events_and_poll_light():
-    """══ v6.74 P1-1：排空 _smtc_event_queue，有任意事件则调用 poll_smtc() 轻量读一次进度/状态"""
+    """══ v6.74 P1-1：排空 _smtc_event_queue，若有事件 → 唤醒 SMTC worker 去 poll（v7.06 不再同步 poll）。
+    主循环 / tick 永不直接调用 winrt，避免 SMTC RPC 卡死整进程。"""
     got_event = False
     try:
         while True:
@@ -4059,20 +4828,63 @@ def _smtc_drain_events_and_poll_light():
         got_event = False
     if got_event:
         try:
-            poll_smtc()
+            _smtc_poll_wake.set()   # 通知 worker 立即 poll_smtc()
         except Exception:
             pass
     return got_event
+
+
+def _smtc_poll_worker_loop():
+    """══ v7.06 SMTC 唯一轮询线程：这里的 winrt RPC 即使卡死，也只卡本线程。
+    轮询节奏：
+      - 每轮先 poll_smtc() 一次（写 _SMTC_STATE 快照 + 触发切歌/锚定/歌词）；
+      - 然后用 _smtc_poll_wake.wait(_smtc_poll_idle_s) 等唤醒：有事件(切歌/进度/媒体变更)立即再来一轮，
+        无事件则按 idle 间隔兜底轮询（保证不靠事件也能持续读进度）。"""
+    first = True
+    while True:
+        try:
+            if first:
+                # v7.10：启动首轮**立即 poll**，不等兜底 1s——否则"冷启动播一半"的场景下，
+                #       会话检测被这次 1s sleep 拖慢，切歌检测晚约 1 秒，歌词整体滞后 ~1s。
+                first = False
+                _smtc_poll_wake.clear()
+            else:
+                _smtc_poll_wake.wait(_smtc_poll_idle_s)
+                _smtc_poll_wake.clear()
+            _kugou_ensure_probe()        # 顺带确保酷狗真实进度线程在跑（幂等）
+            _smtc_poll_dead = not poll_smtc()
+        except Exception:
+            _smtc_poll_dead = True
+            time.sleep(_smtc_poll_idle_s)
+
+
+def _start_smtc_poll_worker():
+    """启动 SMTC worker 线程（幂等）。"""
+    global _smtc_poll_worker
+    if _smtc_poll_worker is not None and _smtc_poll_worker.is_alive():
+        return
+    _smtc_poll_worker = threading.Thread(target=_smtc_poll_worker_loop, name="smtc_poll", daemon=True)
+    _smtc_poll_worker.start()
 
 
 def run():
     global _last_good_music, _lyric_pending
     _load_local_config()
     _load_cache()
-    log("=== PC 状态上报 v6.77 (去熔断+重试2次+常量退避1s+去硬超时 根治Ice Paper超时未命中 + P1-2量纲修复drift超前2~4s/82ms连发 + P1-2 量纲修复：rate单位+clamp+pred clamp 根治 drift超前2~4s/82ms连发 + _LYRIC_SYNC_LOG默认False + 翻译优先+0.5超高权重 + P1-1 SMTC事件驱动 + P1-2 进度5点滑窗 + P1-3 TCP粘包保活心跳 + P1-5 阶梯3条首发评分 + P0根除主线程卡死/全局池无空等/句柄finally兜底/5min健康自检 + P1-4 HTTP全局Session双层硬超时熔断5min) ===")
+    # ══ v7.10：尽早预热 UIA + 启动酷狗探针 ══
+    #    冷启动"播一半"时，tick 首查切歌会现场做 UIA 首次初始化（加载 UIAutomationCore.dll +
+    #    首次 ControlFromHandle ≈ 1s），把那 1s 压进歌词路径就造成整体滞后~1090ms。
+    #    这里在 run() 最开头(先于 SMTC 会话查询/歌词 tick)一次性预加载 uiautomation 并让探针
+    #    线程后台抢跑首定位，等歌词首查时首次初始化已完成、快照就绪 → 即时对齐。
+    try:
+        _uia_apply_fast()
+        _kugou_ensure_probe()
+    except Exception:
+        pass
+    log("=== 探针版本标记: pc_status_reporter v7.23 [TitleDrivesCut] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
-    log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整)")
+    log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
     log(f"本地缓存: {_LOCAL_CACHE_PATH} (LRU {_CACHE_LRU_LIMIT} 首)")
     log(f"  - 当前缓存: 歌词 {len(_CACHE['lyrics'])} 首 + 封面 {len(_CACHE['covers'])} 首")
     log(f"媒体检测: Windows SMTC (事件驱动: SessionsChanged/PlaybackInfoChanged/MediaPropertiesChanged + 1s兜底) + P1-2 5点滑窗最小二乘滤波校准(0.6预测+0.4实测, >3s seek重置)")
@@ -4088,14 +4900,21 @@ def run():
     if not HAS_WIN32: log("WARN: pywin32/psutil 未安装，仅基础信息")
 
     _ensure_smtc_loop()
-    # ══ v7.04：启动即同步读一次酷狗真实进度，保证「播到一半启动」首次锚定就是真实位置
-    #    （否则后台线程要 ~1s 才有第一份快照，首锚会落在 SMTC 的 0 点上）
+    # ══ v7.07 P0 C-1：去掉同步 UIA 首探（治"开头卡 7 秒"）══
+    #    旧版这里同步调 _kugou_probe_once()，其内部 uiautomation 首次遍历整棵控件树能卡 ~7s，
+    #    把 main 上报循环进 while 前就拖住 7s。现在只启动后台探针线程：它带 COM 初始化，启动即
+    #    （async）首探，~1s 内填好真实进度快照；首锚让 2s 一次 _clock_force_align 快速校正即可。
     try:
         _kugou_ensure_probe()
-        _kugou_probe_once()
     except Exception:
         pass
     threading.Thread(target=_lyric_tick_loop, daemon=True).start()
+    try:
+        _start_sys_snapshot_worker()   # v7.07 P0 C-2：WMI 电压/GPU 采集独立线程，上报线程只读快照
+        _start_fps_worker()    # v7.07 P0 B：DXGI FPS 探测独立线程，上报线程只读快照
+        _start_keyboard_adjust()   # v7.06 方向键微调歌词偏移（←提前 / →延后）
+    except Exception:
+        pass
 
     socks = connect_tcp()
     ip = socket.getaddrinfo(SERVER, PORTS[0], socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
@@ -4132,7 +4951,7 @@ def run():
                         pass
 
             proc_info, title, proc = get_window_title()
-            fps = get_fps()
+            fps = _read_fps_snapshot()   # v7.07: 只读快照，DXGI 探测已移到独立 daemon 线程，避免原生调用卡死上报线程
             player = detect_music_player()
 
             music = {}
@@ -4207,7 +5026,7 @@ def run():
                 log(f"载荷音乐: song={music.get('song','')[:30]} lyric_event={bool(music.get('lyric_event'))} player={player} cover={bool(music.get('cover'))}")
                 run._dbg_ts = time.time()  # type: ignore
 
-            sys_info = _get_system_info()
+            sys_info = _read_sys_snapshot()   # v7.07 P0 C-2: 只读快照，WMI 采集已在独立 daemon 线程
             data.update(sys_info)
 
             payload = json.dumps(data, ensure_ascii=False) + "\n"
@@ -4394,6 +5213,22 @@ def run():
                                     except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
                                         _reconnect_port(port, ip, socks)
                                         break
+                            elif cmd.startswith("="):
+                                # v7.08: 「=xxx」直接设置歌词偏移毫秒数（等价 OFFSET_SET xxx）
+                                log_text, reply = _apply_offset_cmd("SET", cmd[1:].strip())
+                                log(log_text)
+                                if reply:
+                                    try:
+                                        try:
+                                            sk.settimeout(5.0)
+                                        except Exception:
+                                            pass
+                                        sk.sendall(reply.encode("utf-8"))
+                                        entry["last_send_ts"] = time.time()
+                                        socks[port] = entry
+                                    except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
+                                        _reconnect_port(port, ip, socks)
+                                        break
                 except socket.timeout:
                     pass
                 except (ConnectionResetError, BrokenPipeError, OSError):
@@ -4458,4 +5293,25 @@ if __name__ == "__main__":
         print('  $env:BOT_PC_KEY   = "与机器人 bot_config 中 pc_status AUTH 相同的密钥"')
         print("")
         sys.exit(1)
-    run()
+
+    # ══ v7.07 P0 A：根治「卡死 + ^C 无效」══
+    #   旧版 run() 直接跑在主线程：主循环里任一原生调用(get_fps/DXGI、win32、winrt、UIA…)阻塞时，
+    #   主线程就停在 C 层永远不返回字节码 → Ctrl+C 信号根本没机会被处理 → 表现"卡死 ^C都没用"。
+    #   现在把整套采集/上报逻辑放到一个 daemon 工作线程跑，主线程只做最小信号等待循环：
+    #     - run() 就算某个原生调用卡住，也只是卡住工作线程，各 worker(歌词/smtc/kugou/fps) 仍独立。
+    #     - 主线程始终只 time.sleep(0.2)，sleep 会周期返回处理信号 → Ctrl+C 必然被抢到，永远可退。
+    #     - 收到 ^C 先给工作线程 1s 尝试干净退出；仍卡死则 os._exit(0) 强杀（daemon 不阻止退出）。
+    import threading as _t
+    _core = _t.Thread(target=run, name="pc_reporter_core", daemon=True)
+    _core.start()
+
+    try:
+        while True:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        print("\n[Ctrl+C] 收到中断，尝试干净退出...")
+        _core.join(timeout=1.0)
+        if _core.is_alive():
+            print("[Ctrl+C] 工作线程仍卡死，强制结束进程 (os._exit)。")
+        import os as _os
+        _os._exit(0)
