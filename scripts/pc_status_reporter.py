@@ -843,7 +843,11 @@ _LYRIC_OFFSET_BASE = 1000  # v7.13: 用户实测 +1000ms 才准，以此作为�
 #   依赖（可选）：pip install uiautomation
 # ═══════════════════════════════════════════════════════════════
 _KUGOU_PROG = {"valid": False, "pos_ms": 0, "dur_ms": 0, "ts": 0.0}
-_KUGOU_PROG_LOCK = threading.Lock()
+# v7.25: Lock→RLock（可重入）。v7.24 日志实锤：_kugou_confirmed_title_song 在持锁期间
+# 嵌套再申请同一把非重入锁 → 调用线程永久自死锁且锁永不释放 → kugou_cut/标题线程/探针线程
+# 全部冻死（切歌无提示、歌词全停、eff=0），唯主循环不碰此锁故心跳照常。
+# 对照 v6.79 _state_lock 同类先例；所有临界区均为微秒级 dict 读写，改 RLock 零行为风险。
+_KUGOU_PROG_LOCK = threading.RLock()
 _KUGOU_PROBE_THREAD = None
 _KUGOU_PROBE_START_LOCK = threading.Lock()
 _KUGOU_TITLE_THREAD = None          # v7.19: 标题（歌名锚点）独立读线程
@@ -1176,20 +1180,22 @@ def _kugou_confirmed_title_song():
     if not _kt:
         return "", ""
     key = f"{_ka} - {_kt}"
+    # v7.25: 重构消除嵌套加锁——锁内一次读完 DB 与标题快照，锁外再做比较与 log。
+    # 旧版在持锁期间嵌套 with _KUGOU_PROG_LOCK（非重入）= 必死锁，见 v7.25 锁注释。
+    _raw = ""
     try:
         with _KUGOU_PROG_LOCK:
             prev_key = _KUGOU_TITLE_DB.get("key", "")
             _KUGOU_TITLE_DB["key"] = key   # 记录本次，供下次比较是否换歌
-            if key != prev_key:
-                try:
-                    with _KUGOU_PROG_LOCK:
-                        _raw = _KUGOU_TITLE
-                    log(f"[KUGOU_TITLE] 切歌歌名: {_ka} - {_kt} (窗口标题='{str(_raw)[:80]}')")
-                except Exception:
-                    pass
-                return _ka, _kt
+            _raw = _KUGOU_TITLE
     except Exception:
-        pass
+        return "", ""
+    if key != prev_key:
+        try:
+            log(f"[KUGOU_TITLE] 切歌歌名: {_ka} - {_kt} (窗口标题='{str(_raw)[:80]}')")
+        except Exception:
+            pass
+        return _ka, _kt
     return "", ""
 
 
@@ -4897,7 +4903,7 @@ def run():
         _kugou_ensure_probe()
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.24 [TitleDrivesCut] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.25 [ProgLockDeadlock] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
