@@ -1067,6 +1067,12 @@ def _kugou_probe_once():
             return
         _KUGOU_SLIDER_FAILS = 0
         rv = slider.GetRangeValuePattern()
+        # ══ v7.26: 快照 ts 必须在 UIA 读取**开始**时取，不能在读取完成后取（旧版在下方锁内
+        #    现取 time.time()）。UIA GetRangeValuePattern/Value 本身耗时数十~100+ms，旧写法让
+        #    快照显得比实际内容"新鲜"，所有锚定/自愈消费方按"当前位置"使用它 → 本地时钟恒滞后
+        #    一个 UIA 读取时长（≈用户实测"歌词慢100ms左右"）。取读取开始时刻后，滞后被剔除，
+        #    残余误差偏向微提前而非拖慢，且 ②-6 自愈随时可纠正。══
+        _snap_wall_ts = time.time()
         v = float(rv.Value)
         m = float(rv.Maximum)
         if m <= 0 or v < 0 or v > m:
@@ -1094,7 +1100,8 @@ def _kugou_probe_once():
             _KUGOU_PROG["valid"] = True
             _KUGOU_PROG["pos_ms"] = pos_ms
             _KUGOU_PROG["dur_ms"] = dur_ms
-            _KUGOU_PROG["ts"] = time.time()
+            # v7.26: 用采样开始时刻（见上方 _snap_wall_ts 注释），不再现取 time.time()
+            _KUGOU_PROG["ts"] = _snap_wall_ts
         # ══ v7.15: 标题读取已移到 _kugou_probe_loop 每轮无条件执行（不依赖进度是否成功）══
         # 首次成功/首次读到时打一次日志，便于确认真正锚定的位置（不再报 0）
         if not was_valid:
@@ -1309,6 +1316,21 @@ def _kugou_read_progress_ms():
     return None
 
 
+def _kugou_read_progress_ms_ex():
+    """v7.26: 廉价读快照并附带采样时刻，返回 (pos_ms, ts)；无效/不新鲜返回 None。
+    供 ②-6 自愈等需要按快照年龄把采样时刻位置外推到当前时刻的消费方使用——
+    直接拿旧快照的 pos 当"当前位置"锚定，会把快照年龄(最高≈探针周期1s+UIA耗时)
+    原样变成锚定滞后，等于自愈一次仍残留最多~1s 的延迟。"""
+    _kugou_ensure_probe()
+    try:
+        with _KUGOU_PROG_LOCK:
+            if _KUGOU_PROG["valid"] and (time.time() - _KUGOU_PROG["ts"]) < 5.0:
+                return (int(_KUGOU_PROG["pos_ms"]), float(_KUGOU_PROG["ts"]))
+    except Exception:
+        pass
+    return None
+
+
 def _kugou_read_now():
     """切歌/锚定前**请求探针线程立刻多探一轮**并读最新快照（SAME-THREAD 防卡）。
     ══ v7.19 根修：旧版在此线程直接调 UIA GetRangeValuePattern()——这是跨线程使用
@@ -1322,11 +1344,17 @@ def _kugou_read_now():
         _KUGOU_REFRESH_NOW.set()
     except Exception:
         pass
-    deadline = time.time() + 1.5
+    # ══ v7.26: 只接受**本次请求发起之后**产生的快照（ts >= req_ts）。旧版接受任何年龄<1.0s
+    #    的快照——切歌瞬间最近的新鲜快照往往是**上一首歌的残留读数**（切歌前 0~1s 的周期快照，
+    #    位置可能是上一首的中后段）。拿它锚定新歌 → 本地时钟从错误位置起算；误差<2s 又触发
+    #    不了 ②-6 自愈（阈值2000ms，且酷狗下 force_align 恒跳过）→ 整首歌持续滞后，
+    #    用户感知即"每次切歌都叠加一点延迟"。改为只认请求后新探出的快照，杜绝旧歌读数。══
+    req_ts = time.time()
+    deadline = req_ts + 1.5
     while time.time() < deadline:
         try:
             with _KUGOU_PROG_LOCK:
-                if _KUGOU_PROG["valid"] and (time.time() - _KUGOU_PROG["ts"]) < 1.0:
+                if _KUGOU_PROG["valid"] and _KUGOU_PROG["ts"] >= req_ts:
                     return (int(_KUGOU_PROG["pos_ms"]), int(_KUGOU_PROG["dur_ms"]))
         except Exception:
             pass
@@ -2544,6 +2572,22 @@ def _kugou_only_song_change():
     _kp_init = _await_kugou_pos(_SG_INIT_KUGOU_WAIT_S)
     if _kp_init is not None and _kp_init > 0:
         _pos_init = int(_kp_init)
+    # ══ v7.26 切歌锚定守卫：标题刚变=新歌刚起播，真实位置必为极小值。读到 >5000ms 几乎必是
+    #    上一首歌残留（探针过渡期读数/酷狗进度条尚未归零）。直接锚上去会把新歌本地时钟锚到
+    #    上一首的中后段，且 <2s 之外的误差要等 ②-6 下一轮才拽回、<2s 的误差永久残留。
+    #    处理：等 0.5s 让酷狗进度条归零后重读一次（read_now 只认请求后新快照）；仍异常则锚 0，
+    #    宁可微提前（后续 ②-6 可纠），不可带着上一首的位置开播。══
+    if _pos_init > 5000:
+        try:
+            log(f"[CUT] 切歌锚定守卫: pos_ms={_pos_init} > 5000ms 判为上一首残留 → 等进度条归零重读")
+        except Exception:
+            pass
+        time.sleep(0.5)
+        _kp_retry = _kugou_read_now()
+        if _kp_retry is not None and 0 <= _kp_retry[0] <= 5000:
+            _pos_init = int(_kp_retry[0])
+        else:
+            _pos_init = 0
     # ══ v7.23 防旧切歌线程误锚：本线程在 _await_kugou_pos(最长15s) 等待期间，标题线程可能已
     #    再次 spawn kugou_cut 切到下一首（_SMTC_STATE["song"] 已变为新歌）。若此刻仍用旧歌
     #    位置 _anchor_clock()，会把新歌本地时钟拉回旧歌位置 → 新歌"切歌没响应"、歌词从错误进度
@@ -2818,6 +2862,19 @@ def poll_smtc():
                     if _kp_init is not None and _kp_init > 0:
                         _sg_init_pos_ms = int(_kp_init)
                         _song_init_kugou_anchored = True
+                    # ══ v7.26 切歌锚定守卫（与 kugou_cut 同款）：切歌=新歌刚起播，位置必为极小值；
+                    #    >5s 判为上一首残留，等进度条归零重读，仍异常则锚 0（宁微提前，可被②-6纠）。══
+                    if _sg_init_pos_ms > 5000:
+                        try:
+                            log(f"[SONG_INIT] 切歌锚定守卫: pos_ms={_sg_init_pos_ms} > 5000ms 判为上一首残留 → 等进度条归零重读")
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        _kp_retry = _kugou_read_now()
+                        if _kp_retry is not None and 0 <= _kp_retry[0] <= 5000:
+                            _sg_init_pos_ms = int(_kp_retry[0])
+                        else:
+                            _sg_init_pos_ms = 0
                 elif not playing:
                     _sg_init_pos_ms = 0
                 _anchor_clock(_sg_init_pos_ms, reason=f"song_init {cur_key!r}" + (" kugou" if _song_init_kugou_anchored else ""))
@@ -2965,8 +3022,9 @@ def poll_smtc():
         #    这里每个周期拿探针快照：本地时钟与真实进度偏差 >2s 时，无视 stuck 禁用，强制重锚到真实进度。
         if (not need_anchor) and (not _song_init_kugou_anchored):
             try:
-                _kp_snap = _kugou_read_progress_ms()
-                if _kp_snap is not None and _kp_snap > 0:
+                _kp_snap_ex = _kugou_read_progress_ms_ex()
+                if _kp_snap_ex is not None and _kp_snap_ex[0] > 0:
+                    _kp_snap = int(_kp_snap_ex[0])
                     # ══ v7.14: 剔除 offset 再比真实进度——offset 是用户补偿(常为正,把歌词延后)，
                     #    若不剔除，get_local_eff_ms() 会把 offset 算进"本地",导致 diff≈-offset 每轮恒>2s，
                     #    ②-6 便反复把本地拽回真实、把 offset 抵消掉 → 歌词表现为不受 offset 影响 → "越播越慢/要不停加偏移"。
@@ -2974,8 +3032,12 @@ def poll_smtc():
                     _kugou_diff = _kp_snap - _local_clock_raw
                     if abs(_kugou_diff) > 2000:
                         need_anchor = True
-                        anchor_reason = f"kugou_real_time_align diff={_kugou_diff:+d}ms"
-                        pos_ms_raw = int(_kp_snap)
+                        # ══ v7.26: 锚定值按快照年龄外推到当前时刻。旧版直接拿采样时刻的 pos
+                        #    当"当前位置"锚定，快照年龄(最高≈探针周期1s)原样变成锚定滞后——
+                        #    自愈一次仍残留最多~1s 延迟。pos_now ≈ pos_snap + age*rate(≈1.0)。══
+                        _kp_age_ms = int(max(0.0, time.time() - float(_kp_snap_ex[1])) * 1000)
+                        anchor_reason = f"kugou_real_time_align diff={_kugou_diff:+d}ms age={_kp_age_ms}ms"
+                        pos_ms_raw = int(_kp_snap + _kp_age_ms)
             except Exception:
                 pass
         # ── ③ 执行 anchor ──
@@ -4903,7 +4965,7 @@ def run():
         _kugou_ensure_probe()
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.25 [ProgLockDeadlock] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.26 [SnapFreshness] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
