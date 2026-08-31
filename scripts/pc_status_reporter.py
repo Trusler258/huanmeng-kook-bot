@@ -1261,7 +1261,7 @@ def _kugou_title_loop():
                 # ══ v7.22: 切歌改丢后台线程执行——切歌内部 _await_kugou_pos 最长阻塞 15s，
                 #    若在标题线程同步跑，会把标题读取线程卡死 → 换下一首时检测不到（"切歌没响应"）。
                 try:
-                    threading.Thread(target=_kugou_only_song_change, name="kugou_cut", daemon=True).start()
+                    threading.Thread(target=_run_kugou_cut_safe, name="kugou_cut", daemon=True).start()
                 except Exception:
                     pass
         except Exception:
@@ -2459,6 +2459,22 @@ def _thumbnail_to_base64(thumb_stream_ref) -> str:
             except Exception:
                 pass
             stream = None
+
+
+def _run_kugou_cut_safe():
+    """v7.24: kugou_cut 后台线程入口。包一层 try/except 把 _kugou_only_song_change 里的任何异常
+    打日志——否则裸 daemon 线程一旦抛错会**静默死亡**（intro 弹完就再无歌词/切歌，正是反复出现的
+    "intro 后 4 分钟什么都没发"假死症状）。日志能立刻区分：卡在锚定等待 / 取词抛错 / 正常结束。"""
+    try:
+        log("[CUT-DEBUG] kugou_cut 入")
+        _kugou_only_song_change()
+        log("[CUT-DEBUG] kugou_cut 正常结束")
+    except Exception as _e:
+        import traceback
+        try:
+            log(f"[CUT-DEBUG] kugou_cut 异常 {_e!r}\n{traceback.format_exc()[:2000]}")
+        except Exception:
+            pass
 
 
 def _kugou_only_song_change():
@@ -4881,7 +4897,7 @@ def run():
         _kugou_ensure_probe()
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.23 [TitleDrivesCut] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.24 [TitleDrivesCut] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
@@ -5023,7 +5039,15 @@ def run():
             if not hasattr(run, '_dbg_ts'):
                 run._dbg_ts = 0  # type: ignore
             if time.time() - run._dbg_ts > 30:  # type: ignore
-                log(f"载荷音乐: song={music.get('song','')[:30]} lyric_event={bool(music.get('lyric_event'))} player={player} cover={bool(music.get('cover'))}")
+                _dbg_tl = 0
+                _dbg_eff = 0
+                _dbg_last = _last_lyric_idx
+                try:
+                    _dbg_tl = len(_SMTC_STATE.get("timeline", []) or [])
+                    _dbg_eff = int(get_local_eff_ms())
+                except Exception:
+                    pass
+                log(f"载荷音乐: song={music.get('song','')[:30]} lyric_event={bool(music.get('lyric_event'))} player={player} cover={bool(music.get('cover'))} tl={_dbg_tl} last={_dbg_last} eff={_dbg_eff}")
                 run._dbg_ts = time.time()  # type: ignore
 
             sys_info = _read_sys_snapshot()   # v7.07 P0 C-2: 只读快照，WMI 采集已在独立 daemon 线程
