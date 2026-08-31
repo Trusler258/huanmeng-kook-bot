@@ -1557,10 +1557,30 @@ def _clock_force_align() -> None:
         _CLOCK_force_align_ts = tnow
         with _CLOCK_lock:
             stuck = _CLOCK_smtc_pos_stuck_count
+            _fa_paused = _CLOCK_paused
+            _fa_rate = float(_CLOCK_play_rate if _CLOCK_play_rate else 1.0)
         if stuck >= 2:
             return  # SMTC pos 卡死（酷狗恒报0）→ 不可信，依赖本地积分
         eff = get_local_eff_ms()
         smtc = _SMTC_STATE.get("progress_ms", 0)
+        _fa_age_ms = 0
+        # ══ v7.27: 快照年龄外推。progress_ms 是上一轮 poll_smtc 写入的探针快照位置，
+        #    读到它时最多已老 ~2s（探针周期1s + 轮询间隔）。旧版直接拿这个旧位置当
+        #    "当前 SMTC 位置"算 diff——本地时钟一直在前向外推，diff 必为负（形如
+        #    diff=-696ms），锚定即把时钟往**回**拽一个快照年龄 → 歌词每 ~2s 被拽慢一次。
+        #    与 ②-6 自愈同款处理：读带采样时刻的快照外推到当前时刻
+        #    （pos_now ≈ pos_snap + age*rate；暂停时不外推，进度本就冻结）。
+        #    探针快照不可用（非酷狗/快照过期）时退回原逻辑消费 progress_ms。══
+        if smtc > 0:
+            try:
+                _fa_snap_ex = _kugou_read_progress_ms_ex()
+                if _fa_snap_ex is not None and _fa_snap_ex[0] > 0:
+                    smtc = int(_fa_snap_ex[0])
+                    if not _fa_paused:
+                        _fa_age_ms = int(max(0.0, time.time() - float(_fa_snap_ex[1])) * 1000 * _fa_rate)
+                        smtc += _fa_age_ms
+            except Exception:
+                pass
         local_wo_ofs = eff - int(_LYRIC_OFFSET_MS or 0)
         diff = smtc - local_wo_ofs   # +:本地落后 smtc更快；-:本地超前
         if smtc <= 0:
@@ -1584,7 +1604,7 @@ def _clock_force_align() -> None:
             return  # 已足够准，不折腾
         if abs(diff) > 3000:
             return  # 超大偏差→疑似 seek/切歌，交给专门锚定逻辑
-        _anchor_clock(int(smtc), reason=f"force_align diff={int(diff)}ms")
+        _anchor_clock(int(smtc), reason=f"force_align diff={int(diff)}ms age={_fa_age_ms}ms")
     except Exception:
         pass
 
@@ -4965,7 +4985,7 @@ def run():
         _kugou_ensure_probe()
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.26 [SnapFreshness] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.27 [AlignAgeComp] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
