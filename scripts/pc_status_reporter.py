@@ -4716,9 +4716,42 @@ def tick_lyric():
         # ══ 修A：严格顺序强保证（tick 侧）—— idx <= last 说明 Timer 已发过 / 有回退，
         #    直接 drop 绝不允许出现「30 发过了，29 又发」这种回退刷屏 ══
         if idx != -1 and _last_lyric_idx >= 0 and idx <= _last_lyric_idx:
-            if _LYRIC_SYNC_LOG:
-                log(f"[LYRIC_SYNC] tick:DROP_idx<=last song={song!r} idx={idx} last={_last_lyric_idx} eff_ms={eff_ms}")
-            return
+            # ══ v7.28 [SeekBackResume]：回退 seek 检测。用户拖进度条往回拉后，锚定链路
+            #    （②-3/②-6/force_align）会把时钟正确重锚到新位置（idx 变小），但
+            #    _last_lyric_idx 仍停在旧位置 → idx <= last 被当成"回退刷屏"直接丢弃
+            #    → 歌词从此哑火直到播放再次走过旧位置。
+            #    判别：最后已发句的 LRC 时间戳比当前时钟超前 >3s → 真实回退 seek
+            #    （正常播放时已发句时间戳必然 <= 当前时钟；②-6/锚定大幅回拉时钟后
+            #    歌词同样应当从新位置恢复，触发复位也是正确行为）。
+            #    复位同切歌模板：取消旧 Timer/补位、清事件队列，但 _last_lyric_idx
+            #    置 idx-1 而非 -1 —— _burst_catchup_to_idx 从 last+1 连发，置 -1 会
+            #    从第 0 句刷屏到当前句。复位后不 return，放行让下方 burst 只发当前句。══
+            _seekback_detected = False
+            _last_emit_t_ms = 0
+            try:
+                if _last_lyric_idx < len(timeline):
+                    _last_emit_t_ms = int(timeline[_last_lyric_idx][0] * 1000 + _LYRIC_OFFSET_MS)
+                    if _last_emit_t_ms - eff_ms > 3000:
+                        _seekback_detected = True
+            except Exception:
+                pass
+            if not _seekback_detected:
+                if _LYRIC_SYNC_LOG:
+                    log(f"[LYRIC_SYNC] tick:DROP_idx<=last song={song!r} idx={idx} last={_last_lyric_idx} eff_ms={eff_ms}")
+                return
+            log(f"[LYRIC_SYNC] tick:SEEKBACK_RESET song={song!r} idx={idx} last={_last_lyric_idx} eff_ms={eff_ms} last_emit_t_ms={_last_emit_t_ms} ahead={_last_emit_t_ms - eff_ms}ms → 回退seek，复位歌词发射状态并从新位置重发")
+            _cancel_all_lyric_timers(song + "#seekback")
+            _cancel_catchup(song + "#seekback")
+            try:
+                _lyric_event_queue.clear()
+            except Exception:
+                pass
+            _lyric_pending = False
+            _last_lyric_idx = idx - 1
+            _last_trans_idx = idx - 1
+            _last_lyric_raw = ""
+            _last_trans_raw = ""
+            _last_emit_wall_ts_ms = 0.0
 
         # ══ v7.01：tick 侧改「单步推进」为「burst 连发追满当前进度」
         #    没夹逼(clamped_by_drift=False) → 直接从 last+1 连发追到 idx_original（当前 eff_ms 应到的行）
@@ -4985,7 +5018,7 @@ def run():
         _kugou_ensure_probe()
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.27 [AlignAgeComp] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.28 [SeekBackResume] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
