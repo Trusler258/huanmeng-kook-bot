@@ -102,11 +102,13 @@ PC 状态上报 v7.00 — 纯 Windows 原生检测（SMTC + Win32 API）
   - 缓存命中读出来也走 sanitize：老缓存可能有历史坏行
 """
 import json, time, os, socket, threading, traceback, sys, concurrent.futures, queue, collections
+import hashlib, re
+import struct
 
-SERVER = os.environ.get("BOT_SERVER", "01240820.xyz")     # 留空时必须通过环境变量 BOT_SERVER 注入
-_default_ports = "58890,62002"                           # 默认清空，真实端口请通过环境变量 BOT_PC_PORTS 注入（逗号分隔）
+SERVER = os.environ.get("BOT_SERVER", "")                  # ══ Windows 版：默认清空，必须通过环境变量 BOT_SERVER 注入（服务器域名或IP）
+_default_ports = ""                                        # ══ Windows 版：默认端口清空，必须通过环境变量 BOT_PC_PORTS 注入（逗号分隔）
 PORTS = [int(p.strip()) for p in os.environ.get("BOT_PC_PORTS", _default_ports).split(",") if p.strip()]
-AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")   # 留空时必须通过环境变量 BOT_PC_KEY 注入，建议 >= 32 位随机串
+AUTH_KEY = os.environ.get("BOT_PC_KEY", "")                # ══ Windows 版：密钥默认清空，必须通过环境变量 BOT_PC_KEY 注入，建议 >= 32 位随机串
 
 # ═══════════════════════════════════════════════════════════════
 # 非阻塞日志（v6.73 P0-1 根治「日志洪灾 stderr 兜底→主线程 C 层 WriteFile 阻塞=^C杀不掉」）
@@ -757,25 +759,47 @@ _MUSIC_PLAYERS = {
     "kwmusic": "酷我音乐", "netease": "网易云音乐",
 }
 _last_player = ""
-_last_player_ts = 0
+_last_player_ts = 0.0
+_PLAYER_NONE_LABEL = "无"
+_PLAYER_CACHE_POS_S = 5.0
+_PLAYER_CACHE_NEG_S = 2.0
 
 def detect_music_player():
+    # ══ v7.32: 进程级检测升级为「退出感知」。══
+    #    旧缺陷：扫描不到任何播放器进程时直接沿用旧值 → 播放器退出后
+    #    player 字段永远停留在已死的平台名。
+    #    新行为：每次缓存到期重扫进程表；
+    #      ① 找到播放器进程 → 返回其平台名（多平台同时运行时取首个命中，
+    #         某个平台退出后下一轮自动落到仍在运行的其他平台）；
+    #      ② 一个播放器进程都找不到 → 返回「无」（负缓存 2s，快速感知退出）；
+    #      ③ 扫描整体异常且旧值非空 → 保留旧值，防止瞬时错误造成假「无」抖动。══
     global _last_player, _last_player_ts
     now = time.time()
-    if now - _last_player_ts < 5 and _last_player:
-        return _last_player
+    cache_ttl = _PLAYER_CACHE_POS_S if _last_player else _PLAYER_CACHE_NEG_S
+    if _last_player_ts and now - _last_player_ts < cache_ttl:
+        return _last_player or _PLAYER_NONE_LABEL
     _last_player_ts = now
-    if not HAS_WIN32: return _last_player
+    if not HAS_WIN32:
+        return _last_player or _PLAYER_NONE_LABEL
+    found = ""
+    scan_ok = True
     try:
         for p in psutil.process_iter(["name"]):
             name = (p.info.get("name") or "").lower()
             for key, label in _MUSIC_PLAYERS.items():
                 if key in name:
-                    _last_player = label
-                    return label
+                    found = label
+                    break
+            if found:
+                break
     except Exception:
-        pass
-    return _last_player
+        scan_ok = False
+    if not found and not scan_ok and _last_player:
+        return _last_player
+    if found != _last_player:
+        log(f"[PLAYER] v7.32 音乐播放器变更: {_last_player or _PLAYER_NONE_LABEL} -> {found or _PLAYER_NONE_LABEL}")
+    _last_player = found
+    return found or _PLAYER_NONE_LABEL
 
 
 # ════════════════════════════════════════════════════════════
@@ -824,6 +848,8 @@ _last_predicted_pos_ms: int | None = None
 _smtc_loop = None          # winrt 需要的独立 asyncio event loop
 _smtc_mgr = None           # SMTCManager 缓存
 _last_smtc_ts = 0.0        # 最后一次 SMTC 轮询时间戳（用于本地推算进度）
+_no_session_since_ts = 0.0  # ══ v7.30: SMTC 首次无活动会话的墙上时间戳（0=当前有会话）══
+_NO_SESSION_CLEAR_S = 2.0   # ══ v7.30: 连续无会话超过该秒数 → 判定播放器已关闭，清理残留歌曲状态 ══
 _last_song_key = ""        # "artist - title" 用于切歌检测
 _last_lyric_raw = ""       # 去重（仅文本）
 _last_trans_raw = ""
@@ -1258,7 +1284,15 @@ def _kugou_title_loop():
                     _KUGOU_TITLE_TS = time.time()
             elif time.time() - _KUGOU_TITLE_FAIL_TS >= 20.0:
                 _KUGOU_TITLE_FAIL_TS = time.time()
-                log(f"[KUGOU_TITLE] WARN 读不到酷狗窗口标题 hwnd=0x{_KUGOU_HWND or 0:X}（切歌检测将失效）")
+                # ══ v7.33: 在场门控。酷狗窗口根本不存在（用户正用其他播放器）时读标题必然失败，
+                #    原 WARN"切歌检测将失效"是误导（非酷狗播放器走 SMTC 路径，不受影响）→ 静默；
+                #    只有酷狗窗口在场却读不到标题才 WARN。══
+                try:
+                    _hw_present = bool(_kugou_find_hwnds())
+                except Exception:
+                    _hw_present = False
+                if _hw_present:
+                    log(f"[KUGOU_TITLE] WARN 酷狗窗口在场但读不到标题 hwnd=0x{_KUGOU_HWND or 0:X}（酷狗切歌检测可能失效）")
             # ══ v7.17: 歌名一旦变化立即打普通日志（与 [KUGOU_PROBE] 同级，不被诊断高水位丢弃），
             #    用于判断探针到底有没有捕获新歌——是"没读到新标题"还是"读到却没触发切歌"。══
             _la_t, _lt_t = _kugou_title_song()
@@ -1397,6 +1431,521 @@ def _kugou_duration_ms():
     return None
 
 
+# ═══════════════════════════════════════════════════════════════
+# ══ v7.34 [NetmusicAnchor] 网易云音乐真实进度锚点（内存直读）══
+#    背景：网易云 SMTC 位置粗粒度且无法 seek 控制，歌词同步缺少像酷狗 UIA 那样的真实进度源。
+#    社区方案（Netease_obs）证实其播放位置存放在内存：[cloudmusic.dll基址 + 静态偏移] 解引用
+#    得堆指针，[堆指针 + 成员偏移] 即为播放位置毫秒数（uint64 小端）。
+#    成员偏移 +0xB8 跨 3.1.14~3.1.36 稳定；静态偏移随构建漂移，内置偏移表按产品版本前缀匹配，
+#    未命中/读取连续失效时自动触发定点指针重扫描（扫 .data/.rdata 可写节指针→堆对象成员，
+#    三轮增速复验 600~1400ms/s，实测 ~2.5s）定位新偏移并缓存。
+#    三重行为验证（3.1.36.205322）：播放增速 ~1000ms/s；暂停完全冻结；切歌归零。
+#    架构与酷狗探针同款：后台线程生产快照 + RLock，其他线程只读快照，绝不在上报/SMTC 线程
+#    做原生内存调用；句柄失效（播放器退出/重启）自动重建。══
+# ═══════════════════════════════════════════════════════════════
+_NM_OFFSET_TABLE = {
+    "3.1.14": 0x01C6D230,
+    "3.1.15": 0x01C713B0,
+    "3.1.16": 0x01C6EBD0,
+    "3.1.17": 0x01C9F1B0,
+    "3.1.18": 0x01CA1190,
+    "3.1.36": 0x1ED9690,
+}
+_NM_MEMBER_OFF = 0xB8
+_NM_PTR_LO = 0x10000
+_NM_PTR_HI = 0x7FF000000000
+_NM_MS_LO = 500
+_NM_MS_HI = 3600000
+_NM_PLAUSIBLE_MAX_MS = 10800000     # 读数合理性上限 3h（超出判为偏移失效）
+_NM_SCAN_CHUNK = 256
+_NM_SCAN_CAP = 400000
+_NM_RESCAN_FAIL_COOLDOWN_S = 30.0   # 重扫失败后的冷却（避免反复空扫）
+_NM_STALE_BAD_COUNT = 3             # 连续失效读数达到该次数 → 触发重扫
+
+_NM_WIN_READY = False
+try:
+    import ctypes as _nm_ctypes
+    from ctypes import wintypes as _nm_wintypes
+    _nm_kernel32 = _nm_ctypes.WinDLL("kernel32", use_last_error=True)
+    _nm_psapi = _nm_ctypes.WinDLL("psapi", use_last_error=True)
+    _nm_kernel32.OpenProcess.restype = _nm_wintypes.HANDLE
+    _nm_kernel32.CloseHandle.argtypes = [_nm_wintypes.HANDLE]
+    _nm_kernel32.ReadProcessMemory.restype = _nm_wintypes.BOOL
+    _nm_kernel32.ReadProcessMemory.argtypes = [
+        _nm_wintypes.HANDLE, _nm_ctypes.c_void_p, _nm_ctypes.c_void_p,
+        _nm_ctypes.c_size_t, _nm_ctypes.POINTER(_nm_ctypes.c_size_t)]
+    _nm_kernel32.QueryFullProcessImageNameW.argtypes = [
+        _nm_wintypes.HANDLE, _nm_wintypes.DWORD, _nm_ctypes.c_wchar_p,
+        _nm_ctypes.POINTER(_nm_wintypes.DWORD)]
+    _nm_psapi.EnumProcessModulesEx.argtypes = [
+        _nm_wintypes.HANDLE, _nm_ctypes.POINTER(_nm_ctypes.c_void_p), _nm_wintypes.DWORD,
+        _nm_ctypes.POINTER(_nm_wintypes.DWORD), _nm_wintypes.DWORD]
+    _nm_psapi.GetModuleBaseNameW.argtypes = [
+        _nm_wintypes.HANDLE, _nm_wintypes.HMODULE, _nm_ctypes.c_wchar_p, _nm_wintypes.DWORD]
+    _NM_WIN_READY = True
+except Exception:
+    pass
+
+_NM_PROCESS_QUERY_INFORMATION = 0x0400
+_NM_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_NM_PROCESS_VM_READ = 0x0010
+
+_NM_STATE = {
+    "h": None, "pid": 0, "base": 0, "exe_path": "", "ver": "",
+    "static_off": None, "fail_ts": 0.0, "bad_count": 0,
+    "no_dll_log_ts": 0.0,
+}
+_NM_PROG = {"valid": False, "pos_ms": 0, "dur_ms": 0, "ts": 0.0}
+_NM_PROG_LOCK = threading.RLock()
+_NM_PROBE_THREAD = None
+_NM_PROBE_START_LOCK = threading.Lock()
+
+
+def _nm_process_image_path(pid):
+    if not _NM_WIN_READY:
+        return None
+    h = _nm_kernel32.OpenProcess(_NM_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        buf = (_nm_ctypes.c_wchar * 1024)()
+        sz = _nm_wintypes.DWORD(1024)
+        if _nm_kernel32.QueryFullProcessImageNameW(h, 0, buf, _nm_ctypes.byref(sz)):
+            return buf.value
+        return None
+    finally:
+        _nm_kernel32.CloseHandle(h)
+
+
+def _nm_product_version(path):
+    """读 PE StringFileInfo 的 ProductVersion（真实产品版本，如 3.1.36.205322）。
+    FileVersion 是另一套编号体系（65263.x）不可用。"""
+    try:
+        ver_dll = _nm_ctypes.windll.version
+        size = ver_dll.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = (_nm_ctypes.c_char * size)()
+        if not ver_dll.GetFileVersionInfoW(path, None, size, buf):
+            return ""
+        lplp = _nm_ctypes.c_void_p()
+        plen = _nm_ctypes.c_uint()
+        if not ver_dll.VerQueryValueW(buf, "\\VarFileInfo\\Translation",
+                                      _nm_ctypes.byref(lplp), _nm_ctypes.byref(plen)):
+            return ""
+        raw = _nm_ctypes.string_at(lplp.value, 4)
+        lang, cp = struct.unpack("<HH", raw)
+        sub = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\ProductVersion"
+        if not ver_dll.VerQueryValueW(buf, sub, _nm_ctypes.byref(lplp), _nm_ctypes.byref(plen)):
+            return ""
+        return _nm_ctypes.wstring_at(lplp.value, plen.value).strip("\x00").strip()
+    except Exception:
+        return ""
+
+
+def _nm_find_process():
+    """定位网易云主进程：进程名 cloudmusic.exe 且 exe 文件名同吻合（优先），
+    返回 (pid, exe_path)；找不到返回 (None, None)。"""
+    try:
+        import psutil
+    except Exception:
+        return None, None
+    best = None
+    try:
+        for p in psutil.process_iter(["name", "pid"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+            except Exception:
+                continue
+            if name != "cloudmusic.exe":
+                continue
+            pid = p.info["pid"]
+            path = _nm_process_image_path(pid) or ""
+            if path.lower().endswith("cloudmusic.exe"):
+                return pid, path
+            if best is None:
+                best = (pid, path)
+    except Exception:
+        pass
+    return (best[0], best[1]) if best else (None, None)
+
+
+def _nm_read_mem(h, addr, n):
+    buf = (_nm_ctypes.c_char * n)()
+    got = _nm_ctypes.c_size_t()
+    ok = _nm_kernel32.ReadProcessMemory(h, _nm_ctypes.c_void_p(addr), buf, n, _nm_ctypes.byref(got))
+    if not ok or got.value != n:
+        return None
+    return bytes(buf)
+
+
+def _nm_dll_base(h):
+    mods = (_nm_ctypes.c_void_p * 2048)()
+    needed = _nm_wintypes.DWORD()
+    pmods = _nm_ctypes.cast(mods, _nm_ctypes.POINTER(_nm_ctypes.c_void_p))
+    if not _nm_psapi.EnumProcessModulesEx(h, pmods, _nm_ctypes.sizeof(mods), _nm_ctypes.byref(needed), 0x03):
+        return None
+    n = needed.value // _nm_ctypes.sizeof(_nm_ctypes.c_void_p)
+    namebuf = (_nm_ctypes.c_wchar * 512)()
+    for i in range(n):
+        _nm_psapi.GetModuleBaseNameW(h, mods[i], namebuf, 512)
+        if namebuf.value.lower() == "cloudmusic.dll":
+            return int(mods[i] or 0)
+    return None
+
+
+def _nm_pe_writable_sections(h, base):
+    """解析目标进程内 cloudmusic.dll 的 PE 节表，返回可写节 [(节名, RVA, 虚大小)]。"""
+    data = _nm_read_mem(h, base, 0x1000)
+    if data is None or data[:2] != b"MZ":
+        return []
+    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    if e_lfanew + 0x18 > len(data) or data[e_lfanew:e_lfanew + 4] != b"PE\x00\x00":
+        return []
+    fh_off = e_lfanew + 4
+    num_sec = struct.unpack_from("<H", data, fh_off + 2)[0]
+    opt_size = struct.unpack_from("<H", data, fh_off + 16)[0]
+    sec_off = fh_off + 20 + opt_size
+    out = []
+    for i in range(num_sec):
+        row = _nm_read_mem(h, base + sec_off + i * 40, 40)
+        if row is None:
+            continue
+        name = row[:8].rstrip(b"\x00").decode("ascii", "replace")
+        vsize, va, _rawsize, _rawptr = struct.unpack_from("<IIII", row, 8)
+        chars = struct.unpack_from("<I", row, 36)[0]
+        if (chars & 0x80000000) and 8 <= vsize <= 64 * 1024 * 1024:
+            out.append((name, va, vsize))
+    return out
+
+
+def _nm_read_pos_ms(h, base, static_off):
+    """按偏移链读一次播放位置毫秒：[base+static_off]→堆指针→[指针+0xB8]→uint64。"""
+    raw = _nm_read_mem(h, base + static_off, 8)
+    if raw is None:
+        return None
+    ptr = struct.unpack("<Q", raw)[0]
+    if not (_NM_PTR_LO <= ptr < _NM_PTR_HI):
+        return None
+    raw2 = _nm_read_mem(h, ptr + _NM_MEMBER_OFF, 8)
+    if raw2 is None:
+        return None
+    return struct.unpack("<Q", raw2)[0]
+
+
+def _nm_rescan_static_off(h, base):
+    """定点指针重扫描：偏移表未命中/失效时的兜底（仅播放中才会成功）。
+    扫可写节内的堆指针 → 解引用读 256B 对象块 → 块内搜合理毫秒值 → 三轮复读，
+    增速 600~1400ms/s 的地址胜出；多个胜出时优先 .data 段、偏移最小者。
+    返回 static_off 或 None。numpy 不可用时直接放弃（不阻塞主流程）。"""
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    secs = _nm_pe_writable_sections(h, base)
+    if not secs:
+        return None
+    ptrs = []
+    for name, va, vsize in secs:
+        data = _nm_read_mem(h, base + va, vsize)
+        if data is None:
+            continue
+        usable = len(data) - (len(data) % 8)
+        if usable <= 0:
+            continue
+        arr = np.frombuffer(data[:usable], dtype=np.uint64)
+        mask = (arr >= _NM_PTR_LO) & (arr < _NM_PTR_HI) & ((arr & 7) == 0)
+        for idx in np.nonzero(mask)[0]:
+            ptrs.append((name, va + int(idx) * 8, int(arr[idx])))
+    if len(ptrs) > _NM_SCAN_CAP:
+        ptrs = ptrs[:_NM_SCAN_CAP]
+    if not ptrs:
+        return None
+    uniq = {}
+    for name, soff, ptr in ptrs:
+        chunk = _nm_read_mem(h, ptr, _NM_SCAN_CHUNK)
+        if chunk is None:
+            continue
+        vals = np.frombuffer(chunk, dtype=np.uint64)
+        m2 = (vals >= _NM_MS_LO) & (vals <= _NM_MS_HI)
+        for off8 in np.nonzero(m2)[0]:
+            key = (ptr, int(off8) * 8)
+            if key not in uniq:
+                uniq[key] = (name, soff)
+    if not uniq:
+        return None
+    rounds = []
+    for _i in range(3):
+        vals = {}
+        for key in uniq:
+            raw = _nm_read_mem(h, key[0] + key[1], 8)
+            if raw is not None:
+                vals[key] = struct.unpack("<Q", raw)[0]
+        rounds.append((time.monotonic(), vals))
+        if _i < 2:
+            time.sleep(1.0)
+    winners = []
+    for key, (name, soff) in uniq.items():
+        samples = [(t, d.get(key)) for t, d in rounds if d.get(key) is not None]
+        if len(samples) < 2:
+            continue
+        deltas = []
+        for j in range(1, len(samples)):
+            dt = samples[j][0] - samples[j - 1][0]
+            dv = samples[j][1] - samples[j - 1][1]
+            if dt > 0:
+                deltas.append(dv / dt)
+        if not deltas:
+            continue
+        if all(600.0 <= r <= 1400.0 for r in deltas):
+            winners.append((name, soff, samples[-1][1]))
+    if not winners:
+        return None
+    winners.sort(key=lambda x: (0 if x[0] == ".data" else 1, x[1]))
+    return winners[0][1]
+
+
+def _nm_table_lookup(ver):
+    """偏移表按版本前缀匹配（表键为短版本如 3.1.36，实际版本带构建号如 3.1.36.205322）。
+    多个键匹配时取最长键（最精确）。"""
+    best_key = ""
+    for k in _NM_OFFSET_TABLE:
+        if (ver == k or ver.startswith(k + ".")) and len(k) > len(best_key):
+            best_key = k
+    return _NM_OFFSET_TABLE[best_key] if best_key else None
+
+
+def _nm_ensure_offset(st):
+    """确保 st['static_off'] 可用：版本变更→查偏移表；未命中→带冷却的定点重扫描。"""
+    exe_path = st.get("exe_path") or ""
+    cur_ver = st.get("ver") or ""
+    if exe_path:
+        v2 = _nm_product_version(exe_path)
+        if v2 and v2 != cur_ver:
+            cur_ver = v2
+            st["ver"] = cur_ver
+            off_tab = _nm_table_lookup(cur_ver)
+            st["static_off"] = off_tab
+            st["bad_count"] = 0
+            try:
+                if off_tab:
+                    log(f"[NETMUSIC] 版本={cur_ver} 偏移表命中 0x{off_tab:X}")
+                else:
+                    log(f"[NETMUSIC] 版本={cur_ver} 偏移表未命中(将自动重扫)")
+            except Exception:
+                pass
+    off = st.get("static_off")
+    if off is not None:
+        return off
+    now = time.time()
+    if now - (st.get("fail_ts") or 0.0) < _NM_RESCAN_FAIL_COOLDOWN_S:
+        return None
+    st["fail_ts"] = now
+    t0 = time.monotonic()
+    try:
+        log(f"[NETMUSIC] 启动定点指针重扫描 (版本={cur_ver or '未知'})...")
+    except Exception:
+        pass
+    found = _nm_rescan_static_off(st["h"], st["base"])
+    if found is not None:
+        st["static_off"] = found
+        st["bad_count"] = 0
+        try:
+            log(f"[NETMUSIC] 重扫成功 static=0x{found:X} 耗时{time.monotonic() - t0:.1f}s (版本={cur_ver or '未知'}，本次会话内缓存)")
+        except Exception:
+            pass
+    else:
+        try:
+            log(f"[NETMUSIC] 重扫未找到(耗时{time.monotonic() - t0:.1f}s)，需播放中才可能成功，{_NM_RESCAN_FAIL_COOLDOWN_S:.0f}s 后再试")
+        except Exception:
+            pass
+    return found
+
+
+def _nm_reset_state():
+    try:
+        with _NM_PROG_LOCK:
+            _NM_PROG["valid"] = False
+    except Exception:
+        pass
+    st = _NM_STATE
+    try:
+        if st.get("h") and _NM_WIN_READY:
+            _nm_kernel32.CloseHandle(st["h"])
+    except Exception:
+        pass
+    st.update({"h": None, "pid": 0, "base": 0, "exe_path": "", "ver": "",
+               "static_off": None, "bad_count": 0})
+
+
+def _nm_refresh():
+    """探针线程调用：打开/复用句柄 → 确保偏移 → 读一次位置写快照。
+    重扫发生在本函数内（仅探针线程），其他线程永不接触原生内存调用。"""
+    if not _NM_WIN_READY:
+        return
+    st = _NM_STATE
+    h = st.get("h")
+    base = None
+    if h:
+        try:
+            base = _nm_dll_base(h)
+        except Exception:
+            base = None
+    if not base:
+        _nm_reset_state()
+        pid, exe_path = _nm_find_process()
+        if not pid:
+            return
+        h = _nm_kernel32.OpenProcess(
+            _NM_PROCESS_QUERY_INFORMATION | _NM_PROCESS_VM_READ, False, pid)
+        if not h:
+            return
+        base = _nm_dll_base(h)
+        if not base:
+            _nm_kernel32.CloseHandle(h)
+            now = time.time()
+            if now - (_NM_STATE.get("no_dll_log_ts") or 0.0) > 60.0:
+                _NM_STATE["no_dll_log_ts"] = now
+                try:
+                    log(f"[NETMUSIC] 主进程 pid={pid} 未加载 cloudmusic.dll，暂无法读进度")
+                except Exception:
+                    pass
+            return
+        st.update({"h": h, "pid": pid, "base": base, "exe_path": exe_path or ""})
+        try:
+            log(f"[NETMUSIC] 已附着 pid={pid} dll_base=0x{base:X}")
+        except Exception:
+            pass
+    off = _nm_ensure_offset(st)
+    if off is None:
+        return
+    v = _nm_read_pos_ms(st["h"], st["base"], off)
+    if v is None:
+        st["bad_count"] = int(st.get("bad_count") or 0) + 1
+        if st["bad_count"] >= _NM_STALE_BAD_COUNT:
+            st["static_off"] = None
+            st["bad_count"] = 0
+            try:
+                log("[NETMUSIC] 连续读取失败 → 偏移可能已失效，下次探测触发重扫")
+            except Exception:
+                pass
+        return
+    if not (0 <= v <= _NM_PLAUSIBLE_MAX_MS):
+        st["bad_count"] = int(st.get("bad_count") or 0) + 1
+        if st["bad_count"] >= _NM_STALE_BAD_COUNT:
+            st["static_off"] = None
+            st["bad_count"] = 0
+        return
+    st["bad_count"] = 0
+    with _NM_PROG_LOCK:
+        _NM_PROG["valid"] = True
+        _NM_PROG["pos_ms"] = int(v)
+        _NM_PROG["ts"] = time.time()
+        if int(v) > int(_NM_PROG["dur_ms"]):
+            _NM_PROG["dur_ms"] = int(v)
+
+
+def _netmusic_probe_loop():
+    while True:
+        try:
+            _nm_refresh()
+        except Exception:
+            try:
+                _nm_reset_state()
+            except Exception:
+                pass
+        time.sleep(0.6)
+
+
+def _netmusic_ensure_probe():
+    """确保网易云探针线程已启动（幂等）。"""
+    global _NM_PROBE_THREAD
+    if _NM_PROBE_THREAD is not None:
+        return
+    with _NM_PROBE_START_LOCK:
+        if _NM_PROBE_THREAD is not None:
+            return
+        t = threading.Thread(target=_netmusic_probe_loop, name="netmusic_probe", daemon=True)
+        _NM_PROBE_THREAD = t
+        t.start()
+
+
+def _netmusic_present():
+    """网易云进程是否在场（进程名匹配，独立于酷狗窗口门控）。"""
+    try:
+        pid, _p = _nm_find_process()
+        return pid is not None
+    except Exception:
+        return False
+
+
+def _netmusic_read_progress_ms():
+    """廉价读快照（每轮调用）。有效且新鲜(<5s)返回 pos_ms，否则 None。"""
+    _netmusic_ensure_probe()
+    try:
+        with _NM_PROG_LOCK:
+            if _NM_PROG["valid"] and (time.time() - _NM_PROG["ts"]) < 5.0:
+                return _NM_PROG["pos_ms"]
+    except Exception:
+        pass
+    return None
+
+
+def _netmusic_read_progress_ms_ex():
+    """读快照并附采样时刻，返回 (pos_ms, ts)；无效/不新鲜返回 None（供年龄外推）。"""
+    _netmusic_ensure_probe()
+    try:
+        with _NM_PROG_LOCK:
+            if _NM_PROG["valid"] and (time.time() - _NM_PROG["ts"]) < 5.0:
+                return (int(_NM_PROG["pos_ms"]), float(_NM_PROG["ts"]))
+    except Exception:
+        pass
+    return None
+
+
+def _netmusic_read_now():
+    """切歌锚定用：置醒探针等一轮新鲜快照（内存读毫秒级，无需酷狗式长等待）。
+    返回 (pos_ms, dur_ms)；1.5s 内拿不到返回 None。只轮询快照，绝不碰原生调用。"""
+    _netmusic_ensure_probe()
+    req_ts = time.time()
+    deadline = req_ts + 1.5
+    while time.time() < deadline:
+        try:
+            with _NM_PROG_LOCK:
+                if _NM_PROG["valid"] and _NM_PROG["ts"] >= req_ts:
+                    return (int(_NM_PROG["pos_ms"]), int(_NM_PROG["dur_ms"]))
+        except Exception:
+            pass
+        time.sleep(0.03)
+    return None
+
+
+def _await_netease_pos(timeout_s: float):
+    """切歌/启动首轮锚定前调用：拿网易云内存真实进度。返回 int(pos_ms) 或 None。"""
+    _netmusic_ensure_probe()
+    r = _netmusic_read_now()
+    if r is not None and r[0] > 0:
+        return int(r[0])
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        p = _netmusic_read_progress_ms()
+        if p is not None and p > 0:
+            return int(p)
+        time.sleep(0.05)
+    return None
+
+
+def _netmusic_duration_ms():
+    """廉价读快照里的时长估计（内存锚点无权威时长，取历史最大进度，仅作兜底）。"""
+    try:
+        with _NM_PROG_LOCK:
+            if _NM_PROG["valid"] and (time.time() - _NM_PROG["ts"]) < 5.0:
+                return _NM_PROG["dur_ms"]
+    except Exception:
+        pass
+    return None
+
+
 def _stage_lyric_event(line: str, event: str):
     """v6.79 P0 统一的歌词事件写入入口（7处写入全走这里）：
     - 若 pending 槽空闲 → 直接写入 _SMTC_STATE + 置 pending=True（99%场景，0额外开销）
@@ -1456,8 +2005,14 @@ _CLOCK_last_anchor_snapshot_ms: int = 0
 #   酷狗音乐等流氓播放器会 SMTC 永远上报 0ms，导致"每 3s 本地走满3000ms 触发 seek 锚回0"死循环。
 #   因此 seek 判定必须额外要求：本轮 pos_ms_raw 与 上轮 pos 不同（真·跳变），否则视为 SMTC 已挂，不重锚。
 _CLOCK_last_smtc_pos_raw: int = -1
-# 连续 poll 轮数 pos_ms_raw 与上次完全相同（>=2 轮时 seek 判定禁用，即便 |diff|>3s 也不重锚）
+# 连续卡死计数（>=2 时 seek 判定禁用，即便 |diff|>3s 也不重锚）。
+# ══ v7.29 起语义改为"按时长判定"的饱和计数：仅当 pos 连续 >=3s 未变化才置 >=2，详见 _CLOCK_smtc_pos_last_change_perf ══
 _CLOCK_smtc_pos_stuck_count: int = 0
+# ══ v7.29: pos 最近一次"发生变化"那轮的 perf_counter 时间戳（卡死按时长判定基准）══
+# 轮询频率(10ms tick + 0.5s worker)远高于酷狗探针快照更新频率(~1s)，旧"按轮计数"两轮就命中
+# 同一快照 → 误判卡死 → 探针更新又清零 → 每秒刷一条 SMTC_POS_STUCK 日志。
+# 现在只有 pos 连续 >=3s 完全不变才判卡死（探针正常每秒必变，绝不误判；真坏恒 0 时 ~3s 正确判定）。
+_CLOCK_smtc_pos_last_change_perf: float = 0.0
 # 上次的播放状态（用于检测 paused→resumed）
 _CLOCK_last_playing_state: bool = False
 # 上次的播放速率（用于检测倍速变化，若变化则顺手重锚一次 pos）
@@ -2038,65 +2593,370 @@ import os as _os
 _LOCAL_CFG_DIR = _os.path.join(_os.environ.get("APPDATA", _os.path.expanduser("~")), "Huanmeng")
 _LOCAL_CFG_PATH = _os.path.join(_LOCAL_CFG_DIR, "pc_status.json")
 _LOCAL_CACHE_PATH = _os.path.join(_LOCAL_CFG_DIR, "pc_status.cache.json")
+# ══ v7.33: 歌词缓存重构为单文件存储 ══
+#   lyrics/<歌手 - 歌名>.lrc   歌词本体（标准 LRC；翻译行同时间戳紧随主行、前缀 <trans>）
+#   lrc_info.json              索引：来源/行数/md5/是否有翻译
+#   pc_status.cache.json       只留封面（lyrics 留空占位，防止旧格式重复迁移）
+# 启动时按索引逐条 md5 校验载入内存；不一致/缺文件的条目丢弃（下次播放自动重新在线获取）。
+# 旧 cache.json 里的歌词条目首次启动一次性迁移为 .lrc，迁移后清空原处。
+_LOCAL_LYRICS_DIR = _os.path.join(_LOCAL_CFG_DIR, "lyrics")
+_LOCAL_LRC_INFO_PATH = _os.path.join(_LOCAL_CFG_DIR, "lrc_info.json")
 _CACHE_LRU_LIMIT = 200
 
 _cache_lock = threading.Lock()
 _CACHE = {
-    "lyrics": {},    # artist_title_lower → dict(source, timeline, trans_timeline, fetched_at)
-    "covers": {},    # artist_title_lower → dict(source, url, fetched_at)
-    "meta": {"version": 1, "limit": _CACHE_LRU_LIMIT},
+    "lyrics": {},    # key → dict(source, timeline, trans_timeline, fetched_at)
+    "covers": {},    # key → dict(source, url, fetched_at)
+    "meta": {"version": 2, "limit": _CACHE_LRU_LIMIT},
 }
 
+_LRC_INFO = {}        # key → dict(file, source, lines, md5, has_trans, fetched_at)
+_TRANS_PREFIX = "<trans>"
+_TS_RE = re.compile(r"^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\](.*)$")
+_BAD_FN_CHARS = '<>:"/\\|?*'
 
 def _cache_key(artist: str, title: str) -> str:
     return f"{(artist or '').strip().lower()}|{(title or '').strip().lower()}"
 
 
+def _norm_timeline(tl):
+    """归一化为 [(float秒, str), ...]；坏行丢弃。兼容 tuple/list（含 JSON 往返后的 list）"""
+    out = []
+    try:
+        for item in (tl or []):
+            try:
+                sec = float(item[0])
+                txt = str(item[1])
+            except Exception:
+                continue
+            if sec < 0:
+                continue
+            out.append((sec, txt))
+    except Exception:
+        return []
+    return out
+
+
+def _sanitize_fn_part(s, maxlen=60):
+    """文件名净化：非法字符→_，控制字符删除，每段≤maxlen，去首尾空白/点"""
+    s = str(s or "")
+    for ch in _BAD_FN_CHARS:
+        s = s.replace(ch, "_")
+    s = re.sub(r"[\x00-\x1f]", "", s)
+    s = s.strip().strip(".")
+    if len(s) > maxlen:
+        s = s[:maxlen].rstrip()
+    return s or "_"
+
+
+def _lrc_filename(artist, title, key):
+    """目标文件名；与索引中其他 key 撞名时追加 md5(key) 前 8 位"""
+    parts = [p for p in ((artist or "").strip(), (title or "").strip()) if p]
+    base = _sanitize_fn_part(" - ".join(parts) if parts else key)
+    fname = base + ".lrc"
+    for k2, e in _LRC_INFO.items():
+        if k2 != key and e.get("file") == fname:
+            fname = f"{base}_{hashlib.md5(key.encode('utf-8')).hexdigest()[:8]}.lrc"
+            break
+    return fname
+
+
+def _fmt_ts(sec):
+    try:
+        sec = float(sec)
+    except Exception:
+        sec = 0.0
+    if sec < 0:
+        sec = 0.0
+    m = int(sec // 60)
+    return "[%d:%06.3f]" % (m, sec - m * 60)
+
+
+def _build_lrc_text(artist, title, source, tl, trans_tl):
+    """生成 .lrc 全文：头部标签 + 主行；翻译行同时间戳紧随主行、前缀 <trans>"""
+    lines = [
+        "[re:pc_status_reporter]",
+        "[ve:v7.33]",
+        f"[source:{source or ''}]",
+        f"[ar:{(artist or '').strip()}]",
+        f"[ti:{(title or '').strip()}]",
+    ]
+    trans_map = {}
+    for sec, txt in (trans_tl or []):
+        trans_map.setdefault(round(float(sec), 3), txt)
+    for sec, txt in (tl or []):
+        k3 = round(float(sec), 3)
+        lines.append(f"{_fmt_ts(sec)}{txt}")
+        tr = trans_map.pop(k3, None)
+        if tr is not None:
+            lines.append(f"{_fmt_ts(sec)}{_TRANS_PREFIX}{tr}")
+    for k3 in sorted(trans_map):
+        lines.append(f"{_fmt_ts(k3)}{_TRANS_PREFIX}{trans_map[k3]}")
+    return "\n".join(lines) + "\n"
+
+
+def _parse_lrc_text(text):
+    """解析 .lrc → (timeline, trans_timeline)；<trans> 前缀行进翻译轨"""
+    tl, trans = [], []
+    for line in (text or "").splitlines():
+        m = _TS_RE.match(line.strip())
+        if not m:
+            continue
+        mm, ss, frac, rest = m.groups()
+        frac = (frac or "0").ljust(3, "0")[:3]
+        try:
+            sec = int(mm) * 60 + int(ss) + int(frac) / 1000.0
+        except Exception:
+            continue
+        rest = rest or ""
+        if rest.startswith(_TRANS_PREFIX):
+            trans.append((sec, rest[len(_TRANS_PREFIX):]))
+        else:
+            tl.append((sec, rest))
+    tl.sort(key=lambda x: x[0])
+    trans.sort(key=lambda x: x[0])
+    return tl, trans
+
+
+def _atomic_write(path, text):
+    """tmp + os.replace 原子写；newline='\n' 固定字节，保证 md5 稳定"""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _md5_file(path):
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _save_lrc_info():
+    payload = {"version": 1, "limit": _CACHE_LRU_LIMIT, "entries": dict(_LRC_INFO)}
+    try:
+        _atomic_write(_LOCAL_LRC_INFO_PATH, json.dumps(payload, ensure_ascii=False, indent=1))
+    except Exception as e:
+        log(f"[CACHE] WARN 写 lrc_info.json 失败: {e}")
+
+
+def _register_lyric(key, artist, title, source, tl, trans_tl, fetched_at):
+    """写 .lrc + 更新内存索引。调用方须持有 _cache_lock。成功返回 True"""
+    try:
+        fname = _lrc_filename(artist, title, key)
+        path = os.path.join(_LOCAL_LYRICS_DIR, fname)
+        text = _build_lrc_text(artist, title, source, tl, trans_tl)
+        old = _LRC_INFO.get(key)
+        _atomic_write(path, text)
+        _LRC_INFO[key] = {
+            "file": fname,
+            "source": str(source or ""),
+            "lines": len(tl),
+            "md5": hashlib.md5(text.encode("utf-8")).hexdigest(),
+            "has_trans": bool(trans_tl),
+            "fetched_at": float(fetched_at),
+        }
+        if old and old.get("file") and old["file"] != fname:
+            try:
+                stale = os.path.join(_LOCAL_LYRICS_DIR, old["file"])
+                if os.path.isfile(stale):
+                    os.remove(stale)
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        log(f"[CACHE] WARN 写歌词文件失败: {e}")
+        return False
+
+
 def _cache_evict_if_needed():
-    """LRU 驱逐：超 _CACHE_LRU_LIMIT 时按 fetched_at 删最旧的 30%"""
+    """LRU 驱逐：超 _CACHE_LRU_LIMIT 时按 fetched_at 删最旧的 30%；歌词连 .lrc 文件+索引一并删"""
     for bucket_name in ("lyrics", "covers"):
         bucket = _CACHE[bucket_name]
         if len(bucket) <= _CACHE_LRU_LIMIT:
             continue
-        items = sorted(bucket.items(), key=lambda kv: kv[1].get("fetched_at", 0))
-        drop_n = len(items) - int(_CACHE_LRU_LIMIT * 0.7)
+        drop_n = len(bucket) - int(_CACHE_LRU_LIMIT * 0.7)
         if drop_n <= 0:
             continue
+        items = sorted(bucket.items(), key=lambda kv: kv[1].get("fetched_at", 0))
         for k, _ in items[:drop_n]:
             bucket.pop(k, None)
+            if bucket_name == "lyrics":
+                info = _LRC_INFO.pop(k, None)
+                if info and info.get("file"):
+                    try:
+                        p = os.path.join(_LOCAL_LYRICS_DIR, info["file"])
+                        if os.path.isfile(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+
+def _load_lrc_store():
+    """启动载入：读 lrc_info.json → 逐条 md5 校验 → 解析 .lrc 入内存；失效条目丢弃"""
+    loaded = bad = 0
+    try:
+        if not os.path.isfile(_LOCAL_LRC_INFO_PATH):
+            return 0
+        with open(_LOCAL_LRC_INFO_PATH, "r", encoding="utf-8") as f:
+            info = json.load(f)
+        entries = info.get("entries") if isinstance(info, dict) else None
+        if not isinstance(entries, dict):
+            return 0
+        for key, e in entries.items():
+            try:
+                fname = e.get("file") if isinstance(e, dict) else None
+                if not fname:
+                    bad += 1
+                    continue
+                path = os.path.join(_LOCAL_LYRICS_DIR, fname)
+                if not os.path.isfile(path):
+                    bad += 1
+                    continue
+                if _md5_file(path) != e.get("md5"):
+                    log(f"[CACHE] WARN 歌词文件 md5 不符，丢弃索引条目: {fname}")
+                    bad += 1
+                    continue
+                with open(path, "r", encoding="utf-8") as f2:
+                    text = f2.read()
+                tl, trans = _parse_lrc_text(text)
+                if not tl:
+                    bad += 1
+                    continue
+                _CACHE["lyrics"][key] = {
+                    "source": e.get("source", ""),
+                    "timeline": tl,
+                    "trans_timeline": trans,
+                    "fetched_at": float(e.get("fetched_at", 0)),
+                }
+                _LRC_INFO[key] = e
+                loaded += 1
+            except Exception:
+                bad += 1
+        if bad:
+            _save_lrc_info()
+    except Exception as e:
+        log(f"[CACHE] WARN 读 lrc_info.json 失败: {e}")
+    return loaded
+
+
+def _migrate_legacy_lyrics(raw):
+    """旧 cache.json 的 lyrics 条目一次性迁移为 .lrc（索引已有同 key 则跳过）"""
+    moved = 0
+    try:
+        legacy = raw.get("lyrics") or {}
+        if not isinstance(legacy, dict) or not legacy:
+            return 0
+        for key, v in legacy.items():
+            try:
+                if key in _LRC_INFO or not isinstance(v, dict):
+                    continue
+                tl = _norm_timeline(v.get("timeline") or [])
+                if not tl:
+                    continue
+                trans = _norm_timeline(v.get("trans_timeline") or [])
+                artist, _, title = key.partition("|")
+                fa = v.get("fetched_at") or time.time()
+                if _register_lyric(key, artist, title, v.get("source", ""), tl, trans, fa):
+                    _CACHE["lyrics"][key] = {
+                        "source": str(v.get("source", "")),
+                        "timeline": tl,
+                        "trans_timeline": trans,
+                        "fetched_at": float(fa),
+                    }
+                    moved += 1
+            except Exception:
+                continue
+        if moved:
+            _save_lrc_info()
+    except Exception:
+        pass
+    return moved
 
 
 def _load_cache():
     global _CACHE
     try:
-        if _os.path.isfile(_LOCAL_CACHE_PATH):
-            import json
+        os.makedirs(_LOCAL_LYRICS_DIR, exist_ok=True)
+    except Exception:
+        pass
+    raw = None
+    try:
+        if os.path.isfile(_LOCAL_CACHE_PATH):
             with open(_LOCAL_CACHE_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict) and isinstance(raw.get("lyrics"), dict):
-                _CACHE["lyrics"] = raw["lyrics"]
-                _CACHE["covers"] = raw.get("covers") or {}
-                _CACHE["meta"] = raw.get("meta") or _CACHE["meta"]
-                log(f"缓存加载: 歌词 {len(_CACHE['lyrics'])} 首 + 封面 {len(_CACHE['covers'])} 首 → {_LOCAL_CACHE_PATH}")
+                d = json.load(f)
+            if isinstance(d, dict):
+                raw = d
     except Exception as e:
         log(f"WARN: 缓存读取失败: {e}")
+    with _cache_lock:
+        _CACHE = {
+            "lyrics": {},
+            "covers": (raw or {}).get("covers") or {},
+            "meta": (raw or {}).get("meta") or {"version": 2, "limit": _CACHE_LRU_LIMIT},
+        }
+        loaded = _load_lrc_store()
+        moved = _migrate_legacy_lyrics(raw or {})
+    if moved > 0 and raw is not None:
+        try:
+            raw["lyrics"] = {}
+            meta = raw.get("meta")
+            if not isinstance(meta, dict):
+                meta = {"version": 2, "limit": _CACHE_LRU_LIMIT}
+            meta["lyrics_migrated"] = "v7.33"
+            raw["meta"] = meta
+            _atomic_write(_LOCAL_CACHE_PATH, json.dumps(raw, ensure_ascii=False, indent=1))
+            log(f"[CACHE] 旧 json 歌词已迁移为 .lrc: {moved} 首")
+        except Exception as e:
+            log(f"[CACHE] WARN 迁移后回写旧缓存失败: {e}")
+    try:
+        known = {e.get("file") for e in _LRC_INFO.values()}
+        orphans = [n for n in os.listdir(_LOCAL_LYRICS_DIR) if n.lower().endswith(".lrc") and n not in known]
+        if orphans:
+            log(f"[CACHE] lyrics/ 有 {len(orphans)} 个未登记索引的 .lrc（保留不动）: {', '.join(orphans[:5])}")
+    except Exception:
+        pass
+    log(f"缓存加载: 歌词 {len(_CACHE['lyrics'])} 首 (lrc载入 {loaded} / 迁移 {moved}) + 封面 {len(_CACHE['covers'])} 首")
 
 
 def _save_cache():
+    """v7.33: 只持久化封面；歌词走 lrc_info.json + lyrics/*.lrc（lyrics 留空占位防重复迁移）"""
     try:
-        _os.makedirs(_LOCAL_CFG_DIR, exist_ok=True)
-        import json
+        os.makedirs(_LOCAL_CFG_DIR, exist_ok=True)
         with _cache_lock:
             _cache_evict_if_needed()
-            with open(_LOCAL_CACHE_PATH, "w", encoding="utf-8") as f:
-                json.dump(_CACHE, f, ensure_ascii=False)
+            payload = {
+                "lyrics": {},
+                "covers": dict(_CACHE["covers"]),
+                "meta": dict(_CACHE["meta"]),
+            }
+        with open(_LOCAL_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         log(f"WARN: 缓存写入失败: {e}")
 
 
+def _lyric_persist_worker(key, artist, title, source, tl, trans_tl, fetched_at):
+    try:
+        with _cache_lock:
+            _register_lyric(key, artist, title, source, tl, trans_tl, fetched_at)
+            _cache_evict_if_needed()
+            _save_lrc_info()
+    except Exception as e:
+        try:
+            log(f"[CACHE] WARN 歌词持久化失败: {e}")
+        except Exception:
+            pass
+
+
 def _cache_get_lyric(artist: str, title: str):
-    k = _cache_key(artist, title)
-    rec = _CACHE["lyrics"].get(k)
+    with _cache_lock:
+        rec = _CACHE["lyrics"].get(_cache_key(artist, title))
     if not rec:
         return None
     tl = rec.get("timeline") or []
@@ -2109,19 +2969,26 @@ def _cache_get_lyric(artist: str, title: str):
 def _cache_put_lyric(artist: str, title: str, src: str, tl, trans_tl):
     if not (artist and title and tl):
         return
+    tl_n = _norm_timeline(tl)
+    if not tl_n:
+        return
+    trans_n = _norm_timeline(trans_tl) if trans_tl else []
+    key = _cache_key(artist, title)
+    fa = time.time()
     rec = {
         "source": str(src),
-        "timeline": list(tl) if tl else [],
-        "trans_timeline": list(trans_tl) if trans_tl else [],
-        "fetched_at": time.time(),
+        "timeline": tl_n,
+        "trans_timeline": trans_n,
+        "fetched_at": fa,
     }
     with _cache_lock:
-        _CACHE["lyrics"][_cache_key(artist, title)] = rec
-    threading.Thread(target=_save_cache, daemon=True).start()
+        _CACHE["lyrics"][key] = rec
+    threading.Thread(target=_lyric_persist_worker, args=(key, (artist or "").strip(), (title or "").strip(), str(src), tl_n, trans_n, fa), daemon=True).start()
 
 
 def _cache_get_cover(artist: str, title: str):
-    rec = _CACHE["covers"].get(_cache_key(artist, title))
+    with _cache_lock:
+        rec = _CACHE["covers"].get(_cache_key(artist, title))
     if not rec or not rec.get("url"):
         return None
     return (rec.get("source", "Cache"), rec["url"])
@@ -2138,7 +3005,6 @@ def _cache_put_cover(artist: str, title: str, src: str, url: str):
     with _cache_lock:
         _CACHE["covers"][_cache_key(artist, title)] = rec
     threading.Thread(target=_save_cache, daemon=True).start()
-
 
 def _load_local_config():
     global _LYRIC_OFFSET_MS
@@ -2659,8 +3525,13 @@ def poll_smtc():
     - 返回是否有有效会话
     """
     global _last_smtc_ts, _last_song_key, _last_song_change_ts, _lyrics_fetched_for, _cover_fetched_for
+    global _no_session_since_ts, _lyric_pending
     global _CLOCK_play_rate, _CLOCK_paused, _CLOCK_last_playing_state, _CLOCK_last_playback_rate, _CLOCK_last_drift_check_ts, _CLOCK_drift_target_ms
     global _force_media_recheck, _last_media_recheck_ts
+    # ══ v7.29 补：漏声明 global 导致函数内赋值把这些名字变成本地变量 → 前面读取抛
+    #    UnboundLocalError 被外层 try 吞掉，卡死计数/上轮pos 自 v7.01 起从未真正写回全局；
+    #    _smtc_song_intro_emitted_at 的函数内赋值同样到不了全局 → tick_lyric 去重失效。══
+    global _CLOCK_last_smtc_pos_raw, _CLOCK_smtc_pos_stuck_count, _CLOCK_smtc_pos_last_change_perf, _smtc_song_intro_emitted_at
     mgr = _ensure_smtc_mgr()
     if mgr is None:
         return False
@@ -2681,10 +3552,51 @@ def poll_smtc():
         #    它的检测源与标题线程完全同源（都读 _kugou_title_song），无任何新增覆盖，纯阻塞。
         #    酷狗标题驱动切歌已由 _kugou_title_loop 独立线程(v7.21)检测，并丢到**非阻塞**后台
         #    kugou_cut 线程(v7.22)执行，故此处不再需要同步兜底 → 保证切歌后歌词线程不被冻结。
+        # ══ v7.30: 无活动会话（播放器已关闭/退出）处理 ══
+        # ① 立即冻结本地时钟：停止 get_local_eff_ms() 积分，否则 tick_lyric 会拿旧 timeline
+        #    按惯性进度继续发射旧歌词（用户场景：关闭酷狗后歌词仍一路滚到整首结束）。
+        #    会话恢复时 ③ 的 _CLOCK_paused = (not playing) 会自然解冻。
+        _CLOCK_paused = True
+        # ② 记录无会话起点；持续超阈值 → 判定真关闭 → 清理残留歌曲状态。
+        #    song 残留是失效链根源：tick_lyric 唯一硬停止守卫是 if not song: return，
+        #    残留旧歌名让它永不触发。同时清歌词事件/队列与取词标记，防旧歌残留串下一轮切歌。
+        _now_ns = time.time()
+        if _no_session_since_ts <= 0:
+            _no_session_since_ts = _now_ns
+        elif _SMTC_STATE.get("song", "") and (_now_ns - _no_session_since_ts) >= _NO_SESSION_CLEAR_S:
+            with _state_lock:
+                _SMTC_STATE["song"] = ""
+                _SMTC_STATE["artist"] = ""
+                _SMTC_STATE["title"] = ""
+                _SMTC_STATE["cover"] = ""
+                _SMTC_STATE["duration_str"] = ""
+                _SMTC_STATE["duration_sec"] = 0
+                _SMTC_STATE["progress_ms"] = 0
+                _SMTC_STATE["timeline"] = []
+                _SMTC_STATE["trans_timeline"] = []
+                _SMTC_STATE["lyric_line"] = ""
+                _SMTC_STATE["lyric_event"] = ""
+                try:
+                    _lyric_event_queue.clear()
+                except Exception:
+                    pass
+                _lyric_pending = False
+                _last_song_key = ""
+                _lyrics_fetched_for = ""
+                _cover_fetched_for = ""
+            try:
+                log(f"SMTC: 无活动媒体会话持续超过 {_NO_SESSION_CLEAR_S:.0f}s（播放器已关闭）→ 清理残留歌曲状态，冻结本地时钟")
+            except Exception:
+                pass
         return False
+
+    # v7.30: 会话恢复 → 清零无会话计时（残留状态若已清空，本轮会按新歌流程重建）
+    _no_session_since_ts = 0.0
 
     # v7.08: 本轮是否已用酷狗真实进度完成切歌锚定（②-5 需据此跳过，避免把真实锚点拽回 0）
     _song_init_kugou_anchored = False
+    # v7.34: 本轮是否已用网易云内存真实进度完成切歌锚定（②-5/②-6 同理跳过）
+    _song_init_netmusic_anchored = False
 
     # 取第一个有媒体内容的会话
     session = None
@@ -2730,6 +3642,19 @@ def poll_smtc():
                         if _kdur and _kdur > 0:
                             total_sec = _kdur / 1000.0
                             duration_str = _format_duration(total_sec)
+        except Exception:
+            pass
+
+        # ── v7.34 网易云适配：内存真实进度覆盖 pos_sec（与酷狗覆盖同款语义）──
+        #    酷狗快照与网易云快照互斥有效（两玩家不同时在场），分支独立互不干扰。
+        #    网易云 SMTC 位置粗粒度且无法 seek 控制，内存锚点是更精确的进度源；
+        #    用户拖动进度条时内存值实时更新，覆盖后天然实现"拖动精确同步"。
+        try:
+            _np = _netmusic_read_progress_ms()
+            if _np is not None and _np >= 0:
+                smtc_pos = int(pos_sec * 1000)
+                if smtc_pos < 3000 or abs(smtc_pos - _np) > 3000:
+                    pos_sec = _np / 1000.0
         except Exception:
             pass
 
@@ -2812,8 +3737,9 @@ def poll_smtc():
                         cover = _thumbnail_to_base64(thumb)
                 except Exception:
                     cover = ""
-                # 写状态
-                global _lyric_pending, _progress_window, _last_predicted_pos_ms
+                # 写状态（_lyric_pending 已在函数头部声明 global，见 v7.30；此处不可重复声明，
+                # 因 v7.30 空会话清理块在本行之前已对其赋值 → 中部声明会触发 SyntaxError）
+                global _progress_window, _last_predicted_pos_ms
                 with _state_lock:
                     _SMTC_STATE["song"] = cur_key
                     _SMTC_STATE["artist"] = artist
@@ -2849,7 +3775,8 @@ def poll_smtc():
                 with _state_lock:
                     if _SMTC_STATE["song"] == cur_key:
                         # v6.79 P0 切歌关键：立即清空旧歌事件队列，防止旧歌缓冲事件串到新歌
-                        global _lyric_event_queue
+                        # （.clear() 不重绑定对象，无需 global；v7.30 块已在前面使用过该名字，
+                        #  此处若再声明会触发 "used prior to global declaration" SyntaxError）
                         try:
                             _lyric_event_queue.clear()
                         except Exception:
@@ -2876,8 +3803,24 @@ def poll_smtc():
                 #    用自己的常量是因为 pos_sec 此时仍是 SMTC 的 0（顶部酷狗覆盖当时快照无效）。
                 _song_init_kugou_anchored = False
                 _sg_init_pos_ms = int(pos_sec * 1000)
-                # 仅当播放中且 SMTC 位置不可信(pos≈0)才等酷狗真实进度；其它播放器 SMTC 给真实 pos 则直接锚，不白等。
-                if playing and _sg_init_pos_ms < 3000:
+                # ══ v7.31: 「等酷狗真实进度」必须以「酷狗窗口确实在场」为前提。══
+                #    旧逻辑把任何播放器 pos≈0 都当"酷狗式不可信进度"无条件等酷狗进度最长 1.5s+15s；
+                #    非酷狗播放器(网易云等)切歌瞬间 SMTC pos 本来就合法地≈0 → 误触发该等待，
+                #    且酷狗未运行时探针永远产不出有效快照，必走满超时 → 歌词线程启动被拖慢 ~16.5s。
+                #    可见酷狗窗口探测是权威信号：无窗口=酷狗不在场 → 直接用 SMTC pos 锚(≈0 对新歌起播合法)。══
+                _kugou_present_now = False
+                try:
+                    _kugou_present_now = bool(_kugou_find_hwnds())
+                except Exception:
+                    _kugou_present_now = False
+                # v7.34 网易云在场判断独立于酷狗（进程探测，不复用酷狗窗口门控）
+                _netmusic_present_now = False
+                try:
+                    _netmusic_present_now = bool(_netmusic_present())
+                except Exception:
+                    _netmusic_present_now = False
+                # 仅当播放中且 SMTC 位置不可信(pos≈0)**且酷狗在场**才等酷狗真实进度；其它播放器 SMTC 给真实 pos 则直接锚，不白等。
+                if playing and _sg_init_pos_ms < 3000 and _kugou_present_now:
                     _kp_init = _await_kugou_pos(_SG_INIT_KUGOU_WAIT_S)
                     if _kp_init is not None and _kp_init > 0:
                         _sg_init_pos_ms = int(_kp_init)
@@ -2897,8 +3840,32 @@ def poll_smtc():
                             _sg_init_pos_ms = 0
                 elif not playing:
                     _sg_init_pos_ms = 0
-                _anchor_clock(_sg_init_pos_ms, reason=f"song_init {cur_key!r}" + (" kugou" if _song_init_kugou_anchored else ""))
-                log(f"切歌锚定 [{t_p0:.3f}] {cur_key!r} → pos_ms={_sg_init_pos_ms} kugou={'Y' if _song_init_kugou_anchored else 'N'}")
+                # ══ v7.34 网易云适配：内存锚点真实进度切歌锚定（镜像酷狗语义）。══
+                #    网易云 SMTC pos 本身可信，这里走锚定分支主要是覆盖"探针尚未产出首个有效快照"
+                #    的窗口期（刚启动/版本刚变重扫中），确保切歌首锚不悬空。内存读毫秒级，等待≤2s。══
+                if (playing and _sg_init_pos_ms < 3000 and (not _kugou_present_now)
+                        and (not _song_init_kugou_anchored) and _netmusic_present_now
+                        and (not _song_init_netmusic_anchored)):
+                    _np_init = _await_netease_pos(2.0)
+                    if _np_init is not None and _np_init > 0:
+                        _sg_init_pos_ms = int(_np_init)
+                        _song_init_netmusic_anchored = True
+                    # 同款残留守卫：切歌=新歌刚起播，>5s 判为上一首残留 → 重读，仍异常锚 0
+                    if _sg_init_pos_ms > 5000:
+                        try:
+                            log(f"[SONG_INIT] 网易云切歌锚定守卫: pos_ms={_sg_init_pos_ms} > 5000ms 判为上一首残留 → 重读")
+                        except Exception:
+                            pass
+                        time.sleep(0.3)
+                        _np_retry = _netmusic_read_now()
+                        if _np_retry is not None and 0 <= _np_retry[0] <= 5000:
+                            _sg_init_pos_ms = int(_np_retry[0])
+                        else:
+                            _sg_init_pos_ms = 0
+                if playing and _sg_init_pos_ms < 3000 and not _kugou_present_now and not _netmusic_present_now:
+                    log(f"[SONG_INIT] v7.31 酷狗不在场(无酷狗窗口) → 跳过等酷狗进度，直接锚定 SMTC pos_ms={_sg_init_pos_ms}")
+                _anchor_clock(_sg_init_pos_ms, reason=f"song_init {cur_key!r}" + (" kugou" if _song_init_kugou_anchored else "") + (" netmusic" if _song_init_netmusic_anchored else ""))
+                log(f"切歌锚定 [{t_p0:.3f}] {cur_key!r} → pos_ms={_sg_init_pos_ms} kugou={'Y' if _song_init_kugou_anchored else 'N'} netmusic={'Y' if _song_init_netmusic_anchored else 'N'}")
                 # ── 歌词 & 封面：先查本地缓存，命中就不走网络，严格 0ms 抢第一句 ──
                 if artist and title:
                     _lyrics_fetched_for = cur_key
@@ -2968,6 +3935,9 @@ def poll_smtc():
         # v7.01：SMTC pos卡死检测的临时工作变量（每轮必初始化，避免②-1/②-2/②-4分支走到未赋值）
         _CLOCK_smtc_pos_stuck_count_wip = 0
         _CLOCK_smtc_pos_raw_wip = pos_ms_raw
+        # v7.29：pos 变化时刻 wip。非②-3分支（暂停恢复/倍速/首锚/异常）不参与卡死判定，
+        #         保守按"刚刚变化"处理 → 卡死时长从本轮重新计时，绝不会误判。
+        _CLOCK_smtc_pos_change_perf_wip = time.perf_counter()
         # ②-1: paused → resumed（暂停→播放）必须 anchor
         if playing and (not _CLOCK_last_playing_state):
             need_anchor = True
@@ -2999,11 +3969,27 @@ def poll_smtc():
                     prate = _CLOCK_play_rate if _CLOCK_play_rate else 1.0
                     last_smtc_pos = _CLOCK_last_smtc_pos_raw
                     stuck_count = _CLOCK_smtc_pos_stuck_count
-                # 先更新连续相同计数（不计入全局 lock，与下面 anchor 分支一起在函数末尾统一写回）
+                    last_change_perf = _CLOCK_smtc_pos_last_change_perf
+                # v7.29：卡死判定从"按轮计数"改"按时长"。酷狗探针快照 ~1s 才更新，而本函数被
+                #         10ms 级 tick 高频调用，旧逻辑两轮命中同一快照即误判卡死，探针一更新又清零，
+                #         导致 SMTC_POS_STUCK 日志每秒刷一条。现在：仅当 pos 连续 >=3s 完全不变才判卡死。
+                # （不计入全局 lock，与下面 anchor 分支一起在函数末尾统一写回）
                 if last_smtc_pos == pos_ms_raw:
-                    stuck_count_now = stuck_count + 1
+                    if stuck_count >= 2:
+                        # 已处于卡死态：保持并累加（维持原"卡死直到 pos 变化才解除"语义）
+                        stuck_count_now = stuck_count + 1
+                        change_perf_now = last_change_perf
+                    else:
+                        _same_s = (time.perf_counter() - last_change_perf) if last_change_perf > 0 else 0.0
+                        if _same_s >= 3.0:
+                            stuck_count_now = 2
+                        else:
+                            stuck_count_now = 1
+                        # pos 未变化 → 沿用上次变化时刻；无基线（首轮）则以本轮为基线
+                        change_perf_now = last_change_perf if last_change_perf > 0 else time.perf_counter()
                 else:
                     stuck_count_now = 0
+                    change_perf_now = time.perf_counter()
                 if stuck_count_now >= 2:
                     # SMTC 位置连续 2 轮完全没动 → 视为位置上报失效（酷狗恒报0类），跳过 seek 判定
                     pass
@@ -3029,7 +4015,7 @@ def poll_smtc():
         # ②-5: 切歌1s内 anchor_snapshot 与 pos差 >5s 兜底自愈
         #        v7.08: 若本轮已用酷狗真实进度完成切歌锚定，则跳过——此时 pos_ms_raw 仍是 SMTC 的 0，
         #              触发只会把刚锚好的真实位置又拽回 0，破坏"播到一半追上"。
-        if (not need_anchor) and (not _song_init_kugou_anchored) and _SMTC_STATE.get("song", "") and (time.time()-_last_song_change_ts < 1.0):
+        if (not need_anchor) and (not _song_init_kugou_anchored) and (not _song_init_netmusic_anchored) and _SMTC_STATE.get("song", "") and (time.time()-_last_song_change_ts < 1.0):
             try:
                 if abs(_CLOCK_last_anchor_snapshot_ms - pos_ms_raw) > 5000:
                     need_anchor = True
@@ -3040,9 +4026,14 @@ def poll_smtc():
         #    切歌/启动首轮若首锚没等到真实进度（如首次遍历超时）而锚在 0，此后 SMTC 恒 0 会让
         #    seek 的 stuck_count≥2 永久禁用重锚，导致探针拿到真实进度后也永远不拽回——歌词一直从头播。
         #    这里每个周期拿探针快照：本地时钟与真实进度偏差 >2s 时，无视 stuck 禁用，强制重锚到真实进度。
-        if (not need_anchor) and (not _song_init_kugou_anchored):
+        if (not need_anchor) and (not _song_init_kugou_anchored) and (not _song_init_netmusic_anchored):
             try:
                 _kp_snap_ex = _kugou_read_progress_ms_ex()
+                # v7.34 网易云适配：酷狗快照缺位时用网易云内存快照同款兜底
+                _snap_src = "kugou"
+                if _kp_snap_ex is None:
+                    _kp_snap_ex = _netmusic_read_progress_ms_ex()
+                    _snap_src = "netmusic"
                 if _kp_snap_ex is not None and _kp_snap_ex[0] > 0:
                     _kp_snap = int(_kp_snap_ex[0])
                     # ══ v7.14: 剔除 offset 再比真实进度——offset 是用户补偿(常为正,把歌词延后)，
@@ -3056,7 +4047,7 @@ def poll_smtc():
                         #    当"当前位置"锚定，快照年龄(最高≈探针周期1s)原样变成锚定滞后——
                         #    自愈一次仍残留最多~1s 延迟。pos_now ≈ pos_snap + age*rate(≈1.0)。══
                         _kp_age_ms = int(max(0.0, time.time() - float(_kp_snap_ex[1])) * 1000)
-                        anchor_reason = f"kugou_real_time_align diff={_kugou_diff:+d}ms age={_kp_age_ms}ms"
+                        anchor_reason = f"{_snap_src}_real_time_align diff={_kugou_diff:+d}ms age={_kp_age_ms}ms"
                         pos_ms_raw = int(_kp_snap + _kp_age_ms)
             except Exception:
                 pass
@@ -3082,6 +4073,7 @@ def poll_smtc():
                 prev_stuck = _CLOCK_smtc_pos_stuck_count
                 _CLOCK_last_smtc_pos_raw = _CLOCK_smtc_pos_raw_wip
                 _CLOCK_smtc_pos_stuck_count = _CLOCK_smtc_pos_stuck_count_wip
+                _CLOCK_smtc_pos_last_change_perf = _CLOCK_smtc_pos_change_perf_wip
             new_stuck = _CLOCK_smtc_pos_stuck_count_wip
             # 卡死态"初触发"打一次日志，避免每轮刷（连续>=2 轮卡死）
             if prev_stuck < 2 and new_stuck >= 2:
@@ -4989,6 +5981,10 @@ def _smtc_poll_worker_loop():
                 _smtc_poll_wake.wait(_smtc_poll_idle_s)
                 _smtc_poll_wake.clear()
             _kugou_ensure_probe()        # 顺带确保酷狗真实进度线程在跑（幂等）
+            try:
+                _netmusic_ensure_probe()  # v7.34: 网易云内存锚点探针（幂等）
+            except Exception:
+                pass
             _smtc_poll_dead = not poll_smtc()
         except Exception:
             _smtc_poll_dead = True
@@ -5016,13 +6012,14 @@ def run():
     try:
         _uia_apply_fast()
         _kugou_ensure_probe()
+        _netmusic_ensure_probe()  # v7.34: 网易云内存锚点探针预热（后台线程，不阻塞）
     except Exception:
         pass
-    log("=== 探针版本标记: pc_status_reporter v7.28 [SeekBackResume] ===")  # 确认跑的是新版探针
+    log("=== 探针版本标记: pc_status_reporter v7.34 [NetmusicAnchor] ===")  # 确认跑的是新版探针
     log(f"目标端口: {PORTS}")
     log(f"本地配置文件: {_LOCAL_CFG_PATH}")
     log(f"  - 歌词 ms 偏移: {_LYRIC_OFFSET_MS}ms (正=延后 负=提前, CMD:OFFSET_ADD/SET/RESET/GET 在线调整; v7.06 方向键 ←提前/→延后 每按{_KEY_ADJ_STEP_MS}ms,长按连续)")
-    log(f"本地缓存: {_LOCAL_CACHE_PATH} (LRU {_CACHE_LRU_LIMIT} 首)")
+    log(f"本地缓存: 封面→{_LOCAL_CACHE_PATH} | 歌词→{_LOCAL_LYRICS_DIR} + 索引 {_LOCAL_LRC_INFO_PATH} (LRU {_CACHE_LRU_LIMIT} 首)")
     log(f"  - 当前缓存: 歌词 {len(_CACHE['lyrics'])} 首 + 封面 {len(_CACHE['covers'])} 首")
     log(f"媒体检测: Windows SMTC (事件驱动: SessionsChanged/PlaybackInfoChanged/MediaPropertiesChanged + 1s兜底) + P1-2 5点滑窗最小二乘滤波校准(0.6预测+0.4实测, >3s seek重置)")
     log(f"歌词: 本地缓存优先 → P1-5 阶梯S1(0~1.5s) variants[0]×(LRCLIB精准+网易云+QQ)=3条首发 → S1未命中追加剩余variants+LRCLIB模糊全部 → 命中窗口内MIN_WAIT_S=1.5s收集所有HIT按评分选最优")
@@ -5043,6 +6040,7 @@ def run():
     #    （async）首探，~1s 内填好真实进度快照；首锚让 2s 一次 _clock_force_align 快速校正即可。
     try:
         _kugou_ensure_probe()
+        _netmusic_ensure_probe()
     except Exception:
         pass
     threading.Thread(target=_lyric_tick_loop, daemon=True).start()
@@ -5144,7 +6142,8 @@ def run():
             if music.get("song"):
                 _last_good_music = music.copy()
                 _last_good_music.pop("lyric_event", None)
-            elif _last_good_music:
+            # v7.30: 兜底仅对歌状态仍存在的瞬时抖动生效；歌名已被无会话清理（播放器已关）→ 不再发陈旧载荷
+            elif _last_good_music and _SMTC_STATE.get("song", ""):
                 music = _last_good_music.copy()
 
             data = {"hostname": socket.gethostname()}
