@@ -3118,7 +3118,7 @@ def _validate_env():
     if not SERVER:
         errs.append("BOT_SERVER（服务器域名/IP）未设置")
     if not PORTS:
-        errs.append("BOT_PC_PORTS（逗号分隔端口列表，例：58890,62002）未设置或为空")
+        errs.append("BOT_PC_PORTS（逗号分隔端口列表，例：20000,20001）未设置或为空")
     if not AUTH_KEY:
         errs.append("BOT_PC_KEY（与服务器约定的 AUTH 密钥）未设置")
     return errs

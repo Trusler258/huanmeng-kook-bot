@@ -10,10 +10,14 @@ jobs:
     steps:
       - name: Trigger bot update check
         env:
-          WEBHOOK_URL: "http://01240820.xyz:62004/github-update"
-          WEBHOOK_KEY: "huanmeng_update_2026"
+          WEBHOOK_URL: ${{ secrets.BOT_UPDATE_WEBHOOK_URL }}
+          WEBHOOK_KEY: ${{ secrets.BOT_UPDATE_WEBHOOK_KEY }}
           PAYLOAD: ${{ toJson(github.event) }}
         run: |
+          if [ -z "$WEBHOOK_URL" ] || [ -z "$WEBHOOK_KEY" ]; then
+            echo "webhook secrets not configured, skip notify"
+            exit 0
+          fi
           echo "$PAYLOAD" | jq -c '{sha: .after, ref: .ref, repo: .repository.full_name, commits: [.commits[]? | {message: .message, author: .author.name}]}' | \
             curl -sS -X POST \
               -H "X-Bot-Key: $WEBHOOK_KEY" \
