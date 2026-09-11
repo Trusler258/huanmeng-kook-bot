@@ -345,6 +345,11 @@ def _to_strict_tools(tools: list[dict]) -> list[dict]:
     return out
 
 
+# 当前调用场景标记（record_usage 用于命中率归因）
+# call_llm 是底层入口，各调用方在调用前设置此变量
+_current_call_scene: str = ""
+
+
 async def call_llm(
     model_cfg: ModelConfig,
     messages: list[dict],
@@ -352,6 +357,7 @@ async def call_llm(
     temperature: float = 0.7,
     timeout: float = 60.0,
     json_mode: bool = False,
+    scene: str = "",
 ) -> str:
     """
     调用 LLM 并返回原始文本内容。
@@ -363,6 +369,7 @@ async def call_llm(
         max_tokens: 最大生成 token 数
         temperature: 温度参数
         timeout: 超时时间（秒）
+        scene: 调用场景标识（reply/judge/search/tools等），用于 token 命中率归因
         
     Returns:
         模型返回的文本内容；出错返回空字符串
@@ -423,14 +430,16 @@ async def call_llm(
                 from core.token_tracker import record_usage
                 # DeepSeek 在 usage 顶层返回 prompt_cache_hit_tokens（非 OpenAI 的 prompt_tokens_details.cached_tokens）
                 cached_tokens = getattr(usage, 'prompt_cache_hit_tokens', None) or 0
+                _cached = getattr(usage, 'prompt_tokens_details', None)
                 if not cached_tokens:
-                    _cached = getattr(usage, 'prompt_tokens_details', None)
                     cached_tokens = getattr(_cached, 'cached_tokens', 0) or 0
                 record_usage(
                     model=model_cfg.name,
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     cached_tokens=cached_tokens,
+                    cache_write_tokens=getattr(_cached, 'cache_write_tokens', 0) or 0,
+                    scene=scene or _current_call_scene,
                 )
         except Exception:
             pass
@@ -496,10 +505,12 @@ async def call_llm_with_tools(
     max_tokens: int | None = None,
     temperature: float = 0.7,
     timeout: float = 60.0,
+    scene: str = "",
 ) -> ToolCallResult:
     """
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
+    scene: 调用场景标识，用于 token 命中率归因
     """
 
     client = _create_client(model_cfg)
@@ -586,6 +597,26 @@ async def call_llm_with_tools(
         try:
             from core.trace import record_llm_duration
             record_llm_duration((loop.time() - start_time) * 1000.0)
+        except Exception:
+            pass
+
+        # 记录 token 消耗（FC 轮同样记录，命中率归因用）
+        try:
+            usage = getattr(completion, "usage", None)
+            if usage:
+                from core.token_tracker import record_usage
+                _fc_cached = getattr(usage, "prompt_tokens_details", None)
+                _fc_hit = getattr(usage, "prompt_cache_hit_tokens", None) or 0
+                if not _fc_hit:
+                    _fc_hit = getattr(_fc_cached, "cached_tokens", 0) or 0
+                record_usage(
+                    model=model_cfg.name,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cached_tokens=_fc_hit,
+                    cache_write_tokens=getattr(_fc_cached, "cache_write_tokens", 0) or 0,
+                    scene=scene or _current_call_scene or "tools",
+                )
         except Exception:
             pass
         return ToolCallResult(content=content.strip(), tool_calls=tc_list)
@@ -916,7 +947,7 @@ async def generate_multi_reply_with_tools(
 
     for round_idx in range(MAX_ROUNDS):
         needs_next_any = False  # 每轮重置：仅依据本轮 run_code 结果判断是否需要继续链式执行
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools")
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
@@ -1099,10 +1130,11 @@ async def generate_multi_reply_with_tools(
             {"role": "user", "content": (
                 f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n"
                 "请用你一贯的人格语气，直接、具体地回答用户（列出地名/数字/时间等事实），"
-                "不要只说'查到啦'这类空话。按 reply_schema JSON 格式输出（replies/fav/calls/face/mood/action）。"
+                "不要只说'查到啦'这类空话。简单数据一两句即可；如果结果含知识/原理/步骤/对比类内容，就展开讲清楚，不限句数。"
+                "按 reply_schema JSON 格式输出（replies/fav/calls/face/mood/action）。"
             )},
         ]
-        raw = await call_llm(reply_model, wrap_msgs, max_tokens=400, temperature=0.4)
+        raw = await call_llm(reply_model, wrap_msgs, max_tokens=2000, temperature=0.4)
         if raw:
             return _parse_reply(
                 json.dumps({"replies": [raw.strip()], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
@@ -1417,7 +1449,7 @@ def _build_messages(
         ctx_hint = "优先用上下文+自身知识回答，上下文够用就别搜。"
     else:
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
-    max_chars = "40" if is_group else "12"
+    max_chars = "40" if is_group else "20"
     # ★ 详细度约束：detail_hint 非空（用户要求"详细/展开/完整/一次说完"等）
     # 或 extra_info 含知识类展开要求时，放宽句数/字数限制，允许结构化长回答。
     # 默认（普通闲聊/简单问答）仍保持 1~3 句短回，不牺牲简单场景的轻快。
@@ -1511,13 +1543,13 @@ async def generate_multi_reply(
     if extra_info:
         user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答，如果信息不相关可忽略。")
     # ★ 格式提醒：JSON 输出
-    max_chars = "40" if is_group else "12"
+    max_chars = "40" if is_group else "20"
     fmt_reminder = (
         "【格式规则：严格输出 JSON，不要任何额外文字】"
         "\n"
         '{"replies":["完整的第一句话","自然的第二句话"],"mood_detail":["开心","好奇"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇了摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"当前发言者","qq":发言人QQ号}}'
         "\n"
-        f"日常回复 1~3 句，每句≤{max_chars}字。复杂问题 3~6 句，每句≤150 字，展开说透。fav -5~+5。"
+        f"回复长度随场景：闲聊 1~3 句、每句≤{max_chars}字；知识/技术/原理/概念/步骤/对比类问题或对方追问 → 3~10 句、不限字数，讲深讲透。fav -5~+5。"
             "\n"
                         "mood: 当前整体情绪。mood_detail: 每句话对应情绪数组(和replies一一对应)。action: 动作描写。at: @的QQ号，不@就null。mode: 模式切换。face: 极少用，通常null。"
             "\n"
@@ -1529,6 +1561,7 @@ async def generate_multi_reply(
             "\n"
             '【指令调用规则：如果有人要求你执行一个操作（如发战报/查天气/搜百度/发群统计等），必须通过calls执行对应指令，不要只回文字假装做了。calls里填指令名和参数，replies里说一句简短的"好的喵~"即可。】'
             "\n"
+            '【笔记本规则（必须真记，出现即调）：①群内关系 → ②称呼/黑话（某外号指谁、某词群内什么意思）→ ③某人身份/昵称/性别/特征 → ④有人明确说"记一下/记住"。碰到任一类，立即用 calls 调 note 记录，如 {"name":"note","args":"模组东=雪泠翎，女生"}，写清"谁=什么信息"。判定要点：只要群里的人这样称呼/这样认为就照记（哪怕是知名角色/公众人物）——你记的是「这个群的事实」，不是百科。发现之前记错了或过时了 → 用 calls 调 note 传 "fix <序号> <新内容>" 改正（序号看编号），别重记一条。只在回复说"记下了"而没调用是骗人。】'
             '【致命规则：replies 内必须用标准 JSON，英文引号必须转义为 \\" ，或用中文引号「」替代！】'
             "\n"
             "【禁止：JSON之后严禁加任何注释、说明、//、/*、```、换行文字！】"
@@ -1552,7 +1585,7 @@ async def generate_multi_reply(
     logger.info("开始多句回复生成 | speaker=%s | history_turns=%d | extra=%d字",
                speaker_name, len(turns) - 1, len(extra_info))
 
-    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True)
+    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True, scene="reply")
     if not raw:
         logger.warning("多句回复生成为空，将使用 fallback")
         return [], 0, [], "", "", "", None, None, "user", {}, [], []
@@ -1691,6 +1724,7 @@ async def judge_interest(
         max_tokens=2,
         temperature=0.5,
         timeout=15.0,
+        scene="judge",
     )
     
     digits = "".join(c for c in result if c.isdigit())
@@ -1722,6 +1756,7 @@ async def judge_should_reply_cheap(
         max_tokens=1,
         temperature=0,
         timeout=10.0,
+        scene="judge",
     )
     should = result.strip() == "1"
     logger.debug("廉价判断模型: msg='%s...' → %s", msg[:30], "REPLY" if should else "SKIP")
@@ -1746,6 +1781,7 @@ async def judge_need_search(
         max_tokens=1,
         temperature=0,
         timeout=10.0,
+        scene="judge_search",
     )
     need = result.strip() == "1"
     logger.debug("搜索判断: msg='%s...' → %s", msg[:30], "SEARCH" if need else "NO_SEARCH")

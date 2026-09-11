@@ -159,23 +159,20 @@ class BotConfig:
                     version = vm.group(1).strip().split("\n")[0].strip("#- ")
                     lines = vm.group(1).strip().split("\n")
                     lines = [l.strip("- # ").strip() for l in lines if l.strip() and not l.startswith("|") and not l.startswith("###")]
-                    lines = [l for l in lines[:6] if l]
+                    lines = [l for l in lines[:3] if l]  # v2.0.4ac: changelog 6→3 条省 token
                     changelog_lines = "\n".join(f"- {l}" for l in lines)
             except Exception:
                 pass
 
-        # 架构
-        arch_lines = ""
-        arch_path = Path(__file__).resolve().parent.parent / "data" / "architecture.mermaid"
-        if arch_path.exists():
-            try:
-                arch_text = arch_path.read_text(encoding="utf-8")
-                clean = re.sub(r'<br/>', ' · ', arch_text)
-                clean = re.sub(r'[\\"]', '', clean)
-                nodes = re.findall(r'\[([^\]]+)\]', clean)
-                arch_lines = "\n".join(f"- {n.strip()}" for n in nodes)
-            except Exception:
-                pass
+        # 架构（v2.0.4ac 瘦身）：system 常驻只放极简摘要——完整 architecture.mermaid
+        # 曾全量注入(70 行 ≈7.4K 字符)，每条消息都进前缀，miss 时全额计费推高成本，
+        # 而日常聊天/科普根本用不上。完整架构由 pipeline 按关键词(版本/架构/能力/配置等)
+        # 经 core/arch_loader 动态注入 extra_info 末尾（不污染前缀缓存）。
+        arch_lines = (
+            "四层模块化: core(基础设施/上下文/事件/插件) → services(llm/发送/图片识别) → "
+            "modules(40+指令/经济/记忆/地震/表情) → utils; 另含 db(SQLite+FTS5检索)、"
+            "plugins(.hmp插件)、data(技能/日志/架构)"
+        )
 
         model_info = "DeepSeek(回复) + Zhipu(视觉) + DuckDuckGo(搜索)"
 

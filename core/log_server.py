@@ -455,7 +455,7 @@ async def _file_watcher(log_path: Path, interval: float = 0.5):
         await asyncio.sleep(interval)
 
 
-async def start(port: int = 62000, standalone: bool = False):
+async def start(port: int = 62000, standalone: bool = False, bind_host: str = "127.0.0.1"):
     """
     启动日志 Web 服务器。
 
@@ -463,11 +463,12 @@ async def start(port: int = 62000, standalone: bool = False):
         port: 监听端口（默认 62000）
         standalone: 独立模式 — 启动文件 watcher，读取 logs/huanmeng.log 新增行并广播。
                     适用于 logweb.py 独立进程（不依赖 bot 进程的 WebSocketLogHandler）。
+        bind_host: 绑定地址（默认 127.0.0.1，仅本机/隧道回源可达）。
     """
     global _server_task
-    server = await asyncio.start_server(_http_handler, "0.0.0.0", port)
+    server = await asyncio.start_server(_http_handler, bind_host, port)
     addr = server.sockets[0].getsockname()
-    logging.getLogger("huanmeng").info("🌐 日志控制台已启动 → http://0.0.0.0:%d", addr[1])
+    logging.getLogger("huanmeng").info("🌐 日志控制台已启动 → http://%s:%d", bind_host, addr[1])
 
     if standalone:
         log_path = Path(__file__).resolve().parent.parent / "logs" / "huanmeng.log"

@@ -682,7 +682,7 @@ function drawSpark(){
 let ws;
 function connectWS(){
   setConn('warn','连接中...');
-  try{ws=new WebSocket('ws://'+location.host+'/ws');}
+  try{ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+((location.pathname.length>1)?location.pathname.replace(/\/+$/,''):'')+'/ws');}
   catch(e){setConn('err','断开');setTimeout(connectWS,3000);return;}
   ws.onopen=()=>{setConn('live','已连接');pending=0;JUMP.classList.remove('show');};
   ws.onclose=()=>{setConn('err','断开');setTimeout(connectWS,3000);};
@@ -704,7 +704,7 @@ $('btn-reconnect').addEventListener('click',e=>{
 async function loadHistory(){
   if(total>0)return;
   try{
-    const r=await fetch('/api/logs?lines=300');
+    const r=await fetch(((location.pathname.length>1)?location.pathname.replace(/\/+$/,''):'')+'/api/logs?lines=300');
     if(!r.ok)return;
     const lines=(await r.text()).split('\n').filter(Boolean);
     lines.forEach(addHistoryLine);

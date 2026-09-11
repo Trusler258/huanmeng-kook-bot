@@ -6,63 +6,82 @@
       "default": [],
       "item_type": "str",
       "min_items": 1,
-      "max_items": 5,
-      "desc": "回复句子数组"
+      "max_items": 12,
+      "desc": "回复句子数组（闲聊1~3句；知识/技术/原理类3~10句，不限单句字数）",
+      "optional": false
     },
     "fav": {
       "type": "int",
       "default": 0,
       "min": -5,
       "max": 5,
-      "desc": "好感度变化"
+      "desc": "好感度变化",
+      "optional": false
     },
     "calls": {
       "type": "list",
       "default": [],
       "item_type": "dict",
-      "desc": "指令调用 [{\"name\":\"cmd\",\"args\":\"...\"}]"
+      "desc": "指令调用 [{\"name\":\"cmd\",\"args\":\"...\"}]",
+      "optional": false
     },
     "face": {
       "type": "str|null",
       "default": null,
-      "desc": "表情库关键词，通常 null"
+      "desc": "表情库关键词，通常 null（可省略）",
+      "optional": true
     },
     "mood": {
       "type": "str",
       "default": "",
       "max_len": 30,
-      "desc": "当前情绪"
+      "desc": "当前情绪",
+      "optional": true
     },
     "action": {
       "type": "str",
       "default": "",
       "max_len": 30,
-      "desc": "动作描写"
+      "desc": "动作描写，多数回复不需要（可省略/留空）",
+      "optional": true
     },
     "at": {
       "type": "int|null",
       "default": null,
-      "desc": "@的QQ号，不@就null"
+      "desc": "@的QQ号，不@就null",
+      "optional": true
     },
     "mode": {
       "type": "str|null",
       "default": null,
-      "desc": "模式切换，不需要就null"
+      "desc": "模式切换，不需要就省略",
+      "optional": true
     },
     "origin": {
       "type": "str",
       "default": "user",
-      "values": ["user", "bot"],
-      "desc": "谁发起操作"
+      "values": [
+        "user",
+        "bot"
+      ],
+      "desc": "谁发起操作",
+      "optional": true
     },
     "actor": {
       "type": "dict|null",
       "default": null,
       "keys": {
-        "name": {"type": "str", "default": ""},
-        "qq": {"type": "int", "default": 0}
+        "name": {
+          "type": "str",
+          "default": ""
+        },
+        "qq": {
+          "type": "int",
+          "default": 0
+        }
       },
-      "desc": "替谁执行，bot发起时null"
+      "desc": "替谁执行，bot发起时null",
+      "optional": true
     }
   }
 }

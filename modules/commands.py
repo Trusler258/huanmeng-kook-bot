@@ -48,7 +48,8 @@ except ImportError:
 from modules.changelog import send_changelog_card, send_weather_card, send_box_card
 from modules.whois_lookup import lookup_domain   # ★ WHOIS 域名查询
 
-from core.token_tracker import cmd_cost, cmd_tokens
+from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
+from core.bot_notes import cmd_note
 
 logger = get_logger("commands")
 
@@ -262,6 +263,12 @@ _HELP_DETAIL = {
 
     "tokens": "【Token计算 .tokens】\n"
               "  .tokens <文本>  计算 token 数和预估费用\n",
+
+    "note": "【你的笔记本 .note】维护长期群内记忆（群内关系/称呼/约定/梗/谁是谁）。用法: .note 查看 | .note <内容> 新增 | .note fix <序号> <新内容> 修改 | .note del <序号> 删除 | .note clear 清空。重要：①有人说'记一下/记住'或出现值得长期记住的信息（谁是谁、什么关系、称呼黑话、约定）→ 必须用 calls 调 note 真的记，严禁只在回复说'记下了'；②发现之前记错了或信息过时了 → 用 calls 调 note 传 'fix <序号> <新内容>' 改正（序号见上下文里笔记本的编号），不要重新记一条重复的。",
+
+    "cache": "【缓存命中率 .cache】\n"
+             "  .cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n"
+             "  用于排查命中率低的原因（DeepSeek 前缀缓存）\n",
 
     "resetfav": "【重置好感 .resetfav (主人)】\n"
                 "  清空所有好感度数据",
@@ -3843,6 +3850,8 @@ COMMAND_MAP: dict[str, callable] = {
     "balance":    cmd_balance,
     "cost":       cmd_cost,
     "tokens":     cmd_tokens,
+    "cache":      cmd_cache,
+    "note":       cmd_note,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
     "phone":      cmd_phone,

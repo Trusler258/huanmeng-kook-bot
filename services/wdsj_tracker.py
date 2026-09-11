@@ -267,7 +267,11 @@ def build_daily_rankings(label_date=None, cross_day=False):
 
     rows = []
     new_players = []
+    _seen_names = set()  # v2.0.4ao: 按游戏名去重, 防同名绑定(如 shuangzi_1228 绑到两个QQ)重复上榜
     for uid, name in bindings.items():
+        if name in _seen_names:
+            continue
+        _seen_names.add(name)
         entry = history.get(name, {})
         bw = entry.get("bedwars-stats", [])
         if not bw:
@@ -337,7 +341,11 @@ def build_arena_daily_rankings(label_date=None):
     bindings = _load_wdsj_bindings()
 
     rows = []
+    _seen_names = set()  # v2.0.4ao: 按游戏名去重, 防同名绑定重复上榜
     for uid, name in bindings.items():
+        if name in _seen_names:
+            continue
+        _seen_names.add(name)
         entry = history.get(name, {})
         arena = entry.get("arena-stats", [])
         if not arena:
