@@ -2006,12 +2006,11 @@ _CLOCK_last_anchor_snapshot_ms: int = 0
 #   因此 seek 判定必须额外要求：本轮 pos_ms_raw 与 上轮 pos 不同（真·跳变），否则视为 SMTC 已挂，不重锚。
 _CLOCK_last_smtc_pos_raw: int = -1
 # 连续卡死计数（>=2 时 seek 判定禁用，即便 |diff|>3s 也不重锚）。
-# ══ v7.29 起语义改为"按时长判定"的饱和计数：仅当 pos 连续 >=3s 未变化才置 >=2，详见 _CLOCK_smtc_pos_last_change_perf ══
+# ══ v7.36 起语义改为"按时长判定"的饱和计数：仅当播放中 pos 连续 >=10s 完全不变才置 >=2，详见 _CLOCK_smtc_pos_last_change_perf ══
 _CLOCK_smtc_pos_stuck_count: int = 0
-# ══ v7.29: pos 最近一次"发生变化"那轮的 perf_counter 时间戳（卡死按时长判定基准）══
-# 轮询频率(10ms tick + 0.5s worker)远高于酷狗探针快照更新频率(~1s)，旧"按轮计数"两轮就命中
-# 同一快照 → 误判卡死 → 探针更新又清零 → 每秒刷一条 SMTC_POS_STUCK 日志。
-# 现在只有 pos 连续 >=3s 完全不变才判卡死（探针正常每秒必变，绝不误判；真坏恒 0 时 ~3s 正确判定）。
+# ══ v7.36: pos 最近一次"发生变化"那轮的 perf_counter 时间戳（卡死按时长判定基准）══
+# 轮询频率(10ms tick + 0.5s worker)远高于探针快照更新频率(~1s)，旧"按轮计数"两轮就命中同一快照误判卡死；
+# 且网易云 SMTC 粗粒度（跳变间隔可>3s）、暂停时 pos 合法冻结 → 必须按时长判定且暂停不计卡死。
 _CLOCK_smtc_pos_last_change_perf: float = 0.0
 # 上次的播放状态（用于检测 paused→resumed）
 _CLOCK_last_playing_state: bool = False
@@ -3531,6 +3530,8 @@ def poll_smtc():
     # ══ v7.29 补：漏声明 global 导致函数内赋值把这些名字变成本地变量 → 前面读取抛
     #    UnboundLocalError 被外层 try 吞掉，卡死计数/上轮pos 自 v7.01 起从未真正写回全局；
     #    _smtc_song_intro_emitted_at 的函数内赋值同样到不了全局 → tick_lyric 去重失效。══
+    # v7.36：补声明——此前遗漏导致函数内赋值只写局部变量、末尾写回读全局抛 UnboundLocalError 被 except 吞，
+    #         seek 跳变检测与卡死检测整体静默失效
     global _CLOCK_last_smtc_pos_raw, _CLOCK_smtc_pos_stuck_count, _CLOCK_smtc_pos_last_change_perf, _smtc_song_intro_emitted_at
     mgr = _ensure_smtc_mgr()
     if mgr is None:
@@ -3933,10 +3934,11 @@ def poll_smtc():
         need_anchor = False
         anchor_reason = ""
         # v7.01：SMTC pos卡死检测的临时工作变量（每轮必初始化，避免②-1/②-2/②-4分支走到未赋值）
+        # v7.36：change_perf wip。非②-3分支（暂停恢复/倍速/首锚/异常）不参与卡死判定，
+        #         保守按"刚刚变化"处理 → 卡死时长从本轮重新计时，绝不会误判。
         _CLOCK_smtc_pos_stuck_count_wip = 0
         _CLOCK_smtc_pos_raw_wip = pos_ms_raw
-        # v7.29：pos 变化时刻 wip。非②-3分支（暂停恢复/倍速/首锚/异常）不参与卡死判定，
-        #         保守按"刚刚变化"处理 → 卡死时长从本轮重新计时，绝不会误判。
+
         _CLOCK_smtc_pos_change_perf_wip = time.perf_counter()
         # ②-1: paused → resumed（暂停→播放）必须 anchor
         if playing and (not _CLOCK_last_playing_state):
@@ -3970,18 +3972,24 @@ def poll_smtc():
                     last_smtc_pos = _CLOCK_last_smtc_pos_raw
                     stuck_count = _CLOCK_smtc_pos_stuck_count
                     last_change_perf = _CLOCK_smtc_pos_last_change_perf
-                # v7.29：卡死判定从"按轮计数"改"按时长"。酷狗探针快照 ~1s 才更新，而本函数被
-                #         10ms 级 tick 高频调用，旧逻辑两轮命中同一快照即误判卡死，探针一更新又清零，
-                #         导致 SMTC_POS_STUCK 日志每秒刷一条。现在：仅当 pos 连续 >=3s 完全不变才判卡死。
+                # v7.29：卡死判定从"按轮计数"改"按时长"：探针快照 ~1s 才更新，而本函数被 10ms 级 tick
+                #         高频调用，旧逻辑两轮命中同一快照即误判卡死，探针一更新又清零，导致 SMTC_POS_STUCK 日志每秒刷一条。
+                # v7.36：阈值 3s→10s + 暂停不计卡死。修两处误判：网易云粗粒度 SMTC 每个覆盖周期内 pos 合法冻结 ~3s；
+                #         暂停时 pos 合法冻结。pos 真恒冻结时 smtc_jumped 恒 False，seek 本就不会误触发，
+                #         stuck 只是双保险，放宽无损安全。
                 # （不计入全局 lock，与下面 anchor 分支一起在函数末尾统一写回）
-                if last_smtc_pos == pos_ms_raw:
+                if not playing:
+                    # 暂停中：pos 合法冻结，不计卡死；保守按"刚刚变化"重置基线
+                    stuck_count_now = 0
+                    change_perf_now = time.perf_counter()
+                elif last_smtc_pos == pos_ms_raw:
                     if stuck_count >= 2:
                         # 已处于卡死态：保持并累加（维持原"卡死直到 pos 变化才解除"语义）
                         stuck_count_now = stuck_count + 1
                         change_perf_now = last_change_perf
                     else:
                         _same_s = (time.perf_counter() - last_change_perf) if last_change_perf > 0 else 0.0
-                        if _same_s >= 3.0:
+                        if _same_s >= 10.0:
                             stuck_count_now = 2
                         else:
                             stuck_count_now = 1
@@ -4005,9 +4013,11 @@ def poll_smtc():
                 # 把 stuck_count_now 写回（后续仍需：本轮 pos_ms_raw 作为下一轮 last_smtc_pos_raw，一起写）
                 _CLOCK_smtc_pos_stuck_count_wip = stuck_count_now
                 _CLOCK_smtc_pos_raw_wip = pos_ms_raw
+                _CLOCK_smtc_pos_change_perf_wip = change_perf_now
             except Exception:
                 _CLOCK_smtc_pos_stuck_count_wip = 0
                 _CLOCK_smtc_pos_raw_wip = pos_ms_raw
+                _CLOCK_smtc_pos_change_perf_wip = time.perf_counter()
         # ②-4: 完全没 anchor 过（启动首轮有歌但未切歌）→ 兜底
         elif _CLOCK_anchor_wall_perf <= 0 and pos_ms_raw >= 0:
             need_anchor = True
