@@ -15,6 +15,7 @@ from khl import Bot, MessageTypes, Message
 
 from core.logger import get_logger, info, error, warning
 from core.config import get_config, load_bot_config
+from core.version import VERSION as BOT_VERSION
 from utils.format_lang import load_lang, format_lang
 from services.sender import init_sender, close_sender
 from core.dispatcher import EventDispatcher
@@ -58,7 +59,7 @@ class HuanmengBot:
     4. 支持优雅关闭
     """
 
-    VERSION = "2.0.2"
+    VERSION = BOT_VERSION   # ★ 单一真相源：core/version.py（别再硬编码）
 
     def __init__(self):
         self.cfg: object = None          # type: ignore (BotConfig)
