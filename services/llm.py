@@ -1211,8 +1211,38 @@ async def generate_multi_reply_with_tools(
                 record_final_flag("tool_success")
             except Exception:
                 pass
+        # ★ v2.3.90（对齐 QQ v2.0.4u + v2.3.48）：工具结果已返回 → 给最终回复轮注入
+        #   「诚实归因」+「搜索空结果守卫」提醒。
+        #   现象1：search_web 查完，LLM 却说"哦这个我知道喵"（装成本来就会），
+        #         与上一句"让我查查"自相矛盾。
+        #   现象2：search_web 只返回 65 字符标题头（=没搜到内容），模型照样编出细节。
+        #   ⚠️ 必须 append 到**末尾**，不能 insert(1)：DeepSeek 的缓存按消息序列逐段匹配前缀，
+        #      在位置 1 插入任何新消息都会让"位置1 及之后"全部对不上，
+        #      命中率从 98.4% 掉到 31.0%（QQ 实测）。放末尾则完全共享前面所有内容的前缀。
+        _final_msgs = list(msgs)
+        _final_msgs.append({
+            "role": "system",
+            "content": (
+                "你刚才调用了工具查询/搜索，现在请基于工具返回的结果回答。"
+                "回复必须如实体现信息是刚查到的：开头可用'我刚查了下''搜到啦''查到啦'等，"
+                "禁止说'这个我知道''我记得''早就知道'这类装作自己本来就会的话。"
+            ),
+        })
+        _thin_search = any(
+            tc["name"] in ("search_web", "search", "read") and 0 < len(txt) < 120
+            for (tc, txt) in tool_results
+        )
+        if _thin_search:
+            _final_msgs.append({
+                "role": "system",
+                "content": (
+                    "⚠️ 刚才的搜索**没有返回有效内容**（只有标题头/字符极少）。"
+                    "请诚实告诉用户这次没查到有效信息，可以建议稍后再试或换个问法。"
+                    "**严禁编造任何具体细节**（数字/时间/原因/官方说法一律不许出现）。"
+                ),
+            })
         json_raw = await call_llm(
-            reply_model, msgs,
+            reply_model, _final_msgs,
             max_tokens=max(max_tokens or 0, 8000),
             temperature=0.4, json_mode=True,
         )
