@@ -474,6 +474,26 @@ class PluginImage:
             logger.warning("PluginImage 拉取用户头像失败 %s: %s", user_id, e)
         return ""
 
+    async def render_html(self, full_html: str, filename: Optional[str] = None,
+                          width: int = 480, height: int = 400,
+                          wait_ms: int = 500, wait_selector: Optional[str] = None,
+                          timeout_ms: int = 10000) -> Optional[str]:
+        """把 HTML/SVG 渲染为 PNG，返回图片绝对路径；失败返回 None。
+
+        ★ 兼容层：QQ 侧的 render_html 在 PluginImage（签名带 filename），
+          KOOK 侧实现在 PluginCard（参数叫 output_filename）。此处委托过去，
+          让从 QQ 移植的插件 `ctx.image.render_html(html, filename, width=...)`
+          无需改代码即可工作。
+        """
+        try:
+            return await PluginCard("image_shim").render_html(
+                full_html, width=width, height=height,
+                wait_ms=wait_ms, wait_selector=wait_selector,
+                timeout_ms=timeout_ms, output_filename=filename)
+        except Exception as e:
+            logger.warning("PluginImage.render_html 失败: %s", e)
+            return None
+
 
 class PluginVision:
     """图片识别能力：用视觉 LLM 把图片内容描述成文字。"""
