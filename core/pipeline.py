@@ -631,6 +631,20 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         msg_history_for_llm = ctx.get_context(chat_id)
         extra_info_for_llm = extra_info
 
+    # ── 用户画像注入（v2.3.90 对齐 QQ v2.3.34）──
+    #   画像按 (会话, 用户) 分域 —— 群里和私聊各一份，
+    #   所以要把 chat_id / is_group 传进去（旧版只传 user_id，等于全局一份）。
+    #   缺失/异常一律跳过，不影响主流程。
+    try:
+        from core.user_profile import build_profile_text
+        _profile_text = build_profile_text(chat_id, user_id, is_group)
+        if _profile_text:
+            extra_info_for_llm = (extra_info_for_llm + "\n\n" + _profile_text) if extra_info_for_llm else _profile_text
+    except ImportError:
+        pass
+    except Exception as _pe:
+        logger.debug("用户画像注入失败（忽略）: %s", _pe)
+
     # ------系统提示词+工具代理------
     # cfg.system_prompt 结构: # 核心人格\n{core}\n---\n# 侧面人格\n{side}\n---\n# 固定身份\n{identity}\n---\n{self_awareness}
     # persona 注入策略（全替换模式）：
