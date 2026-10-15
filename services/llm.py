@@ -763,6 +763,22 @@ _PROMISE_MARKERS: tuple[str, ...] = (
     "马上给", "马上去", "这就去", "去查", "我先查", "我这就帮",
 )
 # 强制实答指令：插入 user 消息，要求本轮直接给出实质内容
+# ── 「先找后写」交付机制（v2.3.90 对齐 QQ v2.3.81c/d/e）────────────────
+# 识别"把资料整理成文档/报告并发出来"类请求：搜到素材只是半成品，
+# 必须再跑几轮逼模型调 write_code，否则用户要的文件永远发不出来。
+_DELIVERABLE_FILE_RE = re.compile(
+    r"(整理|汇总|总结|生成|导出|制作|做成|编成|写成)[^，。！？!?]{0,8}?"
+    r"(md|markdown|txt|文档|文件|报告|表格|清单|资料|日报|周报)",
+    re.IGNORECASE,
+)
+_WRITE_TOOL_NAMES = ("write_code",)
+
+
+def _needs_deliverable_file(msg: str) -> bool:
+    """用户是不是要"把资料整理成文档/报告并发出来"？"""
+    return bool(_DELIVERABLE_FILE_RE.search(msg or ""))
+
+
 _PROMISE_KILLER_MSG = (
     "（重要提示）你上一条回复只说了要做什么、却没给出任何实质内容（既没有命令/代码/步骤，"
     "也没有具体解释），这不是一次有效回答。请立即在本条里直接给出完整的、可直接使用的最终内容："
@@ -957,6 +973,10 @@ async def generate_multi_reply_with_tools(
     action_results = []
     run_raw_outputs = []  # run_code 的真实原始返回（用于透传给用户）
     needs_next_any = False  # run_code 返回"需要下一步"信号 → 放行下一轮链式调用
+    # ★ v2.3.90 先找后写：累积检索素材（去重）+ 记录是否已写文件
+    _gathered: list[str] = []
+    _gathered_seen: set[str] = set()
+    _wrote_file = False
 
     for round_idx in range(MAX_ROUNDS):
         needs_next_any = False  # 每轮重置：仅依据本轮 run_code 结果判断是否需要继续链式执行
@@ -1052,6 +1072,18 @@ async def generate_multi_reply_with_tools(
                 sender_name=speaker_name, is_group=is_group, bot_kook=bot_kook,
                 original_msg=current_msg,
             )
+            # ★ v2.3.90 文档类 write_code：把已检索到的原始素材由代码直接注入
+            #   description（模型只需给文档要求），素材 100% 进得去，不会被复述丢料。
+            if tc.get("name") == "write_code" and _gathered:
+                _a = req.arguments if isinstance(req.arguments, dict) else {}
+                if str(_a.get("language", "")).lower() in ("markdown", "md", "text", "txt"):
+                    _src = "\n\n".join(_gathered)[:7000]
+                    _a["description"] = (
+                        f"{_a.get('description', '')}\n\n"
+                        "【已检索到的原始素材（来自上面工具的真实返回），必须逐条覆盖，不许删减】\n"
+                        f"{_src}"
+                    )
+                    logger.info("FC: 已向 write_code 注入素材 %d 字符", len(_src))
             res = await get_tool_runtime().execute(req)
             return tc, res.to_context()
 
@@ -1068,6 +1100,13 @@ async def generate_multi_reply_with_tools(
             # 工具返回长内容时扩大 max_tokens
             if len(tool_text) > 500:
                 max_tokens = max(max_tokens or 0, 8000)
+            # ★ v2.3.90 累积检索素材（去重），供后续文档类 write_code 注入
+            if tc["name"] in ("search_web", "web_fetch", "read") and tool_text:
+                if tool_text not in _gathered_seen:
+                    _gathered_seen.add(tool_text)
+                    _gathered.append(tool_text)
+            if tc["name"] == "write_code":
+                _wrote_file = True
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text or "超时" in tool_text:
                 errors.append(tool_text)
@@ -1081,11 +1120,87 @@ async def generate_multi_reply_with_tools(
             logger.info("FC: run_code 需要下一步，继续链式执行")
             continue
         # 遇到错误或数据结果 → 停止循环
+        # ⚠️ "先找后写"类请求例外：搜到素材只是半成品，必须再跑几轮让模型去调
+        #    write_code 真正生成文件，否则用户要的文件永远发不出来（v2.3.90）
         if errors or data_results:
+            _names = {tc["name"] for tc in result.tool_calls}
+            if (
+                _needs_deliverable_file(current_msg)
+                and round_idx < 3
+                and not (_names & set(_WRITE_TOOL_NAMES))
+            ):
+                _mat_len = sum(len(g) for g in _gathered)
+                logger.info(
+                    "FC: '先找后写'请求，轮%d 工具=%s 素材=%d字 → 继续一轮",
+                    round_idx + 1, ",".join(sorted(_names)), _mat_len,
+                )
+                # ★ 光靠常驻提醒管不住模型"口头答应不执行"。这里在循环内补一条
+                #   定向指令，把下一步动作说死。
+                if _mat_len < 1200:
+                    # 素材太薄 → 让它自己优化关键词、多轮再搜（别拿用户原话硬搜）
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            f"现在检索到的素材只有 {_mat_len} 字，太少，不足以成文。"
+                            "先自己提炼/优化关键词，再并发发 2~3 条【不同角度】的 search_web，"
+                            "例如换成「今日要闻」「今天国内新闻」「今天国际新闻」「今天财经新闻」"
+                            "「今天科技新闻」这类聚合型查询。"
+                            "⚠️ 查询里**不要带具体日期**——带日期只会召回天气公报、宪报公告之类的"
+                            "无关页面。拿到足够结果后再进入下一步。"
+                        ),
+                    })
+                else:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "用户要的是【文件】，不是聊天文字。此刻立刻调用 write_code："
+                            "language=markdown（要纯文本填 text）。"
+                            "description 只写【文档要求】即可——标题、怎么分节、每条是否附来源链接；"
+                            "上面检索到的原始素材会由系统自动附进这次调用，"
+                            "**不要复述素材、也不要删减**。"
+                            "禁止只说「我这就整理成md发出来」，禁止把正文贴在聊天里。"
+                        ),
+                    })
+                continue
             break
         # 已执行过工具 → 跳出，走 json_mode 生成最终回复
         if action_results:
             break
+
+    # ★ v2.3.90 交付兜底——用户要文件、素材也到手了，模型却始终没调 write_code
+    #   （它爱"口头答应"："我这就整理成md发出来"）。此时由代码直接生成并发送，
+    #   保证东西真的交付出去，而不是只回一句漂亮话。
+    _last_content = (result.content or "") if result is not None else ""
+    if (
+        _needs_deliverable_file(current_msg)
+        and _gathered
+        and not _wrote_file
+        and not result.tool_calls
+        and "write_code" not in _last_content
+    ):
+        try:
+            logger.warning("FC: 模型未生成文件，触发兜底强制生成（素材 %d 段）", len(_gathered))
+            from core.tool_runtime import ToolRequest as _TR, get_tool_runtime as _gtr
+            from core.trace import get_trace_id as _gtid
+            _req = _TR(
+                tool_name="write_code",
+                arguments={
+                    "language": "markdown",
+                    "description": (
+                        "把下面这些已检索到的素材整理成一份完整文档，逐条覆盖、每条附来源链接：\n\n"
+                        + "\n\n".join(_gathered)[:7000]
+                    ),
+                },
+                trace_id=_gtid(),
+                user_id=user_id, group_id=group_id,
+                chat_id=group_id if is_group else user_id,
+                sender_name=speaker_name, is_group=is_group, bot_kook=bot_kook,
+                original_msg="",
+            )
+            await _gtr().execute(_req)
+            _wrote_file = True
+        except Exception as e:
+            logger.warning("FC: 兜底生成文件失败: %s", e)
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
