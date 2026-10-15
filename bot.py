@@ -80,6 +80,13 @@ class HuanmengBot:
         info("配置已加载 | bot=%s | debug=%s",
              self.cfg.bot_name, self.cfg.debug_mode)
 
+        # ★ v2.3.90 决策模型状态提示（对齐 QQ）：没配 key 或显式关闭时明确告知回退原逻辑
+        try:
+            from services.decision import startup_notice
+            info("决策模型 | %s", startup_notice())
+        except Exception as _e:
+            logger.debug("决策模型状态提示失败（忽略）: %s", _e)
+
         # 2. 初始化语言文件
         load_lang()
         info("语言文件已加载")

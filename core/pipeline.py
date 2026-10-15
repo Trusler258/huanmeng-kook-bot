@@ -324,6 +324,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     logger.debug("回复判断: is_mentioned=%s is_group=%s bot_kook=%s content='%s'",
                  is_mentioned, is_group, bot_kook, msg_content[:40])
     group_setting = cfg.group_settings.get(chat_id, {}) if is_group else {}
+    # ★ v2.3.90 决策模型路由（对齐 QQ v2.3.88/89）：**提前 fire**，与后续
+    #   judge / 翻译 / 意图分类重叠执行，到用时才 await（额外开销≈0）。
+    #   未配置 key 或失败 → 返回 None，下面按原逻辑处理（fail-open）。
+    _dec_task = None
+    _dec_mod = None
+    _dec_tool = None
+    try:
+        from services import decision as _dec_mod
+        if _dec_mod.enabled():
+            _dec_task = asyncio.create_task(
+                _dec_mod.route(msg_content, speaker_name=sender_name))
+    except Exception as _e:
+        logger.debug("决策模型路由启动失败（忽略）: %s", _e)
     # KOOK: 全局默认 at_only（仅被 @ 时回复），可在 group_settings 中按频道关闭
     at_only = group_setting.get("at_only", True)
     custom_threshold = group_setting.get("reply_threshold")
@@ -374,6 +387,24 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         intent = ""
         _fast_search = True  # router 出错 → 走完整 pipeline（含搜索判断），不丢消息
     logger.debug("请求意图: intent=%s fast_search=%s msg='%s'", intent, _fast_search, msg_content[:30])
+
+    # ★ v2.3.90 等决策模型路由结果：search 维度命中 → 强制走搜索（补关键词漏判）
+    if _dec_task is not None:
+        try:
+            _dn, _dprobs, _dtool = await asyncio.wait_for(
+                _dec_task, timeout=_dec_mod.call_timeout())
+            if _dn is not None:
+                if "search" in _dn:
+                    _fast_search = True
+                if _dtool:
+                    _dec_tool = _dtool.get("name")
+                logger.info("决策模型路由: %s | probs=%s | 强制工具=%s",
+                            sorted(_dn), _dprobs, _dtool)
+            else:
+                logger.debug("决策模型路由: 无结果（fail-open，用原逻辑）")
+        except Exception as _de:
+            logger.debug("决策模型路由未就绪（fail-open，用原逻辑）: %s", _de)
+        _dec_task = None
 
     # ------Phase 20 P0: 复杂度评估（与意图拆开）------
     # 决定回答深度/是否需要 Agent/输出长度/上下文预算。
@@ -859,6 +890,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             system_text_override=system_text_override,
             tools_override=fc_schemas,
             detail_hint=_detail_hint or (_complexity.detail_hint if _complexity else ""),
+            force_tool=_dec_tool,
         )
 
     if not sentences:

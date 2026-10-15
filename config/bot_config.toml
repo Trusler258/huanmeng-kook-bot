@@ -1,0 +1,36 @@
+[kook]
+token = "TEST_TOKEN"
+
+[bot]
+bot的名字 = "KookBot"
+bot的qq号 = 0
+回复兴趣 = 8
+消息记录长度 = 100
+替换词 = []
+被替换词 = []
+调试模式 = true
+enable_private_chat = true
+spam_threshold = 8
+mute_duration = 1800
+
+[model.replyer_1]
+name = "deepseek-v4-flash"
+provider = "DEEPSEEK"
+maxtoken = 1000
+
+[model.judge_cheap]
+name = "deepseek-v4-flash"
+provider = "DEEPSEEK"
+
+[model.utils_small]
+name = "deepseek-v4-flash"
+provider = "DEEPSEEK"
+
+[decision]
+# 决策模型（OpenRouter Decisions API / Inception Mercury Decide，免费）
+# 未在 .env 配置 OPENROUTER_KEY 时自动停用并回退原判定逻辑（fail-open）
+enabled = true
+threshold = 0.5            # 判定阈值（noul 概率达到即命中）
+timeout = 6.0              # 单次调用超时（秒）
+tool_force_threshold = 0.7 # 工具选择置信度阈值：达到才强制调用（防判错时硬调错工具）
+judge_context = 20         # 判定用的上下文条数（实测 3~30 条准确率与延迟基本一致）
