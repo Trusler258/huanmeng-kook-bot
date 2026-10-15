@@ -203,8 +203,8 @@ def build_cost(d: dict) -> list[dict]:
     modules = [
         header("💰 Token 消耗"),
         fields([
-            ("今日", f"{t.get('calls', 0)} 次调用\n输入{t.get('prompt', 0):,} (命中率{t.get('cached', 0)/max(t.get('prompt', 1), 1)*100:.0f}%) + 输出{t.get('completion', 0):,} tokens\n¥{t.get('cost', 0):.4f}"),
-            ("累计", f"{total.get('calls', 0)} 次调用\n输入{total.get('prompt', 0):,} (命中率{total.get('cached', 0)/max(total.get('prompt', 1), 1)*100:.0f}%) + 输出{total.get('completion', 0):,} tokens\n¥{total.get('cost', 0):.2f}"),
+            ("今日", f"{t.get('calls', 0)} 次调用\n{t.get('prompt', 0):,} + {t.get('completion', 0):,} tokens\n¥{t.get('cost', 0):.4f}"),
+            ("累计", f"{total.get('calls', 0)} 次调用\n{total.get('prompt', 0):,} + {total.get('completion', 0):,} tokens\n¥{total.get('cost', 0):.2f}"),
         ]),
     ]
     return card("secondary", "lg", modules)
