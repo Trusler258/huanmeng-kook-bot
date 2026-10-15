@@ -72,6 +72,52 @@ def _perm_ok(manifest, perm: str) -> bool:
     return False
 
 
+def _adapt_cmd_handler(handler):
+    """把 **QQ 风格**的位置参数 handler 适配成 KOOK 的 (msg) 单参风格。
+
+    背景：两端插件系统的指令 handler 签名不同——
+      QQ  : async def h(args, user_id, group_id, sender_name, is_group, bot_qq)
+      KOOK: async def h(msg)     # msg 是 _PluginMsg（dict + 属性访问）
+
+    有了这一层，从 QQ 移植过来的插件**无需改一行代码**即可在 KOOK 上跑。
+    已是 KOOK 风格（1 个参数）的 handler 原样返回，不包层、零开销。
+    """
+    try:
+        import inspect
+        sig = inspect.signature(handler)
+        kinds = (inspect.Parameter.POSITIONAL_ONLY,
+                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                 inspect.Parameter.VAR_POSITIONAL)
+        pos = [k for k, v in sig.parameters.items()
+               if k not in ("self", "cls") and v.kind in kinds]
+        if len(pos) <= 1:
+            return handler          # 已是 KOOK 风格
+    except Exception:
+        return handler              # 取不到签名 → 原样返回（保守，不破坏现有插件）
+
+    def _g(msg, key, default=None):
+        try:
+            return msg.get(key, default)     # _PluginMsg 是 dict 子类
+        except Exception:
+            return getattr(msg, key, default)
+
+    async def _wrapped(msg):
+        try:
+            from core.config import get_config
+            bot_id = getattr(get_config(), "bot_kook", 0) or 0
+        except Exception:
+            bot_id = 0
+        return await handler(
+            _g(msg, "args", []),
+            _g(msg, "author", 0),
+            _g(msg, "chat_id", 0),
+            _g(msg, "sender", ""),
+            _g(msg, "is_group", False),
+            bot_id,
+        )
+    return _wrapped
+
+
 class PluginMessage:
     """消息能力：发送 / 回复。默认走 Response Delivery / Sender。"""
 
@@ -279,7 +325,8 @@ class PluginCapability:
         )
         self._registry.register(cap)
         if handler is not None:
-            self._registry.bind_handler(cap.id, handler)
+            # ★ 签名适配：QQ 风格的位置参数 handler 自动包一层转成 KOOK 的 (msg) 风格
+            self._registry.bind_handler(cap.id, _adapt_cmd_handler(handler))
         self._registered.append(cap.id)
 
     def register_tool(self, name: str, description: str = "",

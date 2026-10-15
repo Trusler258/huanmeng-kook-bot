@@ -18,6 +18,9 @@ Huanmeng 2.0 已将发送逻辑拆分为 services/delivery 下的独立模块：
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from core.logger import get_logger
 from services.delivery import kook_transport
 from services.delivery.response_delivery import ResponseDelivery
@@ -26,6 +29,40 @@ logger = get_logger("sender")
 
 # ── 兼容门面条目 ────────────────────────────────────────────
 _delivery = ResponseDelivery()
+
+# ── 文本内联本地图片（兼容 QQ 移植插件）────────────────────────
+# QQ 侧插件返回 [CQ:image,file=file:///...]，由 NapCat 平台解析；
+# KOOK 没有文本内联图片，故统一约定 [图片:<路径>] 标记，在这里拦截：
+# 有标记就先发文件，再把纯文本发出去。无标记时零开销（直接返回原文）。
+_IMG_TAG = re.compile(r"\[图片:([^\]]+)\]")
+
+
+def build_local_image_cq(path: str) -> str:
+    """生成 KOOK 的内联图片标记（QQ 侧同名函数返回 CQ 码，此处返回 [图片:路径]）。
+
+    从 QQ 移植的模块（如 modules/reward.py）直接调它即可，无需改代码。
+    """
+    try:
+        return f"[图片:{Path(str(path)).resolve()}]"
+    except Exception:
+        return f"[图片:{path}]"
+
+
+async def _split_inline_images(message: str, chat_id, is_group: bool) -> str:
+    """把文本里的 [图片:路径] 拆出来：先发图，返回剩余纯文本。
+
+    剩余为空（整条只有图）时返回空串——调用方据此跳过文本发送。
+    """
+    if not message or "[图片:" not in message:
+        return message
+    paths = [x.strip() for x in _IMG_TAG.findall(message) if x.strip()]
+    rest = _IMG_TAG.sub("", message).strip()
+    for pth in paths:
+        try:
+            await _delivery.send_file(pth, chat_id, is_group)
+        except Exception as e:
+            logger.warning("内联图片发送失败 %s: %s", pth, e)
+    return rest
 
 
 # 兼容内部状态：动态转发到传输层（保持旧调用方 from services.sender import _bot 可用）
@@ -61,11 +98,17 @@ async def close_sender():
 
 async def send_group_msg(message: str, group_id) -> bool:
     """发送频道文本消息（group_id = KOOK channel_id）"""
+    message = await _split_inline_images(message, group_id, True)
+    if not message:
+        return True
     return await _delivery.send_group_msg(message, group_id)
 
 
 async def send_private_msg(message: str, user_id) -> bool:
     """发送私聊文本消息（user_id = KOOK user_id）"""
+    message = await _split_inline_images(message, user_id, False)
+    if not message:
+        return True
     return await _delivery.send_private_msg(message, user_id)
 
 
@@ -76,6 +119,9 @@ async def send_by_chat_type(
     user_id=None,
 ) -> bool:
     """根据聊天类型选择频道/私聊发送"""
+    message = await _split_inline_images(message, chat_id, is_group)
+    if not message:
+        return True
     return await _delivery.send_by_chat_type(message, chat_id, is_group, user_id)
 
 
