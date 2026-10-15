@@ -1,5 +1,73 @@
 # 更新日志
 
+## v2.3.92 — 插件系统 manifest v2 + 功能追赶第二批（+8 插件，27/27）— 2026.10.16
+
+一句话总结：解除 manifest v2 阻塞、补齐 8 套插件，KOOK 插件数 17 → **27**。
+
+### 一、manifest v1 → v2（此前阻塞，本轮解除）
+阻塞原因：KOOK 的 `core/plugin/api.py` 与 QQ 是**双向分叉**，不能单向覆盖。
+解法：**以 KOOK 为基底合并**（KOOK 独有全留，QQ 的 v2 能力补入）。
+- `core/plugin/manifest.py` 79 → 245 行：支持 manifest_version 1..2，
+  v2 新增 commands/tools/config_schema/secrets/storage/limits/network/requires/
+  events/hooks/timers/priority/tags；未知字段进 extra 不报错；
+  **v1 manifest 解析结果与行为完全不变**（16 个旧 manifest 回归通过）
+- `core/plugin/api.py` 638 → 1010 行，10 处合并：
+  · 新增 `_perm_ok()` 权限门控 + `_HIGH_RISK_LEAVES`（通配不覆盖 raw 等高危能力）
+  · PluginMessage 加 `send_ex`/`send_file_ex`/`delete`/`message_id_of`
+    （KOOK 无 NapCat message_id → send_ex 返回 {status:ok} 降级、delete 记 WARNING 返 False）
+  · PluginCapability 加 `_bind_command`（插件接管内置指令名）
+  · PluginIdentity 加 `is_op`；新增 `PluginI18n`/`PluginFS`/`PluginPlugins`
+  · PluginContext 加 `fs`/`i18n`/`plugins`/`has(perm)`；economy 改惰性 property
+  · cleanup() 补 `background.cancel_all()`（原版漏了后台任务取消）
+  · **保留 KOOK 全部独有**：PluginCard、image.extract_*、sandbox 返 dict、
+    pipeline.on_reply/get_pre_hooks；**不搬** PluginNapCat（QQ 平台专属）
+- 16 个 manifest.json 升 v2（AST 提取 register_command，兼容关键字/位置参数/
+  循环变量/函数别名四种写法）
+
+### 二、两项移植基础设施（让 QQ 插件零修改搬迁）
+1. **command handler 签名适配层**：QQ 是 `h(args, user_id, group_id, sender_name,
+   is_group, bot_qq)`，KOOK 是 `h(msg)`（_PluginMsg）。register_command 时用
+   inspect 检测，≥2 位置参数自动包一层拆 msg 转调；KOOK 风格原样返回不包层。
+   ⇒ 本轮 8 套插件全部零修改搬运验证。
+2. **文本内联本地图片**：约定 `[图片:<路径>]` 标记，在 send_group_msg /
+   send_private_msg / send_by_chat_type 三入口拦截（有标记先发图再发文字），
+   并提供 `build_local_image_cq()` 兼容 QQ 移植模块。
+3. 另补 `PluginImage.render_html` 委托（QQ 侧在 PluginImage、KOOK 侧在 PluginCard）。
+
+### 三、新增 8 套插件（17 → 27）
+| 插件 | 功能 | 适配 |
+|---|---|---|
+| dice | 掷骰子 + roll_dice 常驻工具 + 积分奖励 | 零适配 |
+| steam | 价格/状态/绑定 + /~在干嘛（3 模块 1748 行） | 图片 CQ → send_file；@ 判断兼容 (met) |
+| reward | 赞赏码 + 赞助名单 | 同步函数改返 [图片:] 标记 |
+| op | OP/人格/主人/睡觉/含蓄/叙事模式（751 行） | 零适配 |
+| box | 快递查询 | 零适配（KOOK 已有 send_box_card） |
+| ping | Globalping 全球延迟测试 | CQ:at→(met)、图片→send_file |
+| gh | 公会登记（+gh_store 50 行） | _resolve_nick 退化为 ID 串 |
+| memory_link | 跨聊天记忆关联（478 行） | 零适配（依赖 KOOK 均有） |
+| agnes | 文生图/视频/图生视频 | 零适配（KOOK 已有 modules/agnes） |
+| voice | 语音回复（LLM→情绪音色→TTS） | 零适配（tts 签名前向兼容） |
+| phi | Phigros 曲库/定数/理论值 + TapTap 存档/Best N | 零适配（27 文件） |
+
+### 四、明确不搬/暂缓（非遗漏）
+- **wdsj**：KOOK 已完整拥有（内置 cmd_wdsj + wdsj/wdsj_query 工具 +
+  wdsj_tracker/api/cache 三 services）→ 无需搬
+- **power**（功耗/电费）：数据源是 QQ 侧常驻服务 127.0.0.1:58893，
+  KOOK 未部署该服务 → 需先上采集服务，属独立任务
+- **relay**（管理员代发）：语义是 QQ 的「g<群号>/u<QQ号>」，KOOK 是频道模型，
+  需重新设计，不硬搬
+- **phi/card_assets/**（215MB / 1300+ 曲绘 PNG）：传输成本过高未搬 →
+  phi 卡片曲绘头像缺失，查询/存档/Best N 功能不受影响；需要时另行 rsync
+
+### 验证
+- 每个模块：py_compile → pyflakes 未定义名 → **线上真跑一次**
+- **27/27 插件全部启用**；kook-bot.service 全程 active / NRestarts=0 /
+  新进程 0 Traceback / 加载失败 0
+- 全量 pyflakes：undefined name **4 个**（与改动前基线一致，均为
+  `from __future__ import annotations`/字符串注解误报），**无新增**
+
+---
+
 ## v2.3.91 — 功能追赶：把 QQ v2.1.6~v2.3.90 的演进补回来 — 2026.10.16
 
 一句话总结：本端停在 v2.1.5，落后 QQ 两个大版本。本轮按「读 QQ commit + 更新日志」
