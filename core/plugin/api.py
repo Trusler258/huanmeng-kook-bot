@@ -29,6 +29,8 @@ Phase 13 Plugin API（Huanmeng 2.0）
 from __future__ import annotations
 
 import asyncio
+import types
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from core.logger import get_logger
@@ -41,12 +43,41 @@ from core import economy as _economy
 
 logger = get_logger("plugin.api")
 
+# ── 权限门控（v2：manifest.permissions 声明式裁决）────────────────
+_HIGH_RISK_LEAVES = ("raw",)   # 通配不得覆盖的高危能力，必须显式声明
+
+
+def _perm_ok(manifest, perm: str) -> bool:
+    """插件只能在 manifest.permissions 声明的能力内行事。
+
+    支持三种写法：
+      "message.send"          精确
+      "napcat.read"           分组
+      "napcat.*" / "*"        通配（前缀通配，如 napcat.* 允许 napcat.read）
+    例外：前缀通配**不覆盖高危能力**（raw 必须显式声明），全量 "*" 仍可覆盖。
+    manifest 为空（旧插件/未声明）时一律拒绝——安全默认。
+    """
+    perms = list(getattr(manifest, "permissions", None) or [])
+    if not perms:
+        return False
+    if perm in perms or "*" in perms:
+        return True
+    leaf = perm.rsplit(".", 1)[-1]
+    for pm in perms:
+        if not (pm.endswith(".*") and perm.startswith(pm[:-1])):
+            continue
+        if leaf in _HIGH_RISK_LEAVES:
+            continue
+        return True
+    return False
+
 
 class PluginMessage:
     """消息能力：发送 / 回复。默认走 Response Delivery / Sender。"""
 
-    def __init__(self, plugin_name: str):
+    def __init__(self, plugin_name: str, manifest=None):
         self._plugin = plugin_name
+        self._manifest = manifest
 
     async def send(self, text: str, chat_id: int, is_group: bool = True) -> bool:
         """发送文本消息到频道/私聊。失败返回 False（不抛异常）。"""
@@ -66,6 +97,59 @@ class PluginMessage:
         except Exception as e:
             logger.warning("Plugin %s 发送文件失败: %s", self._plugin, e)
             return False
+
+    async def send_ex(self, text: str, chat_id: int, is_group: bool = True) -> Optional[dict]:
+        """发送文本并返回响应 dict（KOOK 无 NapCat message_id，返回 {"status":"ok"}）。
+
+        v2 新增：给从 QQ 移植来的插件用（它们期望 dict 返回值）。
+        失败 / 未声明 message.send → None。
+        """
+        if not _perm_ok(self._manifest, "message.send"):
+            logger.warning("Plugin %s 未声明 message.send，拒绝发送", self._plugin)
+            return None
+        try:
+            from services.sender import send_group_msg, send_private_msg
+            ok = await (send_group_msg(str(text), chat_id) if is_group
+                        else send_private_msg(str(text), chat_id))
+            return {"status": "ok", "data": {}} if ok else None
+        except Exception as e:
+            logger.warning("Plugin %s send_ex 失败: %s", self._plugin, e)
+            return None
+
+    async def send_file_ex(self, file_path: str, chat_id: int, is_group: bool = True) -> Optional[dict]:
+        """发送文件并返回响应 dict（KOOK 无 message_id）。失败 / 未声明 → None。"""
+        if not _perm_ok(self._manifest, "message.send"):
+            logger.warning("Plugin %s 未声明 message.send，拒绝发送文件", self._plugin)
+            return None
+        try:
+            from services.sender import send_file as _send_file
+            ok = bool(await _send_file(file_path, chat_id, is_group))
+            return {"status": "ok", "data": {}} if ok else None
+        except Exception as e:
+            logger.warning("Plugin %s send_file_ex 失败: %s", self._plugin, e)
+            return None
+
+    async def delete(self, message_id) -> bool:
+        """撤回消息。⚠️ KOOK 平台不提供撤回 API → 记录并返回 False（不抛异常）。
+
+        保留方法签名是为了从 QQ 移植的插件不缺属性；真要撤回需另行实现。
+        """
+        if not _perm_ok(self._manifest, "message.delete"):
+            logger.warning("Plugin %s 未声明 message.delete，拒绝撤回", self._plugin)
+            return False
+        logger.warning("Plugin %s delete(msg_id=%s)：KOOK 平台不支持撤回，已忽略",
+                       self._plugin, message_id)
+        return False
+
+    @staticmethod
+    def message_id_of(resp: Optional[dict]):
+        """从 send_ex/send_file_ex 的响应里取 message_id，取不到返回 None。"""
+        if not isinstance(resp, dict):
+            return None
+        data = resp.get("data")
+        if isinstance(data, dict) and data.get("message_id") is not None:
+            return data.get("message_id")
+        return None
 
 
 class PluginMemory:
@@ -161,10 +245,24 @@ class PluginTimer:
 class PluginCapability:
     """能力注册：让插件向 Core 注册 Command/Skill/Tool 能力，供 CapabilityRouter 使用。"""
 
-    def __init__(self, plugin_name: str):
+    def __init__(self, plugin_name: str, manifest=None):
         self._plugin = plugin_name
+        self._manifest = manifest
         self._registry = get_capability_registry()
         self._registered: list[str] = []
+
+    def _bind_command(self, name: str, handler: Callable) -> None:
+        """把插件指令 handler 绑到核心指令表（v2：让 /~<name> 能直接命中插件）。
+
+        与 register_command 的区别：本方法直接操作 COMMAND_MAP，
+        用于"插件拥有指令名"的迁移场景（内置指令被插件接管）。
+        """
+        try:
+            from modules.commands import COMMAND_MAP
+            COMMAND_MAP[name] = handler
+            self._registered.append(f"command.{name}")
+        except Exception as e:
+            logger.warning("Plugin %s _bind_command(%s) 失败: %s", self._plugin, name, e)
 
     def register_command(self, name: str, description: str = "",
                          handler: Optional[Callable] = None,
@@ -361,6 +459,48 @@ class PluginIdentity:
             return bool(get_config().is_admin(user_id, group_id))
         except Exception as e:
             logger.warning("PluginIdentity.is_admin 失败: %s", e)
+            return False
+
+    @staticmethod
+    def is_op(user_id) -> bool:
+        """是否 bot 主人（OP）。"""
+        try:
+            from core.config import get_config
+            return bool(get_config().is_op(user_id))
+        except Exception as e:
+            logger.warning("PluginIdentity.is_op 失败: %s", e)
+            return False
+
+
+class PluginI18n:
+    """i18n 能力：读 config/lang.toml（与内置模块同一份），插件不直接 import utils.format_lang。
+
+    · get("weather.searching")            → lang.toml 里的文案（缺失返回 default 或 [LANG:key]）
+    · get("box.header", cp_name="顺丰")   → 同时替换 ${cp_name} 占位符
+    · has("weather.searching")            → 判断某 key 是否存在
+    """
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    def get(self, key_path: str, default: Optional[str] = None, **fmt) -> str:
+        try:
+            from utils.format_lang import format_lang
+            data = format_lang(key_path)          # 缺失时 format_lang 返回 "[LANG:key]"
+            if data.startswith("[LANG:") and default is not None:
+                data = default
+            for k, v in fmt.items():
+                data = data.replace("${" + k + "}", str(v))
+            return data
+        except Exception as e:
+            logger.warning("Plugin %s i18n.get(%s) 失败: %s", self._plugin, key_path, e)
+            return default if default is not None else ""
+
+    def has(self, key_path: str) -> bool:
+        try:
+            from utils.format_lang import has_key
+            return bool(has_key(key_path))
+        except Exception:
             return False
 
 
@@ -602,6 +742,137 @@ def get_pipeline_hooks() -> _HookRegistry:
     return _get_hook_registry()
 
 
+class PluginFS:
+    """受限文件系统：插件只能读写自己的数据目录 data/plugins/<插件名>/。
+
+    · 路径越界（../、绝对路径指向根外、符号链接逃逸）一律拒绝
+    · 写类操作（write/append/remove/mkdir）需要 manifest 声明 fs.write
+    · 读类操作（read/list/exists/stat）需要声明 fs.read
+    这是"Python 侧沙箱"的第一步：不做进程隔离，但把可触达范围收敛到插件自己的目录。
+    """
+
+    def __init__(self, plugin_name: str, manifest=None, root: Optional[str] = None):
+        self._plugin = plugin_name
+        self._manifest = manifest
+        self._root = Path(root) if root else (Path("data") / "plugins" / plugin_name)
+
+    @property
+    def root(self) -> Path:
+        return self._root.resolve()
+
+    def path(self, rel: str = "") -> Path:
+        """把插件给的相对路径解析到沙箱内；越界抛 ValueError。"""
+        base = self.root
+        p = (base / str(rel).lstrip("/\\")).resolve() if rel else base
+        if p != base and base not in p.parents:
+            raise ValueError(f"路径越界（仅允许插件数据目录内）：{rel}")
+        return p
+
+    def _need(self, perm: str) -> bool:
+        if not _perm_ok(self._manifest, perm):
+            logger.warning("Plugin %s 未声明 %s，拒绝文件操作", self._plugin, perm)
+            return False
+        return True
+
+    def read_text(self, rel: str, encoding: str = "utf-8") -> Optional[str]:
+        if not self._need("fs.read"):
+            return None
+        try:
+            return self.path(rel).read_text(encoding=encoding)
+        except Exception as e:
+            logger.warning("Plugin %s fs.read_text(%s) 失败: %s", self._plugin, rel, e)
+            return None
+
+    def read_bytes(self, rel: str) -> Optional[bytes]:
+        if not self._need("fs.read"):
+            return None
+        try:
+            return self.path(rel).read_bytes()
+        except Exception as e:
+            logger.warning("Plugin %s fs.read_bytes(%s) 失败: %s", self._plugin, rel, e)
+            return None
+
+    def write_text(self, rel: str, data: str, encoding: str = "utf-8") -> bool:
+        if not self._need("fs.write"):
+            return False
+        try:
+            p = self.path(rel)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(data, encoding=encoding)
+            return True
+        except Exception as e:
+            logger.warning("Plugin %s fs.write_text(%s) 失败: %s", self._plugin, rel, e)
+            return False
+
+    def write_bytes(self, rel: str, data: bytes) -> bool:
+        if not self._need("fs.write"):
+            return False
+        try:
+            p = self.path(rel)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+            return True
+        except Exception as e:
+            logger.warning("Plugin %s fs.write_bytes(%s) 失败: %s", self._plugin, rel, e)
+            return False
+
+    def listdir(self, rel: str = "") -> list[str]:
+        if not self._need("fs.read"):
+            return []
+        try:
+            return sorted(p.name for p in self.path(rel).iterdir())
+        except Exception as e:
+            logger.warning("Plugin %s fs.listdir(%s) 失败: %s", self._plugin, rel, e)
+            return []
+
+    def exists(self, rel: str) -> bool:
+        if not self._need("fs.read"):
+            return False
+        try:
+            return self.path(rel).exists()
+        except Exception:
+            return False
+
+    def remove(self, rel: str) -> bool:
+        if not self._need("fs.write"):
+            return False
+        try:
+            p = self.path(rel)
+            if p.is_dir():
+                import shutil as _sh
+                _sh.rmtree(p)
+            elif p.exists():
+                p.unlink()
+            return True
+        except Exception as e:
+            logger.warning("Plugin %s fs.remove(%s) 失败: %s", self._plugin, rel, e)
+            return False
+
+
+class PluginPlugins:
+    """插件间协作：查询其它插件的加载状态。
+
+    用于软依赖（manifest.requires.optional_plugins）：本插件可先
+    `ctx.plugins.has("points")` 判断邻居在不在，再决定走哪条分支，
+    而不是直接 import 对方代码（那会破坏"可拆"）。
+    """
+
+    def __init__(self, plugin_name: str):
+        self._plugin = plugin_name
+
+    def loaded(self) -> list[str]:
+        try:
+            from core.plugin.manager import get_plugin_manager
+            return [r["name"] for r in get_plugin_manager().list()
+                    if r.get("state") == "enabled"]
+        except Exception as e:
+            logger.warning("Plugin %s ctx.plugins.loaded 失败: %s", self._plugin, e)
+            return []
+
+    def has(self, name: str) -> bool:
+        return str(name) in self.loaded()
+
+
 class PluginContext:
     """插件上下文：插件唯一的 API 入口。"""
 
@@ -609,22 +880,52 @@ class PluginContext:
         self.name = plugin_name
         self.manifest = manifest
         self.bus = bus or get_event_bus()
-        self.message = PluginMessage(plugin_name)
+        self.message = PluginMessage(plugin_name, manifest)
         self.memory = PluginMemory(plugin_name)
         self.event = PluginEvent(plugin_name, self.bus)
         self.timer = PluginTimer(plugin_name)
-        self.capability = PluginCapability(plugin_name)
+        self.capability = PluginCapability(plugin_name, manifest)
         self.pipeline = PluginPipeline(plugin_name)
         self.background = PluginBackground(plugin_name)
         self.image = PluginImage()
         self.vision = PluginVision(plugin_name)
-        self.economy = _economy
         self.identity = PluginIdentity()
         self.llm = PluginLLM(plugin_name)
+        self.i18n = PluginI18n(plugin_name)
+        self.fs = PluginFS(plugin_name, manifest)
+        self.plugins = PluginPlugins(plugin_name)
         self.approval = PluginApproval(plugin_name)
         self.sandbox = PluginSandbox()
         self.card = PluginCard(plugin_name)
         self.logger = get_logger(plugin_name)
+
+    @property
+    def economy(self):
+        """经济系统（积分/库存）：惰性导入 core.economy，取不到返回 no-op stub。
+
+        与 QQ 一致的做法：内置经济已迁移为插件（points/shop），core.economy
+        可能不存在 → 返回空模块让旧插件不崩溃。
+        """
+        try:
+            from core import economy as _m
+            return _m
+        except ImportError:
+            _empty = types.ModuleType("economy_stub")
+            def _noop(*a, **k):
+                return None
+            for fn in ("get_points", "add_points", "set_points", "transfer_points",
+                       "get_inventory", "add_inventory", "consume_inventory",
+                       "get_last_sign", "mark_signed", "get_top_points"):
+                setattr(_empty, fn, _noop)
+            _empty.ITEMS = {}
+            return _empty
+
+    def has(self, perm: str) -> bool:
+        """查询本插件是否具备某项能力（依据 manifest.permissions）。
+
+        例：ctx.has("message.delete") / ctx.has("fs.write") / ctx.has("network.http")
+        """
+        return _perm_ok(self.manifest, perm)
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""
@@ -636,4 +937,5 @@ class PluginContext:
         self.timer.cancel_all()
         self.capability.unregister_all()
         self.pipeline.clear()
+        self.background.cancel_all()
         self.background.cancel_all()
