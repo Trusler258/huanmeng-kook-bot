@@ -506,11 +506,14 @@ async def call_llm_with_tools(
     temperature: float = 0.7,
     timeout: float = 60.0,
     scene: str = "",
+    force_tool: str | None = None,
 ) -> ToolCallResult:
     """
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
     scene: 调用场景标识，用于 token 命中率归因
+    force_tool: 非空时**强制调用指定工具**（tool_choice 指向该函数），
+        用于决策模型高置信度指定工具的场景（v2.3.90 对齐 QQ）。
     """
 
     client = _create_client(model_cfg)
@@ -534,7 +537,10 @@ async def call_llm_with_tools(
     # Phase 10：tools 为空（能力按需路由未命中工具）时不发 tools，避免 provider 拒绝
     if tools:
         req_params["tools"] = tools
-        req_params["tool_choice"] = "auto"
+        # v2.3.90：force_tool 非空 → 强制调用指定工具（决策模型高置信度指定时用）
+        req_params["tool_choice"] = (
+            {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
+        )
     # max_tokens<=0 视为"不设上限"（chat 复杂度输出预算为 0），否则 DeepSeek 报
     # "Invalid max_tokens value, valid range is [1, 393216]"（0 值非法）。
     if max_tokens is not None and max_tokens > 0:
@@ -911,6 +917,7 @@ async def generate_multi_reply_with_tools(
     system_text_override: str | None = None,
     tools_override: Optional[list] = None,
     detail_hint: str = "",
+    force_tool: str | None = None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -927,6 +934,12 @@ async def generate_multi_reply_with_tools(
     else:
         from core.tools import get_tool_schemas
         tools = get_tool_schemas()
+    # v2.3.90：决策模型指定的工具若不在本次工具表里，强制调用会 400 → 丢弃该指定（回退 auto）
+    if force_tool and not any(
+        ((s or {}).get("function") or {}).get("name") == force_tool for s in (tools or [])
+    ):
+        logger.warning("force_tool=%s 不在工具表内，回退 tool_choice=auto", force_tool)
+        force_tool = None
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, system_text_override, detail_hint=detail_hint)
 
     # 长消息（题目/长文/网页阅读）→ 扩大输出 token
@@ -947,7 +960,10 @@ async def generate_multi_reply_with_tools(
 
     for round_idx in range(MAX_ROUNDS):
         needs_next_any = False  # 每轮重置：仅依据本轮 run_code 结果判断是否需要继续链式执行
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools")
+        # v2.3.90：仅第 0 轮强制调用决策模型指定的工具；之后恢复 auto 让模型自由收口
+        result = await call_llm_with_tools(
+            reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4,
+            scene="reply_tools", force_tool=(force_tool if round_idx == 0 else None))
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
