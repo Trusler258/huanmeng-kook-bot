@@ -390,3 +390,516 @@ agent_failed_meow = "这个任务步骤有点复杂，我漏掉了某一步喵�
 agent_failed_plain = "这个任务步骤有点复杂，我漏掉了某一步，换个说法再说一次。"
 reply_failed_meow = "呜…回复生成失败了喵"
 reply_failed_plain = "呜…回复生成失败了。"
+
+[cmd_ping]
+m1 = "ping 模块未安装喵~"
+
+[_cmd_gh]
+m1 = "公会登记模块未安装喵~"
+
+[cmd_help]
+m1 = "--- 聊天 ---"
+m2 = "@${name} <内容>     跟我说话"
+m3 = "--- 工具 ---"
+m4 = ".s <关键词>        联网搜索"
+m5 = ".remind <时间> <事> 定时提醒"
+m6 = ".抽 <A> <B>        随机选择"
+m7 = "--- 数据 ---"
+m8 = ".favlist           好感度"
+m9 = "--- 系统 ---"
+m10 = ".cost              Token消耗统计"
+m11 = ".info             运行状态"
+m12 = ".up [版本]         更新日志"
+m13 = ".ping <目标>       全球延迟测试"
+m14 = "--- 主人专用 ---"
+m15 = ".owner ...        配置管理"
+m16 = ".memory ...       记忆查询"
+m17 = ".preset ...        提示词注入管理"
+m18 = ".reload           热重载配置"
+m19 = "📖 ${name} 指令帮助"
+m20 = ".help <指令> 查看详细用法，例如: .help wzq"
+m21 = "主人"
+m22 = "Powered by ${name} | 输入 .help <指令> 查看详情"
+
+[mod]
+m1 = "【NASA 每日天文图 .nasa】\n  nasa [日期]  查看 NASA 每日天文图片，如 .nasa 2025-06-01\n"
+m2 = "【Phigros 查询 .pgr】\n  pgr login / me / top / song / new\n"
+m3 = "【五子棋 .wzq】\n  duel @某人    发起挑战\n  accept        接受挑战\n  decline       拒绝挑战\n  cancel        取消未开始的挑战\n  <坐标>        落子 (H8 / 8,8)\n  ai <难度> [nofb] 人机对战 (可选无禁手)\n  board         查看棋盘\n  surrender     认输\n  undo          悔棋 (对手再发一次确认)\n  status        对局信息\n  history [N]   历史战绩\n  history <编号> board 查看对局棋盘"
+m4 = "【提醒 .remind .提醒】\n  .remind 30分钟后 吃饭\n  .remind 2小时后 开会\n  .remind 明天14:30 午休\n  .remind 14:30 下班\n  到期自动 @ 提醒"
+m5 = "【抽签 .抽】\n  .抽 吃面 吃饭 打游戏   空格分隔\n  .抽 选项A,选项B,选项C   逗号分隔\n  随机选一个 + 猫娘点评"
+m6 = "【搜索 .s】\n  .s Python asyncio 用法\n  自动判断是否需要搜索 + DuckDuckGo"
+m7 = "【好感度 .favlist】\n  查看当前群/私聊的好感度排行\n  从高到低，显示昵称"
+m8 = "【运气 .luck】\n  获取今日运气值 (1~100)\n  0.1% 概率抽到 1000\n  同一个人当天内结果不变"
+m9 = "【更新日志 .up .updateinfo】\n  .up            最新版本\n  .up 0.9.4      指定版本\n  .up all        完整日志\n  生成精美 HTML 卡片"
+m10 = "【更新日志 .up .updateinfo】\n  .up            最新版本\n  .up 0.9.4      指定版本\n  .up all        完整日志"
+m11 = "【系统信息 .info】\n  显示运行状态: 系统/运行时间/内存/磁盘/CPU\n  连接状态/消息统计/模型列表/配置摘要"
+m12 = "【在线 .ping】\n  测试 bot 是否在线\n  随机猫娘卖萌回复，@ 触发者"
+m13 = "【配置管理 .owner (主人)】\n  list <bot|adapter|roles>   列所有配置\n  get <路径>      读取: get bot.reply_threshold\n  set <路径> <值>  修改: set bot.reply_threshold 5\n  data get <名> [键] 读数据\n  data set <名> <键> <值> 改数据\n  data reset <名|all> 清空\n  wl show/add/remove  白名单快捷操作\n  luck list/set/del   运气管理"
+m14 = "【提示词注入 .preset (主人)】\n  .preset        查看当前注入\n  .preset clear  清除注入\n  或在消息中用 {{提示词}} 注入, {{reset}} 清除"
+m15 = "【重载 .reload (主人)】\n  热重载所有配置，不重启进程\n  也可用 systemctl reload robot"
+m16 = "【翻译 .tr .翻译】\n  .tr en 你好           中→英\n  .tr 中文 hello        英→中\n  .tr jp こんにちは     →日文\n  支持 en/zh/jp/kr/fr/de\n  也支持 中文/英文/日文/韩文/法文/德文"
+m17 = "【翻译 .tr .翻译】\n  .tr en 你好\n  .tr 中文 hello\n  支持 6 种语言"
+m18 = "【倒计时 .countdown .倒计时】\n  .countdown 2026-12-25 圣诞节   添加\n  .countdown                    查看\n  .countdown list               详细列表\n  .countdown del 1              删除"
+m19 = "【余额查询 .balance】\n  查询当前供应商 API 余额\n  (DeepSeek / 硅基流动 / 基元律动均支持,\n   基元律动需在 .env 配置 TR_COOKIE 登录态)\n"
+m20 = "【模型供应商 .model .provider】\n  .model                    查看当前供应商与模型\n  .model <deepseek|tokenrhythm|siliconflow> [模型名]\n  切换供应商, 模型名缺省为 deepseek-v4-flash\n"
+m21 = "【语音 .voice】\n  .voice <文本>           Edge TTS 合成语音\n  .voice list             列出可用语音\n  .voice zh-CN-YunxiNeural <文本>  指定发音人\n  默认: 晓晓 (女声)"
+m22 = "【Token消耗 .cost】\n  查看今日/累计 token 消耗和费用\n"
+m23 = "【Token计算 .tokens】\n  .tokens <文本>  计算 token 数和预估费用\n"
+m24 = "【你的笔记本 .note】维护长期群内记忆（群内关系/称呼/约定/梗/谁是谁）。用法: .note 查看 | .note <内容> 新增 | .note fix <序号> <新内容> 修改 | .note del <序号> 删除 | .note clear 清空。重要：①有人说'记一下/记住'或出现值得长期记住的信息（谁是谁、什么关系、称呼黑话、约定）→ 必须用 calls 调 note 真的记，严禁只在回复说'记下了'；②发现之前记错了或信息过时了 → 用 calls 调 note 传 'fix <序号> <新内容>' 改正（序号见上下文里笔记本的编号），不要重新记一条重复的。"
+m25 = "【缓存命中率 .cache】\n  .cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n  用于排查命中率低的原因（DeepSeek 前缀缓存）\n"
+m26 = "【重置好感 .resetfav (主人)】\n  清空所有好感度数据"
+m27 = "【记忆 .memory】\n  working      瞬时记忆（当前对话）\n  short        短时记忆（最近30条）\n  long         长时记忆（持久化）\n  search <关键词> 搜索全部记忆\n  clear        清空短时记忆"
+m28 = "基元律动 (Token Rhythm)"
+m29 = "硅基流动 (SiliconFlow)"
+
+[_tr_balance]
+m1 = "基元律动余额需要登录态鉴权（.env 未配置 TR_COOKIE / TR_TOKEN）\n可到用户中心查看: https://tokenrhythm.studio/account"
+m2 = "基元律动余额查询失败: ${e}"
+m3 = "【基元律动 (TokenRhythm) 余额】"
+m4 = "  可用余额: ¥${total}（${credits} 条额度）"
+m5 = "  最早过期: ${next_expiry}"
+m6 = "  今日消耗: ¥${spent} / ${calls} 次调用"
+
+[_api_get]
+m1 = "登录态已失效，请更新 .env 中的 TR_COOKIE"
+
+[cmd_balance]
+m1 = "未配置 API Key 喵~"
+m2 = "查询失败: HTTP ${status_code} 喵~"
+m3 = "【硅基流动 (SiliconFlow) 余额】"
+m4 = "  当前余额: ${balance}"
+m5 = "  总余额:   ${total}"
+m6 = "  充值额:   ${charge}"
+m7 = "查询失败: HTTP ${status_code} 喵~"
+m8 = "查询余额失败: ${e}"
+m9 = "余额查询不可用喵~"
+m10 = "余额信息为空喵~"
+m11 = "【DeepSeek 余额】"
+m12 = "  总余额: ${total} ${currency}"
+m13 = "  赠送额: ${granted} ${currency}"
+m14 = "  充值额: ${topped_up} ${currency}"
+
+[cmd_box]
+m1 = "运输中"
+m2 = "派送中"
+m3 = "已签收"
+m4 = "退件"
+m5 = "待揽收"
+m6 = "已完成"
+
+[cmd_luck]
+m1 = "(met)${user_id}(met) 你今天的运气是 ${cached} 喵（今日已抽签）"
+m2 = "(met)${user_id}(met) 你今天的运气是 ${num} 喵"
+
+[cmd_testup]
+m1 = "update_test_note.md 不存在"
+
+[cmd_notify]
+m1 = "权限不足喵~"
+m2 = "当前没有已缓存的频道。请先让机器人进入至少一个群聊，再执行 .notify"
+m3 = "**KOOK BOT · 通知目标频道**\n点击按钮选择通知发送目标：\n\n"
+
+[cmd_notifyset]
+m1 = "频道 ID 无效喵~"
+m2 = "已添加通知目标频道：${cid}\n现在回复 .notifycheck 可立即测试；性能降级/GitHub更新将推送至该频道"
+m3 = "频道 ${cid} 已在通知列表中"
+
+[cmd_notifydel]
+m1 = "权限不足喵~"
+m2 = "用法：.notifydel <频道ID>，如 .notifydel 1010983873136793"
+m3 = "频道 ID 无效喵~"
+m4 = "已移除通知目标频道：${cid}"
+m5 = "频道 ${cid} 不在通知列表中"
+
+[cmd_notifycheck]
+m1 = "权限不足喵~"
+m2 = "尚未配置通知目标频道，先执行 .notify 选择频道"
+
+[cmd_notifyperf]
+m1 = "权限不足喵~"
+
+[cmd_jsonraw]
+m1 = "你是幻梦，一只可爱的猫娘机器人。"
+m2 = "${fmt_reminder}\n\n${sender_name}说：${text}"
+m3 = "LLM 返回为空"
+
+[cmd_md]
+m1 = "用法: .md <KMarkdown内容>\\n示例: .md # 标题\\n> 引用\\n**粗体** *斜体*"
+
+[cmd_update_info]
+m1 = "❌ 未找到版本 ${target_version} 的更新日志，请检查版本号是否正确。"
+
+[_fetch_github_repo]
+m1 = "GitHub API 返回 ${status_code}: ${text}"
+m2 = "描述: ${description}"
+m3 = "语言: ${language}"
+m4 = "默认分支: ${main}"
+m5 = "创建: ${created_at}  更新: ${updated_at}"
+m6 = "标签: ${topics}"
+
+[_fetch_github_contents]
+m1 = "GitHub API 返回 ${status_code}"
+m2 = "文件: ${path} (${size} bytes)"
+m3 = "\n...(截断)```"
+m4 = "文件 ${path} 无法解码"
+m5 = "\n...(还有 ${data} 项)"
+m6 = "未知类型: ${type}"
+m7 = "\n...(还有 ${data} 项)"
+m8 = "GitHub API 返回格式异常"
+
+[cmd_read]
+m1 = "用法: .read <网页URL>  例如 .read https://github.com/Trusler258/huanmeng-qqbot"
+m2 = "请输入完整的网页URL（http/https开头）"
+m3 = "GitHub API 读取失败: ${e}\n\n堆栈:\n${tb}"
+m4 = "无法读取该页面: ${url}"
+m5 = "读取页面失败: ${e}\n\n堆栈:\n${tb}"
+
+[cmd_whois]
+m1 = "用法: .whois <域名>  例如 .whois 01240820.xyz"
+
+[cmd_kook_user_id]
+m1 = "用法: .kook_user_id @某人\n请在指令后 @ 要查询的用户"
+m2 = "用户 ID: ${target_uid}\n昵称: ${nick}"
+
+[cmd_kook_channel_id]
+m1 = "频道(群聊)"
+m2 = "私聊"
+m3 = "当前${chat_type} ID: ${channel_id}"
+
+[cmd_write_code]
+m1 = "用法: .write_code <描述>  例如 .write_code 用HTML写一个2048游戏"
+m2 = "网页"
+
+[cmd_ignore]
+m1 = "只有管理员能操作喵~"
+m2 = "用法: .ignore <QQ号>  例如 .ignore 123456789"
+m3 = "QQ 号不对喵~"
+m4 = "已忽略 ${target}，所有群都不会再收到他的消息"
+
+[cmd_unignore]
+m1 = "只有管理员能操作喵~"
+m2 = "用法: .unignore <QQ号> / all  例如 .unignore 123456789"
+m3 = "已解除所有忽略（共 ${count} 人）"
+m4 = "QQ 号不对喵~"
+m5 = "已解除忽略 ${target}"
+m6 = "${target} 不在忽略列表中喵~"
+
+[cmd_provider]
+m1 = "【模型供应商】"
+m2 = "● 当前"
+m3 = "✓ 已配"
+m4 = "✗ 未配 key"
+m5 = "切换: .model <deepseek|tokenrhythm|siliconflow> [模型名]"
+m6 = "未知供应商: ${target}\n可用: ${_PROVIDERS}"
+m7 = "${name} 尚未配置（.env 缺少 ${label}_URL / ${label2}_KEY），无法切换"
+m8 = "回复模型已切换为: ${name}\n(provider=${label}, model=${model_name})"
+
+[cmd_remind]
+m1 = "好的喵~ 我会在 ${time_display} 提醒你「${content_part}」(๑•̀ㅂ•́)و✧"
+
+[cmd_chou]
+m1 = "我帮你决定了喵~ 选「${pick}」！(。-`ω´-)✧"
+m2 = "喵呜～ 命运指引着你走向「${pick}」！"
+m3 = "尾巴晃了晃，指向了「${pick}」喵～"
+m4 = "闭上眼睛默念三秒… 就决定是「${pick}」了！"
+m5 = "不用纠结啦，当然是「${pick}」喵～"
+
+[cmd_analyze]
+m1 = "用法: .analyze <日志内容>\n直接粘贴 Minecraft 日志，零上下文分析。"
+
+[cmd_preset]
+m1 = "【当前注入的提示词】(${preset}字)\n${preset2}"
+
+[cmd_wzq]
+m1 = "五子棋 .wzq\n  duel @某人 [nofb] 发起挑战(可选无禁手)\n  ai 新手/普通/困难/专家 [nofb]\n  accept      接受挑战\n  cancel/unduel 取消未接受的挑战\n  <坐标>      落子 (H8 / 8,8)\n  board       查看棋盘\n  surrender   认输\n  undo        悔棋\n  status      对局信息\n  admin clear 强制结束本群棋局(仅主人)"
+m2 = "用法: .wzq ai <难度>\n难度: 新手 普通 困难 专家"
+m3 = "新手"
+m4 = "普通"
+m5 = "困难"
+m6 = "专家"
+m7 = "新手"
+m8 = "普通"
+m9 = "困难"
+m10 = "专家"
+m11 = "未知难度: ${diff}\n可选: 新手 普通 困难 专家"
+m12 = "用法: .wzq duel @某人"
+m13 = "挑战已发起！等待 (met)${white_id}(met) 接受 (.wzq accept) 或拒绝 (.wzq decline)"
+m14 = "只有主人才能用这个喵~"
+m15 = "当前没有对局喵~"
+m16 = "已强制结束本群棋局 (状态=${status})"
+m17 = "用法: .wzq admin clear  强制清除本群所有对局"
+m18 = "五连！${winner_name} 获胜！"
+m19 = "棋盘满了，平局！"
+m20 = "禁手犯规(${reason})！${winner} 获胜！"
+m21 = "${loser} 认输了！"
+m22 = "悔棋申请已发送，等待 (met)${opponent}(met) 同意 (.wzq undo)"
+m23 = "黑方 ${bn} vs 白方 ${wn} | 手数 ${move_count} | 状态 ${status}"
+m24 = "五子棋记录 (最近${records}场)"
+m25 = "  .wzq history <编号> board 查看棋盘"
+m26 = "${bn} 胜"
+m27 = "${wn} 胜"
+m28 = "平局"
+m29 = "  ${i}. [${time}] ${bn} vs ${wn} -> ${result} (${moves}手)"
+m30 = "未知操作: ${action}\n使用 .wzq 查看帮助"
+
+[_ai_turn]
+m1 = "AI 获胜！"
+m2 = "AI 获胜！"
+m3 = "你赢了！"
+m4 = "你赢了！"
+m5 = "AI 禁手犯规，你赢了！"
+m6 = "AI 禁手犯规，你赢了！"
+
+[cmd_translate]
+m1 = "用法: .tr <目标语言> <文本>\n例如: .tr en 你好\n     .tr 中文 hello"
+m2 = "不支持的语言: ${target}\n支持: en/zh/jp/kr/fr/de 或 中文/英文/日文/韩文..."
+
+[cmd_xq]
+m1 = "象棋对战仅支持群聊喵~"
+m2 = "中国象棋 .xq <操作>\n  start        开始新对局\n  <走法>       炮二平五 / h2e2\n  board        查看棋盘\n  resign       认输\n  history      走棋记录"
+m3 = "对局开始！你执红方，请落子喵~\n"
+m4 = "棋盘渲染失败喵: ${e}"
+
+[cmd_countdown]
+m1 = "【倒计时】"
+m2 = "已过"
+m3 = "还有"
+m4 = "${sign} ${days} 天"
+m5 = "【倒计时列表】"
+m6 = "已过"
+m7 = "还有"
+m8 = "${sign} ${days} 天"
+m9 = "用法: .countdown del <编号>"
+m10 = "已删除: [${date}] ${event}"
+m11 = "用法: .countdown add <日期> <事件>\n例如: .countdown add 2026-12-25 圣诞节"
+m12 = "日期格式错误: ${date}\n请使用 YYYY-MM-DD 格式，如 2026-12-25"
+m13 = "还有 ${days} 天"
+m14 = "已过 ${days} 天"
+m15 = "已添加倒计时喵~ [${date}] ${event} (${days})"
+
+[_handle_wdsj_lb]
+m1 = "用法: .wdsj lb <榜单名> [周期] [img]"
+m2 = "排行榜卡片渲染失败: ${e}"
+m3 = "  (暂无数据)"
+
+[_handle_wdsj_bind]
+m1 = "你当前绑定的玩家名是「${player}」喵~"
+m2 = "你还没有绑定玩家名喵~ 试试 .wdsj bd <玩家名>"
+m3 = "已绑定玩家名「${player}」喵~ 以后查战绩可以直接 .wdsj bw 不带名字啦"
+
+[_build_wdsj_summary]
+m1 = "${name} 的 ${display} 战绩"
+
+[cmd_wdsj]
+m1 = "只有管理员才能手动采集喵~"
+m2 = "⏳ 手动采集开始，请稍候..."
+m3 = "✅ 手动采集完成 (${elapsed}s)"
+m4 = "还没有人绑定喵~"
+m5 = "绑定玩家列表:"
+m6 = "洛花星雨排行榜 简写速查 (用法: .wdsj lb <简写> [周期] [img])"
+m7 = "击杀"
+m8 = "摧床"
+m9 = "最终"
+m10 = "首杀"
+m11 = "击杀"
+m12 = "死亡"
+m13 = "弓箭"
+m14 = "鱼竿"
+m15 = "跳板"
+m16 = "击杀"
+m17 = "死亡"
+m18 = "首杀"
+m19 = "击杀"
+m20 = "经验"
+m21 = "在线"
+m22 = "情侣"
+m23 = "称号"
+m24 = "公会"
+m25 = "画猜"
+m26 = "色盲"
+m27 = "色盲杀"
+m28 = "躲猫猫"
+m29 = "洛花星雨 13种游戏模式 (简写 => 全名)"
+m30 = "排行榜别名: .wdsj lb <简写> [周期]"
+m31 = "  双词: 游戏名 指标 (如: bw win, kbw tnt, sw kill)"
+m32 = "正在生成绑定排行 (${mode_key}) 喵..."
+m33 = "该日期"
+m34 = "，下一轮 ${next_time}"
+m35 = "${label}还没有数据喵~ 榜单将在每天 0:01 / 4:01 / 8:01 / 12:01 / 16:01 / 20:01 产出${hint}"
+m36 = "排名卡片渲染失败喵~"
+m37 = "send 模式仅在群聊中可用喵~"
+m38 = "用法: .wdsj trend <玩家名> [指标]\n未绑定玩家名时试试 .wdsj bd <玩家名> 先绑定喵~"
+m39 = "正在生成 ${player} 的 ${label} 趋势图喵..."
+m40 = "${player} 的 ${label} 数据不够喵~ 需要至少 2 天的记录才能画趋势图"
+m41 = "用法: .wdsj <模板> <玩家名> [img]\n未绑定玩家名时可用 .wdsj bd <玩家名> 绑定喵~"
+m42 = "用法: .wdsj <模板> <玩家名> [img]\n未绑定玩家名时可用 .wdsj bd <玩家名> 绑定喵~"
+m43 = "未知模式: ${action}\n用 .wdsj list 查看所有模式"
+m44 = "官方图片尚未生成，试试不带 img 看文字数据"
+m45 = "${name} 的 ${display} 战绩"
+
+[_handle_owner_cmd]
+m1 = "~owner cmd add/remove/list/clear <指令名>"
+m2 = "指令白名单为空（所有指令可用）"
+m3 = "指令白名单:\n  "
+m4 = "指令白名单已清空（所有指令可用）"
+m5 = "~owner cmd ${sub} <指令名>"
+m6 = "指令 ${cmd_name} 已在白名单"
+m7 = "已添加: ${cmd_name}"
+m8 = "指令 ${cmd_name} 不在白名单"
+m9 = "已移除: ${cmd_name}"
+m10 = "未知 cmd 子命令: ${sub}"
+
+[cmd_owner]
+m1 = "权限不足喵~"
+m2 = "卡片生成失败喵~"
+m3 = "用法: .owner get <路径>\n如: get bot.reply_threshold"
+m4 = "用法: .owner set <路径> <值>\n如: set bot.reply_threshold 5"
+m5 = "用法: .owner data <get|set|del|reset> <名> [键] [值]"
+m6 = "用法: data set <名> <键> <值>"
+m7 = "未知 data 操作: ${sub}"
+m8 = "用法: luck list|set <QQ> <值>|del <QQ>"
+m9 = "【白名单管理 .owner wl】\n  wl add group <群号> [atonly]  添加群白名单\n  wl remove group <群号>  移除群白名单\n  wl add private <QQ>    添加私聊白名单\n  wl remove private <QQ> 移除私聊白名单\n  wl show                查看所有白名单\n  wl cmd add|remove <群> <指令>  分群指令白名单\n  wl welcome set|del <群> [欢迎语]  入群欢迎语"
+m10 = "\n已设置 @仅模式"
+m11 = "设置: group=${gid} mode=${mode}\n支持: atonly, default"
+m12 = "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 1058782600 atonly"
+m13 = "用法: .owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 1058782600,247478659  设推送群\n  clear  清除(发全群)"
+m14 = "WDSJ 日榜推送群: ${gs}"
+m15 = "未设置推送群，凌晨自动发全群"
+m16 = "用法: .owner wdsj groups set <群号1,群号2,...>"
+m17 = "WDSJ 日榜推送群已设为: ${gs}"
+m18 = "已清除推送群限制，凌晨发全群"
+m19 = "未知: .owner wdsj ${sub}"
+m20 = "用法: .owner ${action} <get|set|reset> [参数]\n.owner ${action2} get [QQ]  查看用量\n.owner ${action3} set <QQ> <N>  设上限\n.owner ${action4} reset       重置"
+m21 = "用法: .owner ${action} set <QQ> <N>"
+m22 = "已设置 QQ ${args} 每日${action}上限为 ${args2}"
+m23 = "已重置今日${action}用量"
+m24 = "未知: .owner ${action} ${sub}"
+m25 = "未知操作: ${action}\n.owner 查看帮助"
+
+[cmd_memory]
+m1 = "【三层记忆 .memory】\n  working      瞬时记忆（当前对话上下文）\n  short        短时记忆（最近30条）\n  long         长时记忆（持久化）\n  search <关键词>  搜索所有记忆\n  clear        清空短时记忆"
+m2 = "瞬时记忆为空"
+m3 = "【瞬时记忆 · 最近${msgs}条】"
+m4 = "用法: .memory search <关键词>"
+m5 = "【短时记忆匹配】"
+m6 = "【长时记忆匹配】"
+m7 = "未找到含「${kw}」的记忆"
+m8 = "未知操作: ${action}\n.memory 查看帮助"
+
+[_owner_legacy]
+m1 = "未知操作: ${action}"
+
+[cmd_restart]
+m1 = "权限不足"
+m2 = "正在重启喵～"
+m3 = "正在重启喵～"
+
+[cmd_lyric]
+m1 = "❌ offset 数值格式错误：`${rest}`\n正确写法：.lyric offset -3000 （整数毫秒，负数=提前发送，正数=延后）"
+m2 = "ℹ️ `.lyric offset` 子命令用法：\n  .lyric offset ±<毫秒>   直接设置（TCP 下发，客户端即刻生效，负=提前，如 -3000 提前 3 秒）\n  .lyric offset get        查看客户端当前实际 offset\n  .lyric offset reset      重置 offset 为 0\n📦 新：offset 通过 PC 状态 TCP 连接直接下发到客户端，**无需改本地 JSON / 重启进程**，立刻生效并持久化。"
+m3 = "实时歌词推送仅支持在频道内开启喵~"
+m4 = "🎵 实时歌词推送已开启！当前频道收到歌词更新时会自动发出来喵~（停播10秒后自动关闭）"
+m5 = "实时歌词推送已关闭。"
+m6 = "📡 实时歌词推送状态：**已开启** → 频道 ${current}\n用 `.lyric off` 关闭；用 `.lyric offset -3000` 查看提前量配置提示。"
+m7 = "📡 实时歌词推送状态：**未开启**\n在目标频道内发送 `.lyric on` 开启推送。\n📖 完整用法：.lyric [on | off | status | offset ±<毫秒> | offset get | offset reset]"
+m8 = "❓ 未知子命令：`${sub}`\n.lyric 支持以下子命令：\n  频道开关: on / off / status\n  时间偏移: offset ±<毫秒>  |  offset get  |  offset reset\n提示：旧版 `.lyric` 直接带未知参数会被当成 on；现在必须显式写 on 才会开启频道。"
+
+[cmd_listening]
+m1 = "✅ 已结束"
+m2 = "正在听"
+m3 = "❌ 结束状态失败：${msg}"
+m4 = "📻 当前没有正在听的状态。用 `.listening <歌名> [-s 歌手] [-p 软件]` 设置。"
+m5 = "❌ 请先给出歌名，如 `.listening 有点甜 -s 幻梦 -p kugoumusic`"
+m6 = "🎵 已设置机器人状态：**正在听 ${song}**\n"
+m7 = "  - 歌手：${singer}\n"
+m8 = "❌ 设置失败：${msg}"
+
+[cmd_playing]
+m1 = "✅ 已结束"
+m2 = "正在玩"
+m3 = "❌ 结束状态失败：${msg}"
+m4 = "🎮 当前没有正在玩的状态。用 `.playing <游戏名>` 设置。"
+m5 = "🎮 机器人当前状态：**正在玩 ${name}**\n用 `.playing off` 结束。"
+m6 = "🎮 已设置机器人状态：**正在玩 ${game}**\n用 `.playing off` 结束。"
+m7 = "❌ 设置失败：${msg}"
+
+[_plugin_admin_denied]
+m1 = "无权限执行该指令"
+
+[cmd_plugin]
+m1 = "plugins/_down/ 还没有下载的 .hmp"
+m2 = "已下载的 .hmp（在 plugins/_down/）：\n"
+m3 = "用法：`.plugin -import <直链URL>`\n示例：`.plugin -import https://example.com/xxx.hmp`"
+m4 = "❌ 不是有效的 .hmp 直链（需 http/https 且以 .hmp 结尾）。\n若你是引用聊天里的文件，请用 `.plugin -down -load`"
+m5 = "用法：`.plugin -pack <本地插件名>`"
+m6 = "\n已将 .hmp 发到聊天，他人可引用后用 `.plugin -down -load` 导入"
+m7 = "没找到 .hmp 附件。请对 `points.hmp`/`shop.hmp` 那条文件消息点「回复」，在回复框里输入命令再发送。"
+m8 = "CLI 用法：\n`.plugin -pack <本地插件名>`  打包为 .hmp\n`.plugin -import <直链URL>`  直链导入 .hmp（下载+解包+加载）\n`.plugin -down`   引用聊天中的 .hmp 下载保存到 _down\n`.plugin -down -load` 下载并加载\n`.plugin -load <xxx.hmp>` 解包+加载 _down 内的插件\n`.plugin -load -list` / `.plugin -down -list` 查看已下载"
+m9 = "✅ 已热重载插件 `${name}`"
+m10 = "✅ 已启用插件 `${name}`"
+m11 = "✅ 已禁用插件 `${name}`"
+m12 = "⚠️ 确定要卸载插件 `${name}` 吗？\n卸载会清理该插件的事件/定时器/命令注册，且需重启才能自动重新加载。\n输入 `.plugin confirm ${token}` 确认执行（${_PLUGIN_CONFIRM_TTL} 秒内有效）。"
+m13 = "❌ 确认令牌无效或已过期，请重新执行相关命令"
+m14 = "❌ 确认已过期，请重新执行相关命令"
+m15 = "✅ 已卸载插件 `${name}`"
+m16 = "用法：`.plugin [status|list]`\n`.plugin reload <名字>`  热重载\n`.plugin enable <名字>`  启用\n`.plugin disable <名字>` 禁用\n`.plugin unload <名字>`  卸载（需二次确认）\n`.plugin update [名字|all]`  插件库一键更新（无参/多参/all）\n`.plugin -pack/-import/-down/-load` 插件打包/导入/下载/加载"
+
+[_plugin_load_hmp]
+m1 = "❌ 请传入 .hmp 文件名"
+m2 = "❌ _down 里没有 `${fname}`，可用 `.plugin -load -list` 查看"
+m3 = "❌ 无法识别插件名"
+m4 = "❌ manifest 无效"
+m5 = "（该插件已在运行）"
+m6 = "✅ 检测到已存在 `${name}`，已重新启用"
+m7 = "❌ 启用失败: ${err2}"
+m8 = "✅ 检测到已存在 `${name}`，已重新加载启用"
+m9 = "❌ 加载失败: ${msg3}"
+m10 = "❌ 解包成功但加载失败: ${msg2}"
+
+[_plugin_overwrite_prompt]
+m1 = "升级"
+m2 = "降级"
+m3 = "同版本覆盖"
+m4 = "（该插件当前正在运行）"
+m5 = "（当前未在运行）"
+m6 = "⚠️ 插件 `${name}` 已存在，包内版本 v${pkg_ver}，本地 v${local_ver} → ${kind} ${running}\n说明：`.plugin unload` 只从内存卸载，磁盘目录仍在，重启后会自动重新加载，所以导入仍会提示已存在。\n输入 `.plugin confirm ${token}` 确认覆盖安装（${_PLUGIN_CONFIRM_TTL} 秒内有效）。"
+
+[_plugin_overwrite_install]
+m1 = "❌ 覆盖解包失败: "
+m2 = "❌ 已覆盖文件但加载失败: ${msg2}"
+
+[_plugin_update_cmd]
+m1 = "❌ 插件库不可用: "
+m2 = "插件库（${lib_base}）无可用更新，全部插件已是最新"
+m3 = "插件库有可用更新：\n"
+m4 = "\n用 `.plugin update <名字>` 更新"
+m5 = "❌ 插件库不可用: "
+m6 = "✅ 全部插件已是最新"
+m7 = "用法: .plugin update <名字> [名字...] 或 .plugin update all"
+m8 = "❌ `${name}` 名称非法"
+m9 = "❌ `${name}` 查询失败: ${err}"
+m10 = "❌ `${name}` 下载失败: ${msg2}"
+m11 = "✅ `${name}` 已是最新"
+m12 = "❌ `${name}` 下载失败: ${msg2}"
+
+[_plugin_status_card]
+m1 = "插件系统未就绪：${e}"
+
+[_plugin_status_text]
+m1 = "插件系统未就绪：${e}"
+m2 = "当前未加载任何插件"
+m3 = "— 共 ${plugins} 个，生效 ${ok_n} 个 ——"
+
+[cmd_sys]
+m1 = "截屏失败（PC 客户端未连接或超时）"
+m2 = "截屏数据解码失败: ${e}"
+m3 = "管理员"
+m4 = "管理员"
+
+[cmd_phone]
+m1 = "截屏失败（手机客户端未连接或超时）"
+m2 = "管理员"
+
+[_build_daily_rank_html]
+m1 = "击杀"
+m2 = " 等${new_players}人"
