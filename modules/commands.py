@@ -359,6 +359,9 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_kook):
     d["runtime"]["chats"] = stats.get('active_chats', 0)
     d["runtime"]["tasks"] = stats.get('active_tasks', 0)
 
+    # ⚠️ get_cache_stats 定义在 modules/judge.py，本模块未在模块级导入
+    #    （cmd_info 此前直接调用 → /~info 必 NameError）。函数内按需导入最稳。
+    from modules.judge import get_cache_stats
     d["runtime"]["scache"] = get_cache_stats().get('entries', 0)
 
     # ── 连接 ──

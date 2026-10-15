@@ -215,6 +215,9 @@ def clear_game() -> tuple[bool, str]:
 def current_game() -> dict:
     """返回最近一次设置的"正在玩"状态（未设置返回空 dict）。"""
     return dict(_last_game)
+
+
+async def set_music(music_name: str, singer: str = "", software: str = "cloudmusic") -> tuple[bool, str]:
     """设置"正在听 <music_name>"。music_name 必填。"""
     if not music_name or not music_name.strip():
         return False, "歌曲名不能为空"
