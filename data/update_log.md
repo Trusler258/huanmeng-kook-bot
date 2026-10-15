@@ -1,5 +1,99 @@
 # 更新日志
 
+## v2.3.91 — 功能追赶：把 QQ v2.1.6~v2.3.90 的演进补回来 — 2026.10.16
+
+一句话总结：本端停在 v2.1.5，落后 QQ 两个大版本。本轮按「读 QQ commit + 更新日志」
+逐项补齐，共落地 **6 个模块**，全部线上验证通过。
+
+### 一、决策模型（QQ v2.3.88/89）—— 本端此前完全没有
+- 新增 `services/decision.py`（497 行，原样移植，无平台依赖）
+  - OpenRouter Decisions API / `inception/mercury-decide:free`，**免费**（usage.cost=0）
+  - ⚠️ 该模型不能用 chat/completions，必须走 `/api/alpha/decisions`
+  - `route()` 一次调用判 7 维（search/code/deep/tools/face/play/memory）+ which_tool
+    选择题（选项从 `core.tools.get_tool_schemas()` **动态派生**，插件新工具自动纳入）
+  - `judge()` 判 addressed/reply/interest/arch；`need_search()` 判要不要联网
+  - **fail-open**：任何异常/超时/非 200 → 返回 None，绝不阻断主流程
+- `services/llm.py`：`call_llm_with_tools` / `generate_multi_reply_with_tools` 加
+  `force_tool` —— `tool_choice` 从 auto 变为指定函数，**仅第 0 轮强制**，之后恢复 auto；
+  函数开头校验工具名在本次工具表内（`tools_override` 按需裁剪后可能不含），不在则丢弃并 WARNING
+- `core/pipeline.py`：judge 之前**提前 fire** `route()`（与 judge/翻译/意图分类重叠，
+  额外开销≈0）；search 维度命中 → `_fast_search=True`（补关键词漏判，即"该搜没搜"的窟窿）；
+  which_tool 高置信度 → `force_tool`
+- `bot.py`：启动日志打印「决策模型 | ...」；`config/bot_config.toml` 新增 `[decision]` 段；
+  `.env` 新增 `OPENROUTER_KEY`/`DECISION_URL`/`DECISION_MODEL`
+- 注：QQ 侧「tools 命中开思考」未移植 —— 本端 `call_llm_with_tools` 本就通过
+  `_thinking_disabled_body` 关思考，无 thinking 机制
+- 线上实测：恒大现状→search+search_web(0.9981)、帮我写个冒泡排序→code+write_code(0.9998)、
+  晚安啦→None（fail-open 正常）；judge() → (7, True, True, True)
+
+### 二、FC「先找后写」交付机制（QQ v2.3.81c/d/e）
+KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这就整理成md发出来"却永远不发文件。
+- `_DELIVERABLE_FILE_RE` + `_needs_deliverable_file()` 识别要文件的请求
+- 循环内累积检索素材 `_gathered`（去重），write_code 时把**原始素材由代码直接注入**
+  `arguments.description` —— 素材 100% 进得去，不会被模型复述丢料
+- 停条件例外：data_results 到手但还没调 write_code 且 round<3 → continue 再跑一轮，
+  并注入定向指令（素材薄→换关键词多搜；素材足→立刻调 write_code，禁止只口头答应）
+- 循环后交付兜底：要文件+有素材+没写过+模型仍不调 → 代码经 ToolRuntime 强制生成
+- 注：`reasoning_content` 占位**不移植**（本端关思考，不产生该字段，不传不会 400）
+
+### 三、最终轮「诚实归因 + 搜索空结果守卫」（QQ v2.0.4u + v2.3.48）
+- 现象1：search_web 查完，LLM 却说"哦这个我知道喵"（装成本来就会）→ 注入 system 提醒
+- 现象2：search_web 只返回 65 字符标题头（=没搜到）时模型照样编细节 → 薄结果守卫，
+  要求诚实告知 + 严禁编造
+- ⚠️ 关键：两条提醒必须 **append 到 msgs 末尾**，不能 insert(1)。DeepSeek 缓存按消息序列
+  逐段匹配前缀，在位置 1 插入会让"位置1 及之后"全部对不上，命中率 98.4%→31.0%（QQ 实测）
+
+### 四、i18n 提示语外化（QQ v2.3.90 体系）
+- `modules/commands.py` **393 处**硬编码提示 → `format_lang(...)`，lang.toml
+  **87 分组 / 514 条**（此前仅 63 处调用）
+- 工具链与 QQ 共用：`scripts/scan_i18n.py` / `i18n_convert.py`（自带自验证：
+  模板+kwargs 渲染 == 原文，0 失败才写回）/ `merge_lang_fragment.py`（幂等合并）
+- ⚠️ 本端全仓 CRLF，转换器读写会把整文件转成 LF → 转换后显式转回 CRLF（diff 仅 367 增 513 删）
+- 顺带补回对齐批 4 漏带的 2 条 lang.toml 条目（笔记本规则 / 回复长度自适应）
+- 线上验证：449 个静态 key **缺失 0**，渲染抽查全对（无 [LANG:xxx] 泄漏）
+
+### 五、用户画像（QQ v2.3.33/34/41）—— 本端此前完全没有
+- 移植 `core/user_profile.py`（735 行）。v2.3.41 版式：**nick + text 两字段**，
+  text 是一段自然语言（原来拆五个固定字段，LLM 为填满会硬凑、把玩梗当身份）
+- 机制：每天 00:05 批量回看前一天 msglog，按 (会话,用户) 增量更新。单条消息没上下文，
+  会把「我是你主人」当身份（实测 334 条里 20% 是疑问句、大量角色扮演）
+- 隐私兜底：密码/token/手机号/身份证等一律不落盘；疑问句特征不当昵称
+- **平台适配 2 处**：`_TEXT_TYPES` 加 "group"（本端用户消息 type 是 group，QQ 是 text，
+  不加这条 collect_day 一条都收不到）；`get_bot_name()` → `get_config().bot_name`
+- 接线：`plugins/bg_tasks` 新增 `_bg_profile_daily`；`core/pipeline` 注入
+  `build_profile_text(chat_id, user_id, is_group)`（按会话分域）
+- 已知降级：本端无 group_nicknames.json/group_settings → `group_ids()` 返回空，
+  画像按用户分域（同用户在不同频道会合并）；QQ 是按群分域
+- 线上实测：`collect_day('2026-10-15')` 收集到 2 个用户域（100 条 / 22 条），nick 解析正确
+
+### 六、顺带核实"不需要搬"的三项（避免盲目移植）
+- **tools 顺序漂移**：本端 `capability/router.py` 已按 `(-score, name)` 排序，
+  顺序天然稳定 → QQ v2.3.28 的问题在此不存在
+- **fmt_reminder 位置**：本端 `_build_messages` 的 user_parts 已是
+  [上下文, fmt_reminder, 当前消息]，与 QQ v2.3.29 一致
+- **会话分块/摘要压缩**：本端有自己的 `core/context_builder.py`（Phase 9 Context Engine，
+  compress + budget），与 QQ v2.3.10 目标相同、实现不同，不搬
+- **legacy 协议转换**：本端已有 `_calls_from_content`（等价 QQ 的
+  `_legacy_calls_to_tool_calls`）
+- **json_mode 兜底 / cost / tokens / cache**：本端已有（对齐批 4 带来）
+
+### 未做（需评估，非遗漏）
+- **manifest v1 → v2**：本端 `core/plugin/api.py` 与 QQ 是**双向分叉**
+  （本端独有 `extract_cq_images`/`render_weather_card`，QQ 独有 24 个方法），
+  不能单向覆盖 → 需合并两端差异，属插件系统核心改造，另立任务
+- **/~mlink 跨聊天记忆关联**（QQ v2.3.11）：需先有 memory_link 插件，本端没有
+- **功耗监测**（QQ v2.3.40）：QQ 侧已是独立插件 + 常驻服务，需整体评估
+- **C 档卡片**（wdsj 卡片/排行榜/日报卡中文回退）：按用户定案"能做成 KOOK Card 的用
+  KOOK Card"，需先定卡片方案
+
+### 验证
+- 每个模块：py_compile → pyflakes 未定义名检查 → **线上真跑一次**
+- 全量 pyflakes：undefined name **4 个**（与改动前基线一致，均为
+  `from __future__ import annotations` / 字符串注解的已知误报），**无新增**
+- kook-bot.service 全程 active / NRestarts=0 / 新进程 0 Traceback
+
+---
+
 ## v2.3.90 — 与 QQ bot 全面对齐（仓库↔线上零差异 + 三处修复）— 2026.10.16
 
 一句话总结：本端**仓库与线上服务器此前深度分叉**（插件 26 vs 17、版本号三处硬编码互不一致、
