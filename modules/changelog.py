@@ -32,11 +32,17 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from core.logger import get_logger
+
+# ★ 补上模块级 logger（原先只在各函数内部各自 get_logger，模块级没有）。
+#   新增的回收逻辑是模块级函数，直接用 logger 会 NameError —— 而且会连锁炸在
+#   except 分支里（异常处理自己也抛），真出问题时连日志都留不下。
+logger = get_logger("changelog")
 
 # 延迟导入（避免启动时加载重型依赖）
 _markdown_lib = None
@@ -91,7 +97,88 @@ async def _ensure_browser():
         ],
     )
     logger.info("[Playwright] Chromium 启动成功（极致加速已启用）")
+    touch_browser()
     return _browser
+
+
+# ── Chromium 空闲自动回收（移植自 QQ bot v2.3.67）─────────────
+# 背景：_ensure_browser() 是全局单例，且启动时还会预启动，之后永不释放。
+#   实测本机常驻 10 个 chromium 进程 / 270MB，从 2026-09-14 起挂了 14 天；
+#   更麻烦的是 **snap 版 chromium 会跑到自己的 snap.chromium.*.scope**，
+#   不在服务的 cgroup 内 → `systemctl restart kook-bot` 根本杀不掉它们，只能一直攒。
+# 方案：记录最后一次渲染时间，后台每 60s 检查；空闲超过 _BROWSER_IDLE_SEC 就整体关闭
+#   （页面池 + browser + playwright instance 全清）。下次要渲染时 _ensure_browser()
+#   懒加载重启（~1s，只在真需要时付一次）。
+_BROWSER_IDLE_SEC = 600.0        # 空闲 10 分钟即回收
+_browser_busy = 0                # 正在渲染的请求数
+_last_render_ts: float = 0.0     # 最后一次"碰过浏览器"的时间
+
+
+def touch_browser() -> None:
+    """标记浏览器刚被使用过（回收定时器重置）"""
+    global _last_render_ts
+    _last_render_ts = time.time()
+
+
+def browser_idle_sec() -> float:
+    """距上次使用过去了多少秒（从未用过返回 0）"""
+    if not _last_render_ts:
+        return 0.0
+    return time.time() - _last_render_ts
+
+
+async def reclaim_browser(force: bool = False) -> bool:
+    """关闭空闲的 Chromium 并释放内存；返回是否真的回收了。"""
+    global _browser, _playwright_instance
+    if _browser is None:
+        return False
+    if not force:
+        if _browser_busy > 0:
+            return False
+        if browser_idle_sec() < _BROWSER_IDLE_SEC:
+            return False
+    idle = browser_idle_sec()
+    try:
+        async with _page_lock:
+            for _p in _page_pool:
+                try:
+                    await _p.close()
+                except Exception:
+                    pass
+            _page_pool.clear()
+        try:
+            await _browser.close()
+        except Exception as e:
+            logger.debug("[Playwright] browser.close 异常(忽略): %s", e)
+        _browser = None
+        if _playwright_instance is not None:
+            try:
+                await _playwright_instance.stop()
+            except Exception as e:
+                logger.debug("[Playwright] playwright.stop 异常(忽略): %s", e)
+            _playwright_instance = None
+        logger.info("[Playwright] 空闲 %.0fs → 已回收 Chromium，释放内存", idle)
+        return True
+    except Exception as e:
+        logger.warning("[Playwright] 回收 Chromium 失败: %s", e)
+        return False
+
+
+async def browser_idle_loop(check_sec: float = 60.0) -> None:
+    """后台任务：定期回收空闲浏览器（由 bot.py 启动）"""
+    logger.info("Chromium 空闲回收已启动（空闲 > %.0fs 即释放，每 %.0fs 检查一次）",
+                _BROWSER_IDLE_SEC, check_sec)
+    while True:
+        try:
+            await asyncio.sleep(check_sec)
+        except asyncio.CancelledError:
+            break
+        try:
+            await reclaim_browser()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("空闲回收检查异常(忽略): %s", e)
 
 
 
@@ -478,6 +565,25 @@ async def _block_external_route(route):
 
 
 async def _screenshot_html(
+    html_content: str,
+    output_path: Path,
+    width: int = 800,
+    scale: float = 1.0,
+) -> bool:
+    """截图入口：统计在飞渲染数 + 刷新"最后使用时间"，再交给实现。
+
+    渲染期间 _browser_busy > 0，回收器会让路；渲染一结束就 touch，空闲计时从头开始。
+    """
+    global _browser_busy
+    _browser_busy += 1
+    try:
+        return await _screenshot_html_inner(html_content, output_path, width, scale)
+    finally:
+        _browser_busy -= 1
+        touch_browser()
+
+
+async def _screenshot_html_inner(
     html_content: str,
     output_path: Path,
     width: int = 800,

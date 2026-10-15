@@ -264,15 +264,20 @@ class HuanmengBot:
 
         info("后台任务: 已由插件 plugins/bg_tasks 接管")
 
-        # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
+        # ★ 不再预启动 Chromium —— 改「懒加载 + 空闲自动回收」。
+        #   原先预启动后**永不释放**：实测本机常驻 10 个 chromium 进程 / 270MB，
+        #   从 2026-09-14 起挂了 14 天没释放。更麻烦的是 snap 版 chromium 会跑到
+        #   自己的 snap.chromium.*.scope，**不在本服务 cgroup 内** →
+        #   `systemctl restart` 根本杀不掉它们，只能一直攒。
+        #   现在首次真要渲染时才启动（~1s），空闲 10 分钟由 browser_idle_loop() 自动释放。
         try:
             from core.queues import start_render_queue
             start_render_queue()
-            from modules.changelog import _ensure_browser
-            await _ensure_browser()
-            info("Chromium 已预启动 + 渲染队列就绪")
+            from modules.changelog import browser_idle_loop
+            asyncio.ensure_future(browser_idle_loop())
+            info("渲染队列就绪（Chromium 懒加载 + 空闲 10 分钟自动回收）")
         except Exception as e:
-            warning("Chromium 预启动失败: %s (将在首次使用时懒加载)", e)
+            warning("渲染队列启动失败: %s (仍会在首次使用时懒加载)", e)
 
         # 启动 khl.py Bot（这是阻塞调用，直到 bot 停止）
         try:
