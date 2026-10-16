@@ -28,6 +28,7 @@ data/notes/
 data/user_profiles.json
 data/memories/
 data/sandbox_ws/
+data/skills/
 *.db
 *.sqlite
 

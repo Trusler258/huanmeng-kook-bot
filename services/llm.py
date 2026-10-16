@@ -147,6 +147,22 @@ def _load_skill_sections() -> dict[str, str]:
                     sections[key] = content
             except Exception:
                 pass
+    # 运行时可写的技能文件（data/skills/*.md）：如黑话词典（learn_slang 追加）。
+    # 放在 data/ 下以免部署覆盖；同 key 时覆盖仓库内置章节。
+    data_skills_dir = Path(__file__).resolve().parent.parent / "data" / "skills"
+    if data_skills_dir.is_dir():
+        for sf in sorted(data_skills_dir.glob("*.md")):
+            try:
+                text = sf.read_text(encoding="utf-8").strip()
+                m = _re.match(r'^##\s+(\S+)', text)
+                if not m:
+                    continue
+                key = m.group(1).strip()
+                content = text[text.index("\n") + 1:].strip() if "\n" in text else ""
+                if content:
+                    sections[key] = content
+            except Exception:
+                pass
     _skill_loaded = True
     _skill_sections = sections
     logger.info("main_skill.md 已加载: %d 个章节", len(sections))
@@ -158,6 +174,45 @@ def reload_skill_cache():
     global _skill_sections, _skill_loaded
     _skill_sections = {}
     _skill_loaded = False
+
+
+def append_slang_term(term: str, meaning: str, category: str = "LLM 自学") -> tuple[bool, str]:
+    """向黑话词典（data/skills/slang.md，key=slang_dict）追加一条（供 learn_slang 工具调用）。
+
+    追加后立即失效技能缓存，下次组装 system prompt 即注入新词条，无需改代码。
+    返回 (是否成功, 说明)。
+    """
+    term = (term or "").strip()
+    meaning = (meaning or "").strip()
+    if not term or not meaning:
+        return False, "词与释义都不能为空"
+    if len(term) > 24 or len(meaning) > 200:
+        return False, "词最长 24 字、释义最长 200 字"
+    if any(c in term for c in "：:\n") or "\n" in meaning:
+        return False, "词里不能有冒号或换行，释义不能有换行"
+    d = Path(__file__).resolve().parent.parent / "data" / "skills"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "slang.md"
+        text = p.read_text(encoding="utf-8") if p.exists() else "## slang_dict\n\n"
+        # 同名词（忽略大小写）不重复追加
+        if re.search(r'^-\s*' + re.escape(term.lower()) + r'\s*[：:]', text.lower(), re.M):
+            return False, f"「{term}」已在词典里"
+        entry = f"- {term}：{meaning}"
+        if not text.endswith("\n"):
+            text += "\n"
+        if category and f"## {category}" not in text:
+            text += f"\n## {category}\n\n{entry}\n"
+        else:
+            text += entry + "\n"
+        p.write_text(text, encoding="utf-8")
+        # 让技能缓存立即失效（learn_slang 后无需重启即生效）
+        reload_skill_cache()
+        logger.info("黑话词典新增: %s（%s）", term, category)
+        return True, f"已收录「{term}」"
+    except Exception as e:
+        logger.warning("追加黑话词条失败: %s", e)
+        return False, f"写入失败: {e}"
 
 
 def build_system_sections(bot_name: str, personality: str, is_group: bool,
@@ -227,6 +282,7 @@ def build_system_sections(bot_name: str, personality: str, is_group: bool,
         "fav_format": fav_format,
         "fav_tiers": fav_tiers,
         "play_mode": play_mode,
+        "slang_dict": sec.get("slang_dict", ""),
     }
 
 
@@ -242,7 +298,8 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
     order = [
         "header", "persona_lock", "format_rules", "kook_sdk",
         "command_tools", "cmd_list",
-        "face_lib", "private_tone", "anti_repeat", "fav_format", "fav_tiers", "play_mode",
+        "face_lib", "private_tone", "anti_repeat", "slang_dict",
+        "fav_format", "fav_tiers", "play_mode",
     ]
     return "\n\n".join(p for p in (sections[k] for k in order) if p)
 

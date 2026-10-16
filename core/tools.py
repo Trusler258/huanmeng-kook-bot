@@ -296,6 +296,25 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn_slang",
+            "description": (
+                "把新学到的网络黑话/群内特殊用语记进黑话词典，供以后理解与使用。"
+                "当用户解释某个梗/黑话/缩写、或你判断某个词值得长期记住时调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string", "description": "黑话词语，如 yyds、绝绝子"},
+                    "meaning": {"type": "string", "description": "含义/用法说明"},
+                    "category": {"type": "string", "description": "分类（可选），如 网络用语、游戏黑话"},
+                },
+                "required": ["term", "meaning"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -318,6 +337,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "pgr":         "pgr",
     "read_file":   "",  # 自有实现
     "ws_files":    "",  # 自有实现（沙箱持久工作区文件管理）
+    "learn_slang": "",  # 自有实现（黑话词典追加）
 }
 
 
@@ -852,6 +872,7 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "pgr":        15.0,
     "system_status": 8.0,
     "ws_files":    8.0,
+    "learn_slang": 8.0,
 }
 
 
@@ -971,6 +992,14 @@ async def _execute_impl(
             arguments.get("name", "") or "",
             arguments.get("content", "") or "",
         )
+    if tool_name == "learn_slang":
+        from services.llm import append_slang_term
+        _ok, _msg = append_slang_term(
+            arguments.get("term", ""),
+            arguments.get("meaning", ""),
+            arguments.get("category", "LLM 自学") or "LLM 自学",
+        )
+        return _msg
     if tool_name == "write_code":
         desc = original_msg or arguments.get("description", "")
         return await _write_code(
