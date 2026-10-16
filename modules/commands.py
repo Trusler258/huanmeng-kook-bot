@@ -3456,6 +3456,42 @@ async def handle_command(
                 guild_id = str(_gid)
         except Exception:
             pass
+        # 透传发送者/频道/消息的常用信息（平台无关 dict，零开销不调 API）
+        author_info: dict = {}
+        channel_name = ""
+        msg_id = ""
+        quote_info: dict = {}
+        try:
+            au = getattr(raw_event, "_author", None)
+            if au is not None:
+                author_info = {
+                    "username": getattr(au, "username", "") or "",
+                    "nickname": getattr(au, "nickname", "") or "",
+                    "identify_num": str(getattr(au, "identify_num", "") or ""),
+                    "avatar": getattr(au, "avatar", "") or "",
+                    "bot": bool(getattr(au, "bot", False)),
+                    "roles": [str(r) for r in (getattr(au, "roles", []) or [])],
+                }
+        except Exception:
+            pass
+        try:
+            extra = getattr(raw_event, "extra", None) or {}
+            channel_name = str(extra.get("channel_name", "") or "")
+            q = extra.get("quote") or {}
+            if q:
+                qa = q.get("author") or {}
+                qauthor = str(qa.get("username") or qa.get("id") or "")
+                if qa.get("identify_num"):
+                    qauthor += f"#{qa.get('identify_num')}"
+                qcontent = re.sub(r"<[^>]+>", "", str(q.get("content") or ""))[:120]
+                quote_info = {"author": qauthor, "content": qcontent,
+                              "msg_id": str(q.get("msg_id") or q.get("id") or "")}
+        except Exception:
+            pass
+        try:
+            msg_id = str(getattr(raw_event, "id", "") or "")
+        except Exception:
+            pass
         msg = _PluginMsg(
             args=args,
             text=raw_message,
@@ -3466,6 +3502,10 @@ async def handle_command(
             quote_id=quote_id,
             mentions=mentions,
             guild_id=guild_id,
+            msg_id=msg_id,
+            channel_name=channel_name,
+            author_info=author_info,
+            quote_info=quote_info,
         )
         try:
             result = await plugin_handler(msg)

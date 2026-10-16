@@ -1,5 +1,25 @@
 # 更新日志
 
+## v2.3.99 — kook 插件全量信息查询（昵称/角色/引用/服务器资料/频道列表）— 2026.10.16
+
+一句话总结：`.kook get` 扩到 12 个子命令，昵称/角色/头像/引用消息零开销可查，
+服务器资料/频道列表/用户资料走 KOOK API（结果缓存 60s）。
+
+### `.kook get` 全量子命令
+**零开销（消息事件现成，不调 API）**：
+`uid [@某人]` / `me` / `bot` / **`nickname`**（在该服务器的昵称）/
+**`account`**（完整账号 名字#1234）/ `channel`（ID+名称）/ **`msg`**（当前消息 ID）/
+**`roles`**（你在该服务器的角色）/ **`avatar`**（头像 URL）/ **`quote`**（被引用消息）
+
+**一次 API（60s 缓存）**：
+`server`（名称/服主/等级/人数上限）/ **`channels`**（服务器全部频道）/
+**`user @某人`**（对方昵称/角色名/加入时间）/ **`guilds`**（机器人在的所有服务器）
+
+### core 配合（所有插件受益）
+- `_PluginMsg` 新增 **`author_info`**（username/nickname/identify_num/avatar/bot/roles）、
+  **`channel_name`**、**`msg_id`**、**`quote_info`**（被引用消息 作者/内容/ID）透传
+- 插件拿 KOOK client 的方式：`services.sender._bot`（模块 `__getattr__` 兼容层转发）
+
 ## v2.3.98 — 新增 kook 插件（.kook get 各类 ID）— 2026.10.16
 
 一句话总结：新增 `.kook get` 一条指令查 KOOK 的用户/频道/服务器/机器人 ID。
