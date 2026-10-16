@@ -264,6 +264,38 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ws_files",
+            "description": (
+                "管理沙箱持久工作区文件（跨对话保留）。"
+                "action=list 列出工作区全部文件；action=read 读取一份文件内容；"
+                "action=write 写入/覆盖一份文件。"
+                "配合 run_code 使用：先用 write 放数据文件，再用 run_code 处理它，"
+                "产出的文件也能用 read 读回或下次继续处理。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "read", "write"],
+                        "description": "list=列文件, read=读文件, write=写文件",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "文件名（read/write 必填），如 data.csv、result.json",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "write 时的文件内容",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -285,6 +317,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "whois":       "whois",  # ★ 域名查询
     "pgr":         "pgr",
     "read_file":   "",  # 自有实现
+    "ws_files":    "",  # 自有实现（沙箱持久工作区文件管理）
 }
 
 
@@ -719,6 +752,34 @@ async def _read_file(path: str) -> str | None:
     return content
 
 
+async def _ws_files(action: str, name: str = "", content: str = "") -> str:
+    """沙箱持久工作区文件管理：list / read / write（跨对话保留，路径穿越已防）。"""
+    import os
+    from pathlib import Path as _P
+    _WS_DIR = _P(__file__).resolve().parent.parent / "data" / "sandbox_ws"
+    _WS_DIR.mkdir(parents=True, exist_ok=True)
+    action = (action or "list").strip().lower()
+    if action == "list":
+        entries = [p for p in _WS_DIR.rglob("*") if p.is_file()]
+        entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        if not entries:
+            return "工作区为空（可用 ws_files write 或 run_code 写入文件）"
+        lines = [f"  {p.relative_to(_WS_DIR)}  ({p.stat().st_size}B)" for p in entries[:50]]
+        return "工作区文件（新→旧）:" + chr(10) + chr(10).join(lines)
+    name = os.path.basename((name or "").strip())
+    if not name:
+        return "缺少文件名"
+    target = _WS_DIR / name
+    if action == "read":
+        if not target.exists():
+            return f"{name} 不存在（用 ws_files list 查看工作区文件）"
+        return f"=== {name} ===" + chr(10) + target.read_text(encoding="utf-8", errors="replace")[:4000]
+    if action == "write":
+        target.write_text(content or "", encoding="utf-8")
+        return f"已写入 {name}（{len(content or '')} 字符），可用 run_code 处理它"
+    return f"未知 action: {action}"
+
+
 async def _resolve_player(user_id: int, game: str) -> str | None:
     """从玩家绑定数据中查找用户对应游戏ID"""
     import json
@@ -790,6 +851,7 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "chess":       8.0,
     "pgr":        15.0,
     "system_status": 8.0,
+    "ws_files":    8.0,
 }
 
 
@@ -903,6 +965,12 @@ async def _execute_impl(
         return await _read_url(arguments.get("url", ""))
     if tool_name == "read_file":
         return await _read_file(arguments.get("path", ""))
+    if tool_name == "ws_files":
+        return await _ws_files(
+            arguments.get("action", "list"),
+            arguments.get("name", "") or "",
+            arguments.get("content", "") or "",
+        )
     if tool_name == "write_code":
         desc = original_msg or arguments.get("description", "")
         return await _write_code(
