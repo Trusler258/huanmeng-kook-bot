@@ -1,5 +1,23 @@
 # 更新日志
 
+## v2.3.97 — 移植故障监控（.owner fault，频道语义）— 2026.10.16
+
+一句话总结：把 QQ 独有的 DeepSeek 故障监控搬进 KOOK，`.owner fault on` 直接在当前频道发卡片确认。
+
+### 新增
+- **`.owner fault <show|on|off|test> [频道ID]`**（逻辑在 `modules/fault.py`）：
+  · `show` 查看已开启的频道；`on/off` 开关（**不带频道号 = 当前频道**）；`test` 发测试通知
+  · **`on` 开启后直接在当前频道发一张 KOOK 原生卡片确认**
+- **后台轮询 `fault_watcher`**（bg_tasks 托管，默认 300s）：DeepSeek 状态 feed 一有更新
+  就推给已开启的频道；首次轮询只记基线不发（防重启重发旧状态）
+- 数据源：status.deepseek.com 官方 feed **运行时直读**（不手抄状态）。国内访问三重阻断
+  （ICP 403 / SNI 重置 / DoH 超时）→ 国外 DNS（UDP 53 → 1.1.1.1）拿香港节点直连
+- 配置写入用 `_toml_write_in_section`（只动目标行，**不用 toml.dumps 整写**，保留注释）
+
+### 验证
+- `.owner fault` 用法 / `show` / `on` / `off` 全部正确；官方 feed 直读成功（status=resolved）
+- fault_watcher 已启动并建立基线；28 插件正常
+
 ## v2.3.96 — wdsj 真插件化 + 修复插件自注册指令分发 bug — 2026.10.16
 
 一句话总结：`.wdsj` 整体迁入 `plugins/wdsj/`（无内置兜底），并修复一个**长期潜伏的插件指令分发 bug**。

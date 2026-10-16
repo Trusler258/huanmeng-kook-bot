@@ -2431,6 +2431,57 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_kook):
             return format_lang("cmd_owner.m18")
         return format_lang("cmd_owner.m19", sub=sub)
 
+    # ── 故障推送管理（按频道开关）────────────────────────────────────
+    # 说明：目前只有 DeepSeek 提供 RSS/状态页，其他服务商无从自动判定；
+    #      逻辑在 modules/fault.py，这里是"手动触发 + 按频道开关"。
+    # ⚠️ 本分支内只用 `_fault_mod` 别名：cmd_owner 的 wdsj 分支有 `import toml` /
+    #    `from pathlib import Path`，会把它们变成整个函数的局部变量（QQ 侧已踩过）。
+    if action == "fault":
+        from modules import fault as _fault_mod
+        sub = args[1].lower() if len(args) > 1 else ""
+        if not sub or sub in ("help", "帮助"):
+            return format_lang("fault.usage")
+        if sub == "show":
+            cs = _fault_mod.get_notify_channels()
+            if cs:
+                return format_lang("fault.show_on", gs=', '.join(str(c) for c in cs))
+            return format_lang("fault.show_off")
+        if sub in ("on", "off"):
+            # ★ 不带频道号 = 当前频道（KOOK 频道语义）
+            if len(args) > 2 and args[2].strip().lstrip("-").isdigit():
+                cid = int(args[2].strip())
+            elif is_group:
+                cid = group_id
+            else:
+                return format_lang("fault.not_in_channel")
+            changed = _fault_mod.set_notify_channel(cid, sub == "on")
+            if sub == "on" and not changed:
+                return format_lang("fault.already_on", g=cid)
+            if sub == "off" and not changed:
+                return format_lang("fault.not_on", g=cid)
+            # ★ 开启后直接在当前频道发一张卡片确认
+            if sub == "on" and is_group:
+                try:
+                    await _fault_mod.send_enabled_card(group_id)
+                except Exception as e:
+                    logger.warning("故障推送开启卡片发送失败: %s", e)
+            return format_lang("fault.push_ok",
+                               state=(format_lang("fault.state_on") if sub == "on"
+                                      else format_lang("fault.state_off")), g=cid)
+        if sub == "test":
+            if len(args) > 2 and args[2].strip().lstrip("-").isdigit():
+                cid = int(args[2].strip())
+            elif is_group:
+                cid = group_id
+            else:
+                return format_lang("fault.not_in_channel")
+            try:
+                await _fault_mod.run_fault_test(cid)
+            except Exception as e:
+                return format_lang("fault.send_fail", gid=cid, e=e)
+            return format_lang("fault.test_sent", gid=cid)
+        return format_lang("fault.unknown_sub", sub=sub)
+
     # ── draw/video 配额管理 ──
     if action in ("draw", "video"):
         from modules.agnes import owner_quota_get, owner_quota_set, owner_quota_reset
