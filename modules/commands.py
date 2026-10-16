@@ -3446,6 +3446,16 @@ async def handle_command(
                         mentions.append(ms)
         except Exception:
             pass
+        # 透传当前服务器（guild）ID，供插件按需使用（如 .kook get server）
+        guild_id = ""
+        try:
+            _gctx = getattr(raw_event, "ctx", None)
+            _guild = getattr(_gctx, "guild", None) if _gctx is not None else None
+            _gid = getattr(_guild, "id", None) if _guild is not None else None
+            if _gid:
+                guild_id = str(_gid)
+        except Exception:
+            pass
         msg = _PluginMsg(
             args=args,
             text=raw_message,
@@ -3455,6 +3465,7 @@ async def handle_command(
             chat_id=group_id,
             quote_id=quote_id,
             mentions=mentions,
+            guild_id=guild_id,
         )
         try:
             result = await plugin_handler(msg)

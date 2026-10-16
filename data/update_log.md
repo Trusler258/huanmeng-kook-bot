@@ -1,5 +1,24 @@
 # 更新日志
 
+## v2.3.98 — 新增 kook 插件（.kook get 各类 ID）— 2026.10.16
+
+一句话总结：新增 `.kook get` 一条指令查 KOOK 的用户/频道/服务器/机器人 ID。
+
+### 新增 `plugins/kook/`
+- **`.kook get uid [@某人]`**  用户 ID（@了=对方，不带=自己）
+- **`.kook get channel`**  当前频道 ID
+- **`.kook get server`**  当前服务器（guild）ID
+- **`.kook get me` / `.kook get bot`**  自己 / 机器人的用户 ID
+- handler 用 KOOK 的 (msg) 单参风格，直接拿 `_PluginMsg` 全量字段
+
+### core 配合
+- `handle_command` 的 `_PluginMsg` 新增 **`guild_id`** 透传（从 raw_event.ctx.guild.id 取，
+  私聊为空）—— 所有插件从此都能拿到服务器 ID
+
+### 验证
+- 服务器端到端：me/uid/channel/bot/get 帮助全部正确；server 在测试环境（无真实 raw_event）
+  返回私聊提示，真实消息会带 guild_id；29 插件正常
+
 ## v2.3.97 — 移植故障监控（.owner fault，频道语义）— 2026.10.16
 
 一句话总结：把 QQ 独有的 DeepSeek 故障监控搬进 KOOK，`.owner fault on` 直接在当前频道发卡片确认。
