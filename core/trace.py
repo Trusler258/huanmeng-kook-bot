@@ -37,6 +37,9 @@ _current_ctx: contextvars.ContextVar[Optional["RequestContext"]] = contextvars.C
     "huanmeng_request_ctx", default=None
 )
 
+# 最近一次请求记录的上下文 Token 分项（/~ctx 跨请求查看用）
+_last_context_tokens: dict[str, int] = {}
+
 
 def _gen_trace_id() -> str:
     """生成 16 位十六进制 trace_id（跨进程唯一）"""
@@ -470,6 +473,15 @@ def record_context_tokens(stats: dict) -> None:
     ctx = _current_ctx.get()
     if ctx is not None:
         ctx.record_context_tokens(stats)
+    if stats:
+        # 供 /~ctx 查看「最近一次请求」的上下文构成（请求结束后期 ctx 不可用）
+        _last_context_tokens.clear()
+        _last_context_tokens.update({k: v for k, v in stats.items() if isinstance(v, int)})
+
+
+def get_last_context_tokens() -> dict:
+    """返回最近一次请求记录的上下文 Token 分项（/~ctx 用），无记录返回空 dict。"""
+    return dict(_last_context_tokens)
 
 
 def record_final_flag(flag: str) -> None:

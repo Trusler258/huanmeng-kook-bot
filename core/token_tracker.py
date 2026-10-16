@@ -365,3 +365,48 @@ async def cmd_cache(args, user_id, group_id, sender_name, is_group, bot_kook):
             lines.append("  建议: ①保持 system prompt 稳定 ②群活跃时前缀缓存自然累积")
 
     return "\n".join(lines)
+
+
+
+# ── 上下文构成（/~ctx）─────────────────────────────────────
+# 与 QQ 的 /~ctx 对齐：展示最近一次请求构建给 LLM 的各类上下文 Token 占比。
+# KOOK 侧数据源 = ContextEngine 的 TokenStats，经 core.trace 记录最近一次请求。
+
+_CTX_LABELS: tuple[tuple[str, str], ...] = (
+    ("system_tokens", "系统提示"),
+    ("history_tokens", "对话历史"),
+    ("memory_tokens", "记忆"),
+    ("skill_tokens", "技能"),
+    ("tool_tokens", "工具结果"),
+    ("search_tokens", "搜索"),
+    ("task_tokens", "任务"),
+)
+
+
+def _fmt_k(n: int) -> str:
+    return f"{n / 1000:.1f}K" if n >= 1000 else str(n)
+
+
+def _ctx_bar(part: int, total: int, width: int = 14) -> str:
+    if total <= 0:
+        return "-" * width
+    filled = max(0, min(width, int(part / total * width)))
+    return "#" * filled + "-" * (width - filled)
+
+
+async def cmd_ctx(args, user_id, group_id, sender_name, is_group, bot_kook):
+    """显示最近一次请求构建给 LLM 的上下文构成 .ctx"""
+    from core.trace import get_last_context_tokens
+    stats = get_last_context_tokens()
+    if not stats:
+        return "暂无上下文记录（先让幻梦回复一条消息，再用 .ctx 查看）喵~"
+    total = sum(stats.get(k, 0) for k, _ in _CTX_LABELS)
+    if total <= 0:
+        return "上下文为空喵~"
+    lines = [f"最近一次请求的上下文构成（共 {_fmt_k(total)} token）:"]
+    for k, name in _CTX_LABELS:
+        n = stats.get(k, 0)
+        if n <= 0:
+            continue
+        lines.append(f"  {name}  {_fmt_k(n)}  {n / total * 100:.1f}%  {_ctx_bar(n, total)}")
+    return "\n".join(lines)

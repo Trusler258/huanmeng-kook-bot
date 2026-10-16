@@ -48,7 +48,7 @@ except ImportError:
 from modules.changelog import send_changelog_card, send_weather_card, send_box_card
 from modules.whois_lookup import lookup_domain   # ★ WHOIS 域名查询
 
-from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
+from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache, cmd_ctx
 from core.bot_notes import cmd_note
 
 logger = get_logger("commands")
@@ -3708,6 +3708,7 @@ COMMAND_MAP: dict[str, callable] = {
     "cost":       cmd_cost,
     "tokens":     cmd_tokens,
     "cache":      cmd_cache,
+    "ctx":        cmd_ctx,
     "note":       cmd_note,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
