@@ -188,7 +188,7 @@ def _show_card() -> str:
         return "赞赏码图片找不到了喵…请管理员检查 data/images/reward_qrcode.png"
     n = len(list_sponsors())
     tail = f"\n已经有 {n} 位朋友支持过我了，谢谢你们喵～" if n else ""
-    return (f"【赞赏码】幻梦的服务器和模型开销全靠大家的心意撑着喵\n"
+    return (f"**赞赏码**\n幻梦的服务器和模型开销全靠大家的心意撑着喵\n"
             f"{_qrcode_cq()}\n"
             f"金额随意，一分也是心意，都拿去充模型了\n"
             f"赞助过的朋友会被我记在感谢名单里，一直记着～{tail}")
@@ -210,7 +210,7 @@ def _show_list() -> str:
     items = list_sponsors()
     if not items:
         return "感谢名单还是空的喵～第一个支持我的人会是谁呢"
-    lines = [f"【赞赏名单】共 {len(items)} 位"]
+    lines = [f"**赞赏名单** 共 {len(items)} 位"]
     for i, it in enumerate(items, 1):
         name = str(it.get("name", "")).strip() or "匿名"
         amt = _fmt_amount(it.get("amount", ""))

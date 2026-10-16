@@ -26,14 +26,14 @@ logger = get_logger("steam")
 ROOT = Path(__file__).resolve().parent.parent
 
 HELP = "\n".join([
-    "【Steam 指令 .steam】",
-    "  price <游戏名|链接>  价格 · 折扣 · 地区对比（+史低）",
-    "  px <游戏名>          快捷版，只给第一条匹配",
-    "  who [@某人|SteamID|好友代码]  查 Steam 状态；不带参数=查自己",
-    "     （SteamID 支持 17 位 SteamID64 / account_id / STEAM_x:y:z / [U:1:x]）",
-    "  bd <SteamID|好友代码|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
-    "  help                 本帮助",
-    "另一种写法：.在干嘛 @某人",
+    "**Steam 指令 `.steam`**",
+    "- `price <游戏名|链接>`  价格 · 折扣 · 地区对比（+史低）",
+    "- `px <游戏名>`  快捷版，只给第一条匹配",
+    "- `who [@某人|SteamID|好友代码]`  查 Steam 状态；不带参数=查自己",
+    "  - SteamID 支持 17 位 SteamID64 / account_id / STEAM_x:y:z / [U:1:x]",
+    "- `bd <SteamID|好友代码|链接>`  绑定；`bd` 查看；`bd del` 解绑；`bd list` 列表",
+    "- `help`  本帮助",
+    "另一种写法：`.在干嘛 @某人`",
 ])
 
 
@@ -126,7 +126,7 @@ async def _do_price(term: str, short: bool) -> str:
         return "拿不到价格（Steam 商店接口不通，稍后再试）"
 
     name = p.get("name") or matched or ("appid " + str(appid))
-    lines = ["【%s】" % name]
+    lines = ["**%s**" % name]
 
     if p.get("is_free"):
         lines.append("  免费游戏")

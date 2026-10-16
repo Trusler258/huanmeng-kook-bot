@@ -136,7 +136,7 @@ def config_list(section: str) -> str:
                 lines.append(f"  {p} = {json.dumps(v, ensure_ascii=False)}")
         return lines
 
-    lines = [f"【{section} 配置】"]
+    lines = [f"**{section} 配置**"]
     lines.extend(_flatten(data))
     return "\n".join(lines)
 
@@ -233,7 +233,7 @@ def luck_list() -> str:
 
     from datetime import date as _date
     today = _date.today().isoformat()
-    lines = [f"【运气记录 ({len(data)} 天)】"]
+    lines = [f"**运气记录（{len(data)} 天）**"]
 
     for day, users in sorted(data.items(), reverse=True)[:10]:
         flag = " ←今天" if day == today else ""
@@ -383,7 +383,7 @@ def show_whitelists() -> str:
     glist = chat.get("group_list", [])
     plist = chat.get("private_whitelist", [])
 
-    lines = ["【白名单一览】"]
+    lines = ["**白名单一览**"]
     lines.append(f"群 ({len(glist)}): {', '.join(str(g) for g in glist)}")
     lines.append(f"私聊 ({len(plist)}): {', '.join(str(q) for q in plist)}")
     gs = data.get("group_settings", {})

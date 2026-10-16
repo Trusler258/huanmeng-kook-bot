@@ -280,15 +280,15 @@ async def _new_songs(logger) -> str:
 
 def _help() -> str:
     return (
-        "【Phigros 查询 .pgr】\n"
-        "  pgr login          生成登录二维码（token 自动保存）\n"
-        "  pgr logout         解绑 sessionToken\n"
-        "  pgr me             查看我的存档（RKS+评级+Best30）\n"
-        "  pgr b<N>          展示最好的 N 个成绩（如 b30, b10）\n"
-        "  pgr top [N]        RKS 排行榜 Top N（默认10）\n"
-        "  pgr song <曲名>    搜索曲目\n"
-        "  pgr new            新曲速递\n"
+        "**Phigros 查询 `.pgr`**\n"
+        "- `pgr login`  生成登录二维码（token 自动保存）\n"
+        "- `pgr logout`  解绑 sessionToken\n"
+        "- `pgr me`  查看我的存档（RKS+评级+Best30）\n"
+        "- `pgr b<N>`  展示最好的 N 个成绩（如 b30, b10）\n"
+        "- `pgr top [N]`  RKS 排行榜 Top N（默认10）\n"
+        "- `pgr song <曲名>`  搜索曲目\n"
+        "- `pgr new`  新曲速递\n"
         "\n"
-        "  → 先 .pgr login 扫码登录（只需一次）\n"
-        "  → 然后 .pgr me 或 .pgr bx 直接查"
+        "→ 先 `.pgr login` 扫码登录（只需一次）\n"
+        "→ 然后 `.pgr me` 或 `.pgr bx` 直接查"
     )

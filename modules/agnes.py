@@ -393,7 +393,7 @@ async def cmd_img2video(args, user_id, group_id, sender_name, is_group, bot_kook
         return format_lang("help.detail.img2video")
     if not args:
         return ("用法: .img2video <图片URL> [描述] [尺寸]\n"
-                "KOOK: 也可以【引用/回复一张图片】后直接打: .img2video [描述] [尺寸]\n"
+                "KOOK: 也可以**引用/回复一张图片**后直接打：`.img2video [描述] [尺寸]`\n"
                 ".img2video help 查看完整参数")
 
     # 配额检查（不扣量）
@@ -468,7 +468,7 @@ async def cmd_img2video(args, user_id, group_id, sender_name, is_group, bot_kook
     if not img_url:
         return ("需要提供图片URL喵~\n"
                 "用法: .img2video <图片URL> [描述] [尺寸]\n"
-                "KOOK: 也可以【引用/回复一张图片】后直接打: .img2video [描述] [尺寸]\n"
+                "KOOK: 也可以**引用/回复一张图片**后直接打：`.img2video [描述] [尺寸]`\n"
                 ".img2video help 查看完整参数")
 
     asyncio.create_task(_bg_gen_video(

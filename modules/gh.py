@@ -79,14 +79,14 @@ async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
 
     if not args or (len(args) == 1 and args[0].lower() in ("help",)):
         lines = [
-            "【公会登记 .gh】",
-            "  .gh add <公会名>        登记你的公会",
-            "  .gh del                 删除你的记录",
-            "  .gh list                查看本群已登记公会",
-            "  .gh fix <公会名>        修改你的公会名",
-            "  .gh new <用户ID> <公会名>  帮别人登记（需op/admin）",
-            "  .gh op <用户ID>          授权别人使用new（仅admin）",
-            "  .gh help                 此帮助",
+            "**公会登记 `.gh`**",
+            "- `.gh add <公会名>`  登记你的公会",
+            "- `.gh del`  删除你的记录",
+            "- `.gh list`  查看本群已登记公会",
+            "- `.gh fix <公会名>`  修改你的公会名",
+            "- `.gh new <用户ID> <公会名>`  帮别人登记（需 op/admin）",
+            "- `.gh op <用户ID>`  授权别人使用 new（仅 admin）",
+            "- `.gh help`  此帮助",
         ]
         return "\n".join(lines)
 
@@ -159,7 +159,7 @@ async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
     if sub in ("list",):
         if not members:
             return "本群还没有人登记公会喵~"
-        lines = [f"【本群已登记公会 {len(members)}】"]
+        lines = [f"**本群已登记公会 {len(members)}**"]
         for qq, info in members.items():
             if isinstance(info, str):
                 lines.append(f"  {qq}: {info}")

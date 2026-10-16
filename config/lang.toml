@@ -738,11 +738,11 @@ m44 = "官方图片尚未生成，试试不带 img 看文字数据"
 m45 = "${name} 的 ${display} 战绩"
 
 [_handle_owner_cmd]
-m1 = "~owner cmd add/remove/list/clear <指令名>"
+m1 = "`.owner cmd add/remove/list/clear <指令名>`"
 m2 = "指令白名单为空（所有指令可用）"
 m3 = "指令白名单:\n  "
 m4 = "指令白名单已清空（所有指令可用）"
-m5 = "~owner cmd ${sub} <指令名>"
+m5 = "`.owner cmd ${sub} <指令名>`"
 m6 = "指令 ${cmd_name} 已在白名单"
 m7 = "已添加: ${cmd_name}"
 m8 = "指令 ${cmd_name} 不在白名单"

@@ -335,7 +335,7 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
         ks = links_of(my_key)
         if not ks:
             return "当前聊天还没有关联任何会话喵～发 .mlink add p<QQ号> 试试"
-        lines = [f"【记忆关联】当前会话（{key_label(my_key)}）已关联 {len(ks)} 个："]
+        lines = [f"**记忆关联** 当前会话（{key_label(my_key)}）已关联 {len(ks)} 个："]
         for i, k in enumerate(ks, 1):
             cid = key_to_chat_id(k)
             n = len(get_context_mgr_safe().get_context(cid)) if cid else 0

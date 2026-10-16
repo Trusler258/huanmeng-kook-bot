@@ -151,7 +151,7 @@ async def _test_connectivity() -> str:
     """公开测试：检查 GitHub 连通性 + 仓库可达性"""
     import time
     t0 = time.time()
-    lines = ["【自动更新连通性测试】\n"]
+    lines = ["**自动更新连通性测试**\n"]
 
     # 1. DNS / 直连
     try:

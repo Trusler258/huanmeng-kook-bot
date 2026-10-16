@@ -337,7 +337,7 @@ def set_group_ops(group_id: int, op_qqs: list[int]) -> str:
     _write_roles(data)
     from core.config import get_config
     cfg = get_config()
-    names = [f"【{cfg.get_display_name(q, group_id)}({q})】" for q in op_qqs]
+    names = [f"**{cfg.get_display_name(q, group_id)}({q})**" for q in op_qqs]
     return f"群 {group_id} 的权限已指派给 OP: {', '.join(names)}"
 
 
@@ -398,7 +398,7 @@ def list_group_ops() -> str:
     from core.config import get_config
     cfg = get_config()
 
-    lines = ["【OP 列表】"]
+    lines = ["**OP 列表**"]
     if not op_qqs:
         lines.append("  (无)")
     else:
@@ -407,7 +407,7 @@ def list_group_ops() -> str:
             lines.append(f"  OP: {name}({q})")
 
     lines.append("")
-    lines.append("【群 OP 指派】")
+    lines.append("**群 OP 指派**")
     if not group_owners:
         lines.append("  (无)")
     else:
@@ -504,22 +504,22 @@ def _format_persona_display(p: dict) -> str:
 
 
 _PERSONA_HELP = (
-    "【人格切换用法】\n"
-    "  .persona                    — 查看当前\n"
-    "  .persona help               — 显示本帮助\n"
-    "  .persona <文本>             — 设置核心人格（兼容旧用法）\n"
-    "  .persona core <文本>        — 设置核心人格\n"
-    "  .persona side <文本>        — 设置侧面人格\n"
-    "  .persona identity <文本>    — 设置固定身份\n"
-    "  .persona show               — 查看当前\n"
-    "  .persona reset              — 清除整个 persona（恢复默认人格）\n"
-    "  .persona memory reset       — 清空当前人格的专属记忆\n\n"
+    "**人格切换用法**\n"
+    "- `.persona`  — 查看当前\n"
+    "- `.persona help`  — 显示本帮助\n"
+    "- `.persona <文本>`  — 设置核心人格（兼容旧用法）\n"
+    "- `.persona core <文本>`  — 设置核心人格\n"
+    "- `.persona side <文本>`  — 设置侧面人格\n"
+    "- `.persona identity <文本>`  — 设置固定身份\n"
+    "- `.persona show`  — 查看当前\n"
+    "- `.persona reset`  — 清除整个 persona（恢复默认人格）\n"
+    "- `.persona memory reset`  — 清空当前人格的专属记忆\n\n"
     "三段说明:\n"
     "  core     — 性格核心，语气/口癖/说话方式（必填，最能影响回复风格）\n"
     "  side     — 侧面人格，情感倾向/情绪反应（可选，补充细节）\n"
     "  identity — 固定身份，名字/年龄/职业/与你的关系（可选，背景设定）\n\n"
-    "建议: 详细描述性格/语气/口癖/与你的关系，每段上限2000字。\n"
-    "例如: .persona core 你是高冷的御姐，说话简洁带刺，但会偷偷关心我"
+    "**建议**：详细描述性格/语气/口癖/与你的关系，每段上限 2000 字。\n"
+    "例如：`.persona core 你是高冷的御姐，说话简洁带刺，但会偷偷关心我`"
 )
 
 
