@@ -2272,6 +2272,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_kook):
             md_path = str(Path(__file__).resolve().parent.parent / "data" / "wdsj_help.md")
             cfg = get_config()
             html = api.build_help_card_html(md_path, cfg.bot_name)
+            html = _inject_render_stamp(html)
             from modules.changelog import _ensure_browser
             browser = await _ensure_browser()
             page = await browser.new_page(viewport={"width": 520, "height": 100})
@@ -4022,11 +4023,32 @@ td.kd {{ color: #f0a050; }}
 </body></html>"""
 
 
+def _inject_render_stamp(html: str, t0_ms: float | None = None) -> str:
+    """在卡片 HTML 的 </body> 前注入「渲染时间」页脚（对齐 QQ v2.3.32）。
+
+    为什么用注入而不是改模板：KOOK 有多张卡片模板/多个构建函数，逐张加占位符
+    容易漏；统一在渲染前塞一段页脚，以后新增卡片自动就有。
+    t0_ms 由构建函数用 time.time()*1000 记下，用于显示本次渲染耗时。
+    """
+    import time as _t
+    import datetime as _dt
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if t0_ms is not None:
+        stamp += " · %dms" % int(_t.time() * 1000 - t0_ms)
+    footer = ('<div style="width:100%;text-align:center;'
+              'font:12px/1.6 -apple-system,Segoe UI,sans-serif;'
+              'color:#9aa0a6;padding:6px 0 2px;">渲染时间 ' + stamp + '</div>')
+    if "</body>" in html:
+        return html.replace("</body>", footer + "\n</body>")
+    return html + footer
+
+
 async def _render_html_to_png(html, prefix):
     import time
     ts = time.strftime("%Y%m%d_%H%M%S")
     out = str(Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"{prefix}_{ts}.png")
     from modules.changelog import _ensure_browser
+    html = _inject_render_stamp(html)
     try:
         browser = await _ensure_browser()
         page = await browser.new_page(viewport={"width": 540, "height": 600})
