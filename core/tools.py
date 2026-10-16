@@ -1056,12 +1056,14 @@ async def _execute_impl(
         if not player:
             return "你还未绑定起床战绩账号。"
         mode = arguments.get("mode", "bw")
-        from modules.commands import COMMAND_MAP
-        handler = COMMAND_MAP.get("wdsj")
-        if handler:
-            await handler([mode, player, "img"], user_id, group_id, sender_name, is_group, bot_kook)
+        # 走统一指令分发：COMMAND_MAP（内置）与插件自注册（.wdsj 已插件化）都能命中
+        from modules.commands import handle_command
+        result = await handle_command(
+            f".wdsj {mode} {player} img",
+            user_id, group_id, sender_name, is_group, bot_kook)
+        if result is None:
             return f"起床战绩图片已生成 (玩家: {player}, 模式: {mode})"
-        return "wdsj 指令未注册"
+        return str(result)
     elif tool_name == "wdsj_query":
         # WDSJ 文字数据：提取指定项
         player = await _resolve_player(user_id, "wdsj")
@@ -1069,15 +1071,14 @@ async def _execute_impl(
             return "你还未绑定起床战绩账号。"
         mode = arguments.get("mode", "bw")
         stat = arguments.get("stat", "")
-        from modules.commands import COMMAND_MAP
-        handler = COMMAND_MAP.get("wdsj")
-        if handler:
-            result = await handler([mode, player], user_id, group_id, sender_name, is_group, bot_kook)
-            if not result:
-                return f"未找到玩家 {player} 的数据"
-            # 从全量数据中提取相关行
-            return _extract_stats(player, stat, result)
-        return "wdsj 指令未注册"
+        from modules.commands import handle_command
+        result = await handle_command(
+            f".wdsj {mode} {player}",
+            user_id, group_id, sender_name, is_group, bot_kook)
+        if not result:
+            return f"未找到玩家 {player} 的数据"
+        # 从全量数据中提取相关行
+        return _extract_stats(player, stat, result)
     elif tool_name == "search_web":
         # ★ FC 路径搜索词优化：LLM 传来的 query 可能是完整句子，先优化成关键词
         raw_query = arguments.get("query", "")

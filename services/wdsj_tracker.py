@@ -10,6 +10,28 @@ logger = get_logger("wdsj_tracker")
 
 _HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "wdsj_history.json"
 
+# ── 玩家名绑定（数据层）────────────────────────────────────
+# 原在 modules/commands.py，随 wdsj 指令插件化搬到这里，
+# 供 wdsj_tracker 与 plugins/wdsj 共同使用。
+_WDSJ_PLAYER_FILE = Path(__file__).resolve().parent.parent / "data" / "wdsj_player_name.json"
+
+
+def load_wdsj_bindings() -> dict:
+    """读取 {user_id: 玩家名} 绑定表，失败返回空 dict。"""
+    if _WDSJ_PLAYER_FILE.exists():
+        try:
+            return json.loads(_WDSJ_PLAYER_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_wdsj_bindings(data: dict) -> None:
+    """写入绑定表。"""
+    _WDSJ_PLAYER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _WDSJ_PLAYER_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 # 全量采集模板 — 每个模板存整个 values dict
 _TEMPLATES = {
     "bedwars-stats": "起床战争",
@@ -59,9 +81,7 @@ def _save_history(data):
 # ------每日采集------
 async def daily_stats_collect():
     from services import wdsj_api as api
-    from modules.commands import _load_wdsj_bindings
-
-    bindings = _load_wdsj_bindings()
+    bindings = load_wdsj_bindings()
     if not bindings:
         return
 
@@ -194,8 +214,7 @@ def generate_trend_chart(player, metric, days=None):
 # ------群内总排名------
 async def build_group_rank(group_id, mode_key="bw_kills"):
     """取所有绑定玩家的最新指标值，排序生成排名卡片图片"""
-    from modules.commands import _load_wdsj_bindings
-    bindings = _load_wdsj_bindings()
+    bindings = load_wdsj_bindings()
 
     # 指标中文名
     label = mode_key
@@ -259,8 +278,7 @@ def build_daily_rankings(label_date=None, cross_day=False):
     history = _load_history()
     if label_date is None:
         label_date = date.today().isoformat()
-    from modules.commands import _load_wdsj_bindings
-    bindings = _load_wdsj_bindings()
+    bindings = load_wdsj_bindings()
 
     # 计算次日日期（用于 cross_day 模式）
     tomorrow = (datetime.strptime(label_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") if cross_day else None
@@ -337,8 +355,7 @@ def build_arena_daily_rankings(label_date=None):
     history = _load_history()
     if label_date is None:
         label_date = date.today().isoformat()
-    from modules.commands import _load_wdsj_bindings
-    bindings = _load_wdsj_bindings()
+    bindings = load_wdsj_bindings()
 
     rows = []
     _seen_names = set()  # v2.0.4ao: 按游戏名去重, 防同名绑定重复上榜

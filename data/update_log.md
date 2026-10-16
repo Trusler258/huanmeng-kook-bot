@@ -1,5 +1,28 @@
 # 更新日志
 
+## v2.3.96 — wdsj 真插件化 + 修复插件自注册指令分发 bug — 2026.10.16
+
+一句话总结：`.wdsj` 整体迁入 `plugins/wdsj/`（无内置兜底），并修复一个**长期潜伏的插件指令分发 bug**。
+
+### 一、修复：CapabilityRegistry.discover() 覆盖运行时注册的插件能力
+`registry.all()/get()` 会惰性触发 `discover()`，而 discover 用**全新 dict 覆盖 `_caps`** ——
+若插件先于 discover 注册（真实启动顺序如此），插件能力连同 handler 绑定会被整体清掉，
+导致**凡不在 COMMAND_MAP 里的插件自注册指令，分发时全部报"未知指令"**。
+修复：discover 改为**合并保留**已有运行时注册。
+
+### 二、wdsj 真插件化（modules/commands.py 瘦身 605 行）
+- 新增 `plugins/wdsj/`（`wdsj_core.py` 逻辑 + `main.py` 注册），`register_command` 自注册，
+  **无内置兜底** —— 本插件是 `.wdsj` 的唯一实现
+- 共享层下沉 services：
+  · 玩家绑定读写 → `services/wdsj_tracker.load_wdsj_bindings/save_wdsj_bindings`
+  · 日榜 HTML     → 新增 `services/wdsj_card.py`（`plugins/bg_tasks` 日榜推送改从 services 导入）
+- `core/tools.py` 的 `wdsj`/`wdsj_query` 工具改走统一指令分发 `handle_command()`（内置/插件通吃）
+- 删除死代码 `modules/wdsj.py`（78 行，零引用；`wdsj_card.html` 模板另被 wdsj_tracker 使用，保留）
+
+### 三、验证
+- 服务器端到端：`mgr.load+init` 后 `handle_command('.wdsj boards/list/bd')` 全部正确输出（走插件路径）
+- 28 插件全部启用，`.wdsj` 注册为插件命令，无 ModuleNotFound/NameError
+
 ## v2.3.95 — 补齐遗漏的 KMarkdown 帮助块 + 单波浪号前缀 — 2026.10.16
 
 一句话总结：补上 v2.3.94 漏掉的帮助块与 `~cmd` 前缀。

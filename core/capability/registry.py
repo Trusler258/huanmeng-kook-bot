@@ -61,6 +61,13 @@ class CapabilityRegistry:
             for a in cap.aliases:
                 if a not in old.aliases:
                     old.aliases.append(a)
+        # ★ 运行时注册的插件能力（register_command / register_tool）不被 discover 覆盖：
+        #   discover 是惰性触发（all()/get() 首次访问），若插件先于 discover 注册，
+        #   直接 self._caps = merged 会把插件能力连同 handler 绑定一起清掉，
+        #   导致"插件自注册的指令"分发时全部报"未知指令"。这里改为合并保留。
+        for cap_id, cap in self._caps.items():
+            if cap_id not in merged:
+                merged[cap_id] = cap
         self._caps = merged
         self._loaded = True
         logger.info("CapabilityRegistry 发现 %d 个能力", len(self._caps))
