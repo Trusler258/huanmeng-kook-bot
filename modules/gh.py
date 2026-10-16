@@ -118,7 +118,7 @@ async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
         if not _is_admin(user_id):
             return "仅 bot 管理员可以授权 op 喵~"
         if len(args) < 2:
-            return "用法: .gh op <用户ID>"
+            return "用法：`.gh op <用户ID>`"
         try:
             target_qq = int(args[1])
         except ValueError:
@@ -136,7 +136,7 @@ async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
     # ── add: 自己登记 ──
     if sub == "add":
         if len(args) < 2:
-            return "用法: .gh add <公会名>"
+            return "用法：`.gh add <公会名>`"
         name = " ".join(args[1:]).strip()
         if not name:
             return "公会名不能为空喵~"
@@ -170,7 +170,7 @@ async def cmd_gh(args, user_id, group_id, sender_name, is_group, bot_kook):
     # ── fix: 修改自己的 ──
     if sub == "fix":
         if len(args) < 2:
-            return "用法: .gh fix <新公会名>"
+            return "用法：`.gh fix <新公会名>`"
         if uk not in members:
             return "你还没有登记公会喵~ 先用 .gh add 登记"
         name = " ".join(args[1:]).strip()

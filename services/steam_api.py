@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Steam Web API 数据层（/~steam 系列指令用）
+"""Steam Web API 数据层（.steam 系列指令用）
 
 职责：只管「拿数据」，不管展示。展示在 modules/steam.py，卡片在 services/steam_card.py。
 
-指令入口：/~steam price|px|who|bd|help、/~在干嘛
+指令入口：.steam price|px|who|bd|help、.在干嘛
 
 注意：三条实测经验（都踩过，改这个文件前先读）：
   1. 查账号**必须**用 SteamID64 或资料链接，绝不用昵称猜 vanity ——
@@ -253,7 +253,7 @@ _RE_APP = re.compile(r"/app/(\d+)")
 
 
 def extract_appid(text: str) -> str:
-    """从商店链接抠 appid（/~steam price <链接>）"""
+    """从商店链接抠 appid（.steam price <链接>）"""
     m = _RE_APP.search(text or "")
     return m.group(1) if m else ""
 

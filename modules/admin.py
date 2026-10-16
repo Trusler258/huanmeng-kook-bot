@@ -411,7 +411,7 @@ def wl_cmd_manage(args: list) -> str:
     sub = args[0].lower()
     if sub == "clear":
         if len(args) < 2:
-            return "用法: wl cmd clear <群号>"
+            return "用法：`wl cmd clear <群号>`"
         from core.config import reload_config
         gid = args[1]
         if gid in gs and "cmd_whitelist" in gs[gid]:
@@ -444,7 +444,7 @@ def wl_cmd_manage(args: list) -> str:
         return f"群{gid} 指令白名单: {', '.join(cmds)}"
 
     if sub in ("add", "remove") and len(args) < 2:
-        return f"用法: wl cmd {sub} <群号> [指令名]"
+        return f"用法：`wl cmd {sub} <群号> [指令名]`"
 
     gid = args[1]
     gs_group = gs.get(gid, {})
@@ -453,7 +453,7 @@ def wl_cmd_manage(args: list) -> str:
     
     if sub == "add":
         if len(args) < 3:
-            return "用法: wl cmd add <群号> <指令名>"
+            return "用法：`wl cmd add <群号> <指令名>`"
         cmd_name = args[2].lower().lstrip(".#")
         cmds = gs_group.get("cmd_whitelist", [])
         if not isinstance(cmds, list):
@@ -508,14 +508,14 @@ def wl_welcome_manage(args: list) -> str:
         return f"群{gid} 欢迎语: {msg}" if msg else f"群{gid} 无欢迎语"
 
     if len(args) < 2:
-        return f"用法: wl welcome {sub} <群号> [欢迎语]"
+        return f"用法：`wl welcome {sub} <群号> [欢迎语]`"
 
     gid = args[1]
     gs_group = gs.get(gid, {})
     if not isinstance(gs_group, dict): gs_group = {}
 
     if sub == "set":
-        if len(args) < 3: return "用法: wl welcome set <群号> <欢迎语>"
+        if len(args) < 3: return "用法：`wl welcome set <群号> <欢迎语>`"
         msg = " ".join(args[2:])
         gs_group["welcome_msg"] = msg
     elif sub == "del":

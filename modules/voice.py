@@ -127,10 +127,10 @@ async def _synth_one(text: str, mood: str, speaker: str) -> tuple[Path | None, s
 async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_kook):
     """ .voice <对话内容> — LLM 回复 → 并发 instruct + 串行合成 → 顺序发语音 """
     if not args:
-        return ("喵?你想让我说什么?用法:\n"
-                "  .voice <文本>         自动情绪合成语音\n"
-                "  .voice list           列出可选音色\n"
-                "  .voice <音色> <文本>  指定音色")
+        return ("喵?你想让我说什么?用法：\n"
+                "- `.voice <文本>`  自动情绪合成语音\n"
+                "- `.voice list`  列出可选音色\n"
+                "- `.voice <音色> <文本>`  指定音色")
 
     if args[0].lower() in ("list", "列表", "音色"):
         return "可选音色:\n" + "\n".join(f"  {s}" for s in SPEAKERS)

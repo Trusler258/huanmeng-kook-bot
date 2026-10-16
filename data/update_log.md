@@ -1,8 +1,27 @@
 # 更新日志
 
-## v2.3.93 — 补齐 2 个工具 + /~ctx 上下文用量（对齐 QQ 第三批）— 2026.10.16
+## v2.3.94 — 提示文本全面 KMarkdown 化 + 指令前缀统一为 `.` — 2026.10.16
 
-一句话总结：补上跨对话持久工作区与黑话词典两个工具，新增 /~ctx 上下文用量查看。
+一句话总结：把所有用户可见的提示/用法文本改写成 KOOK KMarkdown 样式，并清除 QQ 遗留的 `/~` 前缀。
+
+### 一、指令前缀统一
+- 全仓清除 QQ 遗留前缀 **102 处 `/~`**（分布在 modules/ services/ plugins/ core/ 等 42 个文件），
+  统一为 KOOK 的 `.`。此前 KOOK 命令解析前缀本就是 `.`，但移植过来的插件提示文本仍写着 `/~`，会误导用户。
+
+### 二、提示文本改为 KMarkdown 样式
+- `config/lang.toml`：`[help.detail]` 全部条目改为「**加粗标题** + 反引号指令 + `-` 列表」；
+- `.owner` 帮助的 markdown 表格 → KMarkdown 列表（KOOK KMarkdown 不支持表格，原样发会糊成一行）；
+- 各模块/插件的「用法：」提示（约 30 处单行 + 7 处多行块）统一改为反引号包裹命令，
+  如 `用法：.op add <QQ号>` → `用法：`.op add <QQ号>``；
+- 商品/赞赏/语音/沙箱/关联记忆等帮助块改为「**标题** + `- `命令`  说明」列表。
+
+### 三、说明
+- 仅改用户可见文本，未触碰给 LLM 的提示词与业务逻辑；
+- KOOK 发送层本就以 KMarkdown(`MessageTypes.KMD`) 发送文本，本次补的是「内容格式」。
+
+## v2.3.93 — 补齐 2 个工具 + .ctx 上下文用量（对齐 QQ 第三批）— 2026.10.16
+
+一句话总结：补上跨对话持久工作区与黑话词典两个工具，新增 .ctx 上下文用量查看。
 
 ### 新增
 - **`ws_files` 工具**：沙箱持久工作区（`data/sandbox_ws`，跨对话保留），支持 list/read/write；
@@ -10,7 +29,7 @@
   「写入数据 → 跑代码处理 → 读回结果」闭环。
 - **`learn_slang` 工具**：把新学到的黑话/群内用语记进词典（`data/skills/slang.md`），
   写入后立即注入 system prompt，无需重启、无需改代码。
-- **`/~ctx` 指令**：查看最近一次请求构建给 LLM 的上下文构成（系统提示/历史/记忆/技能/
+- **`.ctx` 指令**：查看最近一次请求构建给 LLM 的上下文构成（系统提示/历史/记忆/技能/
   工具/搜索/任务 各类 token 数与占比），便于观察上下文预算是否合理。
 
 ### 说明
@@ -57,7 +76,7 @@
 | 插件 | 功能 | 适配 |
 |---|---|---|
 | dice | 掷骰子 + roll_dice 常驻工具 + 积分奖励 | 零适配 |
-| steam | 价格/状态/绑定 + /~在干嘛（3 模块 1748 行） | 图片 CQ → send_file；@ 判断兼容 (met) |
+| steam | 价格/状态/绑定 + .在干嘛（3 模块 1748 行） | 图片 CQ → send_file；@ 判断兼容 (met) |
 | reward | 赞赏码 + 赞助名单 | 同步函数改返 [图片:] 标记 |
 | op | OP/人格/主人/睡觉/含蓄/叙事模式（751 行） | 零适配 |
 | box | 快递查询 | 零适配（KOOK 已有 send_box_card） |
@@ -168,7 +187,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - **manifest v1 → v2**：本端 `core/plugin/api.py` 与 QQ 是**双向分叉**
   （本端独有 `extract_cq_images`/`render_weather_card`，QQ 独有 24 个方法），
   不能单向覆盖 → 需合并两端差异，属插件系统核心改造，另立任务
-- **/~mlink 跨聊天记忆关联**（QQ v2.3.11）：需先有 memory_link 插件，本端没有
+- **.mlink 跨聊天记忆关联**（QQ v2.3.11）：需先有 memory_link 插件，本端没有
 - **功耗监测**（QQ v2.3.40）：QQ 侧已是独立插件 + 常驻服务，需整体评估
 - **C 档卡片**（wdsj 卡片/排行榜/日报卡中文回退）：按用户定案"能做成 KOOK Card 的用
   KOOK Card"，需先定卡片方案
@@ -205,9 +224,9 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 
 ### 修复（此前在线上**活跃**的 bug）
 - `services/music_status.py`：`set_music()` 的 `def` 行丢失，函数体成了不可达死代码
-  → `/~listening` 与「正在听」状态设置**全部 ImportError**（已在生产日志实证闭环）
+  → `.listening` 与「正在听」状态设置**全部 ImportError**（已在生产日志实证闭环）
 - `modules/commands.py`：`cmd_info` 调用未导入的 `get_cache_stats`（定义在 `modules/judge.py`）
-  → `/~info` 必 NameError
+  → `.info` 必 NameError
 - `core/memory_engine/pipeline.py`：`MEMORY_STATUS_ARCHIVED` 未导入 →
   记忆 consolidation 的归档分支被 `except` 吞掉、**静默失效**
 - 静态基线：pyflakes `undefined name` **11 → 4**（余 4 为 `from __future__ import annotations` / 字符串注解的误报）
@@ -330,11 +349,11 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - `pipeline.py` 骚扰检测（连续无意义@ → 5min 忽略）
 - 保留 `modules/spam_guard.py` 文件但不再调用
 
-**全群忽略系统（`/~ignore` `/~unignore`）**
+**全群忽略系统（`.ignore` `.unignore`）**
 - `modules/ignore_users.py`：数据存 `data/ignored_users.json`
 - 被忽略用户在所有群都被静默跳过
 - admin 豁免
-- `/~unignore all` 一键全部解除
+- `.unignore all` 一键全部解除
 
 **好感度 -100 自动忽略**
 - 好感度 ≤ -100 的用户发消息直接 return
@@ -359,7 +378,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - GitHub 公开版只有变量名
 
 **用户画像防幻觉**
-- `facts` 字段过滤：拒绝 "我查战绩"、"/~xxx" 等指令/聊天内容
+- `facts` 字段过滤：拒绝 "我查战绩"、".xxx" 等指令/聊天内容
 - `name` 字段过滤强化
 
 ### 🐛 修复
@@ -397,7 +416,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - 回溯脚本 `scripts/backfill_profiles.py`：从 msglog 批量建画像
 - 竞态安全：提取完成前不阻塞、不丢失
 
-### 🎙️ 语音合成（`/~voice`）⚠️ 未完成
+### 🎙️ 语音合成（`.voice`）⚠️ 未完成
 - Edge TTS 语音合成，默认女声晓晓（zh-CN-XiaoxiaoNeural）
 - SSML 情绪分句控制：根据 `mood_detail` 动态插入 `<mstts:express-as>` 标签
 - 物理参数调节：pitch+28Hz / rate+35% 童声尖音效果
@@ -406,7 +425,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 ### 🖥️ PC 状态监控（`services/pc_status.py`）
 - 服务器端口 58890 接收 HTTP POST
 - 本地 `scripts/pc_status_reporter.py` 定期采集：窗口标题 + 音乐播放器 + 歌词
-- FC 工具 `system_status` + 指令 `/~sys` / `/sys` / `/~pc`
+- FC 工具 `system_status` + 指令 `.sys` / `/sys` / `.pc`
 - 缓存有效期 30s，超时返回"未开机"
 
 ### ✨ Crystal Aurora v2 视觉重构（7 个模板）
@@ -443,7 +462,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 |---|------|----------|
 | 1 | `sender.py#L197` | API 调用 `request` 参数 → `json.dumps(payload)`（payload 格式错误导致发送失败） |
 | 2 | `commands.py#L3013` | `/#` 指令检查缺少 `cfg = get_config()` → NameError 崩溃 |
-| 3 | `commands.py#L2899` | 加 `/s` 别名（lang.toml 引导用户用 `/~s` 但代码里找不到 → 回复"未知指令"） |
+| 3 | `commands.py#L2899` | 加 `/s` 别名（lang.toml 引导用户用 `.s` 但代码里找不到 → 回复"未知指令"） |
 | 4 | `tools.py#L348` | `_agent_think` 残留 11 行无用代码（在其他 agent 工具清代码时遗漏） |
 | 5 | `dispatcher.py#L31` | `_seen_ids` set → dict 按插入顺序截断（set 无顺序，清旧 ID 时误清新 ID → 消息被跳过） |
 | 6 | `spam_guard.py#L126` | timestamps 和 messages 数组同步过滤（一个清了另一个没清 → 数组长度不一致） |
@@ -466,12 +485,12 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 
 ### 🔄 自动更新优化
 - 自动处理 force-push 导致旧 SHA 404：降级全量下载 + 重试
-- `/~upd` 短别名 + `/~upd test` 公开连通性测试
-- `/~upd` 输出详细更新日志含 commit 信息
+- `.upd` 短别名 + `.upd test` 公开连通性测试
+- `.upd` 输出详细更新日志含 commit 信息
 
 ### 🎯 其他改进
-- `/~op group del` 清群时同步清理全局 `op_qqs` 花名册
-- `/~owner wdsj groups` 管理推送群 + `/~wdsj daily send` 强制推送
+- `.op group del` 清群时同步清理全局 `op_qqs` 花名册
+- `.owner wdsj groups` 管理推送群 + `.wdsj daily send` 强制推送
 - `mood_detail` 管道集成（每句话对应情绪）
 - `log_server` 支持分离式静态文件 (console.css/js/guard.js) 路由
 - `log_server` `_build_html` 精简，删除 190 行旧版内联模板
@@ -513,20 +532,20 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - **CALL 指令全面收紧**：只在用户明确说"帮我搜/查/找/介绍一下"时才调用工具。`tools.py` 的 `TOOL_DEFINITIONS` 移除"系统自动检测调用"矛盾指令
 
 ### 🔫 OP 权限分层（admin > op > user）
-- `/~op add/del <QQ>` — 添加/移除 OP 次级管理员
-- `/~op group set <群号> <OP_QQ>` — 群主权限指派给 OP（OP 在该群内等于 admin）
-- `/~op group del <群号>` — 撤销指派，恢复 admin
-- `/~op group list` — 查看所有 OP 和群指派
+- `.op add/del <QQ>` — 添加/移除 OP 次级管理员
+- `.op group set <群号> <OP_QQ>` — 群主权限指派给 OP（OP 在该群内等于 admin）
+- `.op group del <群号>` — 撤销指派，恢复 admin
+- `.op group list` — 查看所有 OP 和群指派
 - OP 在指派群内自动获得 `[admin]` 角色标签，可用全部 CALL 指令
 
 ### 👤 私聊增强
-- `/~persona <人格描述>` — 私聊切换 AI 人格，完全替换 system prompt
-- `/~persona reset/show` — 恢复默认/查看当前人格
-- `/~主人` — 将当前私聊对象设为主人，获得 admin 级权限
+- `.persona <人格描述>` — 私聊切换 AI 人格，完全替换 system prompt
+- `.persona reset/show` — 恢复默认/查看当前人格
+- `.主人` — 将当前私聊对象设为主人，获得 admin 级权限
 
 ### 😴 模式系统
-- `/~sleep` — 睡觉模式：全部回复用第三人称括号叙述，如"(迷迷糊糊翻了个身)"，10字内迷糊呓语
-- `/~含蓄` / `/~叙事` — 含蓄叙述模式：日常可用，第三人称括号内心独白 ，如"(默默记下了这件事)"
+- `.sleep` — 睡觉模式：全部回复用第三人称括号叙述，如"(迷迷糊糊翻了个身)"，10字内迷糊呓语
+- `.含蓄` / `.叙事` — 含蓄叙述模式：日常可用，第三人称括号内心独白 ，如"(默默记下了这件事)"
 - 三种模式互斥（普通/含蓄/睡觉），无论哪种都作用于群聊+私聊+戳一戳
 
 ### 🐛 关键修复
@@ -641,18 +660,18 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 - **||| 多句分隔**：格式提醒钉在 user message 末尾，防止长 extra_info 冲掉规则
 - **不可见字符清洗**：管道入口正则洗零宽/双向控制/不可见运算符，纯垃圾跳过
 - **wzq duel 修复**：缺 return 掉到末尾变"未知操作"；undo 申请人覆盖；AI 图片顺序颠倒
-- **wzq 增强**：/~wzq unduel 撤销挑战、/~wzq admin clear 强制结束本群棋局，持久化 `wzq_games.json`
+- **wzq 增强**：.wzq unduel 撤销挑战、.wzq admin clear 强制结束本群棋局，持久化 `wzq_games.json`
 - **CALL 系统大修**：正则 `~` 可选（防 LLM 漏写前缀静默丢失）；程序级校验指令存在性 + wdsj 参数数量；清洗 CALL 文本中的 HTML 碎片(`admin">`)和换行；命令返回错误自动捕获 → 标注 `[CALL错误]` → follow-up LLM 诚实告知失败
 - **wdsj 文档修正**：main_skill.md `[CALL:~wdsj <玩家名>]` → `[CALL:~wdsj bw 玩家名]`，避免 LLM 只传一个参数
 - **LLM 伪装 CALL**：剥离写入上下文的 `[系统] 已调用:` 后缀，防止 LLM 从历史学会伪造（输出假 CALL 而不实际执行）
 - **好感度缺失**：user message 格式提醒追加 `[fav: ...]` 要求，防止 LLM 被大量规则淹没忘加好感度
 
 ### 🔧 功能调整
-- **搜索改为手动**：关闭 `auto_search_if_needed`，只响应用户 `/~search` 和 LLM `[CALL:~search]`
+- **搜索改为手动**：关闭 `auto_search_if_needed`，只响应用户 `.search` 和 LLM `[CALL:~search]`
 - **搜索进度提示**：`perform_search` 内只在实际搜索时发 "🔍 正在搜喵~"（缓存命中不提示）
-- **统计开关**：`/~unstats` 暂停 / `/~setstats` 恢复，数据文件不动
-- **退群指令**：`/~leave [群号]` 收集 GH/统计/好感度 → 重置 fav → 退群，文件全保留
-- **戳一戳白名单**：`/~owner wl remove` 后该群戳一戳同步屏蔽
+- **统计开关**：`.unstats` 暂停 / `.setstats` 恢复，数据文件不动
+- **退群指令**：`.leave [群号]` 收集 GH/统计/好感度 → 重置 fav → 退群，文件全保留
+- **戳一戳白名单**：`.owner wl remove` 后该群戳一戳同步屏蔽
 
 ### 🔮 文件变更
 | 文件 | 变更 |
@@ -668,7 +687,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 | `utils/username.py` | bot @ 保持 QQ 号不替换 |
 | `modules/search.py` | 搜索进度提示移到 perform_search 内部 |
 | `modules/stats.py` | 统计开关 `_stats_disabled` |
-| `modules/commands.py` | /~unstats /~setstats /~leave / cmd_wdsj 缓存 |
+| `modules/commands.py` | .unstats .setstats .leave / cmd_wdsj 缓存 |
 | `modules/leave.py` | **新建**：退群数据收集/清理 |
 | `services/wdsj_cache.py` | **新建**：WDSJ 战绩图片缓存 |
 
@@ -679,7 +698,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 ### 💡 LLM 可调用指令系统 [CALL:~xxx]
 - 大模型可在回复中嵌入 `[CALL:~指令 参数]` 自动调用机器人功能
 - 20+ 指令可被 LLM 调用：天气、地震、搜索、画图、管理配置等
-- 管道自动检测 CALL → 执行 → 过滤标签 → 在主消息末尾附加 `[系统] 已调用: /~指令`
+- 管道自动检测 CALL → 执行 → 过滤标签 → 在主消息末尾附加 `[系统] 已调用: .指令`
 - 私聊/群聊均可使用
 - 调用结果通过 follow-up LLM 自然回应
 
@@ -707,12 +726,12 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 
 ### 📋 全指令参考文档
 - `data/幻梦Bot_完整指令文档.md`：50+ 指令完整用法说明
-- `/~help` 改为发送预渲染指令文档卡片（即时响应，不等待渲染）
+- `.help` 改为发送预渲染指令文档卡片（即时响应，不等待渲染）
 - 文档以 `## command_reference` 注入到 LLM system prompt
 
 ### 📄 废弃指令
-- `/~s`（搜索）：已从 COMMAND_MAP 移除
-- `/~img` / `/~img18`（随机二次元图）：已从 COMMAND_MAP 移除
+- `.s`（搜索）：已从 COMMAND_MAP 移除
+- `.img` / `.img18`（随机二次元图）：已从 COMMAND_MAP 移除
 - 旧 `tools.py` 中的天气工具：已移除，由 CALL 系统接管
 
 ### 🔧 其他改进
@@ -735,7 +754,7 @@ KOOK 此前完全没有，"整理成文档发出来"类请求只回一句"我这
 | `core/pipeline.py` | CALL/FACE 检测 + tools.py 清理 |
 | `core/dispatcher.py` | message_id 去重 |
 | `core/tools.py` | 移除 weather 工具 |
-| `modules/commands.py` | 废弃 s/img/img18，/~help 改卡片模式 |
+| `modules/commands.py` | 废弃 s/img/img18，.help 改卡片模式 |
 
 ### 💬 私聊专用提示词
 

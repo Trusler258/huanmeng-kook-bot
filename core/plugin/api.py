@@ -298,7 +298,7 @@ class PluginCapability:
         self._registered: list[str] = []
 
     def _bind_command(self, name: str, handler: Callable) -> None:
-        """把插件指令 handler 绑到核心指令表（v2：让 /~<name> 能直接命中插件）。
+        """把插件指令 handler 绑到核心指令表（v2：让 .<name> 能直接命中插件）。
 
         与 register_command 的区别：本方法直接操作 COMMAND_MAP，
         用于"插件拥有指令名"的迁移场景（内置指令被插件接管）。

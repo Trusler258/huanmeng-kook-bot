@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Steam 状态与价格指令
 
-【/~steam 系列】
+【.steam 系列】
     price <游戏名|商店链接>   当前价 + 折扣 + 地区对比（配了 ITAD key 还有史低）
     px <游戏名>               快捷版：只给第一条匹配
     who [@某人|SteamID|好友代码|链接]  查 Steam 状态（发卡片图）
@@ -9,7 +9,7 @@
     bd <SteamID|好友代码|链接> 绑定；bd 看自己；bd del 解绑；bd list 列表
     help                      帮助
 【独立入口】
-    /~在干嘛 [@某人]          等同 who
+    .在干嘛 [@某人]          等同 who
 
 数据层在 services/steam_api.py，卡片在 services/steam_card.py。
 """
@@ -26,14 +26,14 @@ logger = get_logger("steam")
 ROOT = Path(__file__).resolve().parent.parent
 
 HELP = "\n".join([
-    "【Steam 指令 /~steam】",
+    "【Steam 指令 .steam】",
     "  price <游戏名|链接>  价格 · 折扣 · 地区对比（+史低）",
     "  px <游戏名>          快捷版，只给第一条匹配",
     "  who [@某人|SteamID|好友代码]  查 Steam 状态；不带参数=查自己",
     "     （SteamID 支持 17 位 SteamID64 / account_id / STEAM_x:y:z / [U:1:x]）",
     "  bd <SteamID|好友代码|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
     "  help                 本帮助",
-    "另一种写法：/~在干嘛 @某人",
+    "另一种写法：.在干嘛 @某人",
 ])
 
 
@@ -150,7 +150,7 @@ async def _do_price(term: str, short: bool) -> str:
         if low.get("low") is not None:
             lines.append("  史低    %s %s" % (low["low"], low.get("currency", "")))
         elif not S.itad_key():
-            lines.append("  史低    （未配 ITAD_KEY，见 /~steam help）")
+            lines.append("  史低    （未配 ITAD_KEY，见 .steam help）")
 
         # 自记价格：比我们记录过的还低就提示
         if p.get("final"):
@@ -229,10 +229,10 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
         if not steamid:
             if target == user_id:
                 return ("你还没绑定 Steam 喵~\n"
-                        "用 /~steam bd <SteamID64 / 好友代码 / 个人资料链接> 绑一下\n"
-                        "也可以不绑定直接查：/~steam who <SteamID / 好友代码 / 资料链接>"
+                        "用 .steam bd <SteamID64 / 好友代码 / 个人资料链接> 绑一下\n"
+                        "也可以不绑定直接查：.steam who <SteamID / 好友代码 / 资料链接>"
                         "（不用加 @）")
-            return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
+            return "%s 还没绑定 Steam 喵~（让他用 .steam bd 绑一下）" % who
 
     # ★ v2.3.61 文案修正：旧写法 `"正在查 %s 的 Steam…" % ("你的" if ...)` 拼出
     #   「正在查 你的 的 Steam…」。上面 182 行的 who 本来就是现成称呼（"你"/<@QQ>）。
@@ -264,7 +264,7 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
         sid = S.get_bind(user_id)
         if not sid:
             return ("你还没绑定 Steam 喵~\n"
-                    "  /~steam bd <SteamID64 / 好友代码 / account_id / 资料链接>\n"
+                    "  .steam bd <SteamID64 / 好友代码 / account_id / 资料链接>\n"
                     "  例：76561199427581023 · hkkhkghw · 1467315295\n"
                     "（不要用昵称，Steam 上重名的太多）")
         try:
@@ -274,7 +274,7 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
         code = S.account_id_to_friend_code(S.steamid64_to_account_id(sid))
         extra = ("\n  好友代码：%s（可直接分享给别人加好友）" % code) if code else ""
         return ("你绑定的账号：%s\n  %s%s\n"
-                "  换绑就再发一次 /~steam bd <新ID>\n  解绑：/~steam bd del"
+                "  换绑就再发一次 .steam bd <新ID>\n  解绑：.steam bd del"
                 % (p.get("name") or "（查不到）", sid, extra))
 
     sub = args[0].lower()
@@ -318,7 +318,7 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
 # ── 入口 ──────────────────────────────────────────────────────
 
 async def cmd_steam(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """/~steam <子命令>"""
+    """.steam <子命令>"""
     if not args:
         return HELP
     action = args[0].lower()
@@ -328,23 +328,23 @@ async def cmd_steam(args, user_id, group_id, sender_name, is_group, bot_qq):
         return HELP
     if action in ("price", "价格", "p"):
         if not rest:
-            return "用法：/~steam price <游戏名 或 商店链接>"
+            return "用法：`.steam price <游戏名 或 商店链接>`"
         return await _do_price(" ".join(rest), short=False)
     if action in ("px", "快捷"):
         if not rest:
-            return "用法：/~steam px <游戏名>"
+            return "用法：`.steam px <游戏名>`"
         return await _do_price(" ".join(rest), short=True)
     if action in ("me", "自己", "我的"):
-        # /~steam me —— 看自己（等同 who 不带参数，跟 /~wdsj me 的习惯一致）
+        # .steam me —— 看自己（等同 who 不带参数，跟 .wdsj me 的习惯一致）
         return await _do_who([], user_id, group_id, is_group, sender_name)
     if action in ("who", "谁", "状态"):
         return await _do_who(rest, user_id, group_id, is_group, sender_name)
     if action in ("bd", "bind", "绑定"):
         return await _do_bind(rest, user_id, group_id, is_group)
-    # 没给子命令时，把第一个词当游戏名（/~steam hades）
+    # 没给子命令时，把第一个词当游戏名（.steam hades）
     return await _do_price(" ".join(args), short=False)
 
 
 async def cmd_steam_doing(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """/~在干嘛 [@某人] —— 等同 /~steam who"""
+    """.在干嘛 [@某人] —— 等同 .steam who"""
     return await _do_who(args, user_id, group_id, is_group, sender_name)

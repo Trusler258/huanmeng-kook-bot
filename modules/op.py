@@ -1,9 +1,9 @@
 """
 OP 次级管理员模块
 - admin > op > 用户 三级权限
-- /~op group set/del/list  — 群聊 OP 权限指派
-- /~persona <文本|reset|show> — 私聊人格切换
-- /~主人 — 私聊将当前用户设为主人
+- .op group set/del/list  — 群聊 OP 权限指派
+- .persona <文本|reset|show> — 私聊人格切换
+- .主人 — 私聊将当前用户设为主人
 """
 
 from __future__ import annotations
@@ -330,7 +330,7 @@ def set_group_ops(group_id: int, op_qqs: list[int]) -> str:
     global_op_qqs: list = data.get("op_qqs", [])
     unknown = [q for q in op_qqs if q not in global_op_qqs]
     if unknown:
-        return f"以下 QQ 不是 OP，请先用 /~op add 添加: {unknown}"
+        return f"以下 QQ 不是 OP，请先用 .op add 添加: {unknown}"
     group_owners: dict = data.get("group_owners", {})
     group_owners[str(group_id)] = op_qqs
     data["group_owners"] = group_owners
@@ -346,7 +346,7 @@ def set_group_op(group_id: int, op_qq: int) -> str:
     data = _read_roles()
     op_qqs: list = data.get("op_qqs", [])
     if op_qq not in op_qqs:
-        return f"QQ {op_qq} 不是 OP，请先用 /~owner op add {op_qq} 添加"
+        return f"QQ {op_qq} 不是 OP，请先用 .owner op add {op_qq} 添加"
     group_owners: dict = data.get("group_owners", {})
     if str(group_id) not in group_owners:
         group_owners[str(group_id)] = []
@@ -423,7 +423,7 @@ def list_group_ops() -> str:
 # ════════════════════════════════════════════════════════════
 
 async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """OP 权限管理 /~op [add|del <QQ> | group set|del|list]"""
+    """OP 权限管理 .op [add|del <QQ> | group set|del|list]"""
     from core.config import get_config
     cfg = get_config()
 
@@ -443,24 +443,24 @@ async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
             return "只有主人能增删全局 OP 喵~"
         if sub == "add":
             if len(args) < 2:
-                return "用法: /~op add <QQ号> [QQ号2 QQ号3 ...]"
+                return "用法：`.op add <QQ号> [QQ号2 QQ号3 ...]`"
             qqs = [int(a) for a in args[1:]]
             return add_op_qqs(qqs)
         else:
             if len(args) < 2:
-                return "用法: /~op del <QQ号>"
+                return "用法：`.op del <QQ号>`"
             return del_op_qq(int(args[1]))
 
     elif sub == "group":
         if len(args) < 2:
-            return "用法: /~op group set <群号> <OP_QQ> | del <群号> | list"
+            return "用法：`.op group set <群号> <OP_QQ> | del <群号> | list`"
         action = args[1].lower()
 
         if action == "set":
             if not is_owner and not is_group_op:
                 return "只有主人或本群 OP 能指派群权限喵~"
             if len(args) < 4:
-                return "用法: /~op group set <群号> <OP_QQ号> [OP_QQ2 ...]"
+                return "用法：`.op group set <群号> <OP_QQ号> [OP_QQ2 ...]`"
             gid = int(args[2])
             # OP 只能管理自己所在的群
             if not is_owner and is_group_op and gid != group_id:
@@ -472,7 +472,7 @@ async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
             if not is_owner and not is_group_op:
                 return "只有主人或本群 OP 能删除群权限喵~"
             if len(args) < 3:
-                return "用法: /~op group del <群号> [OP_QQ]（省略 OP_QQ 则清空整个群）"
+                return "用法：`.op group del <群号> [OP_QQ]`（省略 OP_QQ 则清空整个群）"
             gid = int(args[2])
             if not is_owner and is_group_op and gid != group_id:
                 return f"你只能管理群 {group_id} 的权限喵~"
@@ -486,7 +486,7 @@ async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
             return "未知操作，支持: set/del/list"
 
     else:
-        return "用法: /~op [add|del <QQ> | group set|del|list]"
+        return "用法：`.op [add|del <QQ> | group set|del|list]`"
 
 
 def _format_persona_display(p: dict) -> str:
@@ -505,21 +505,21 @@ def _format_persona_display(p: dict) -> str:
 
 _PERSONA_HELP = (
     "【人格切换用法】\n"
-    "  /~persona                    — 查看当前\n"
-    "  /~persona help               — 显示本帮助\n"
-    "  /~persona <文本>             — 设置核心人格（兼容旧用法）\n"
-    "  /~persona core <文本>        — 设置核心人格\n"
-    "  /~persona side <文本>        — 设置侧面人格\n"
-    "  /~persona identity <文本>    — 设置固定身份\n"
-    "  /~persona show               — 查看当前\n"
-    "  /~persona reset              — 清除整个 persona（恢复默认人格）\n"
-    "  /~persona memory reset       — 清空当前人格的专属记忆\n\n"
+    "  .persona                    — 查看当前\n"
+    "  .persona help               — 显示本帮助\n"
+    "  .persona <文本>             — 设置核心人格（兼容旧用法）\n"
+    "  .persona core <文本>        — 设置核心人格\n"
+    "  .persona side <文本>        — 设置侧面人格\n"
+    "  .persona identity <文本>    — 设置固定身份\n"
+    "  .persona show               — 查看当前\n"
+    "  .persona reset              — 清除整个 persona（恢复默认人格）\n"
+    "  .persona memory reset       — 清空当前人格的专属记忆\n\n"
     "三段说明:\n"
     "  core     — 性格核心，语气/口癖/说话方式（必填，最能影响回复风格）\n"
     "  side     — 侧面人格，情感倾向/情绪反应（可选，补充细节）\n"
     "  identity — 固定身份，名字/年龄/职业/与你的关系（可选，背景设定）\n\n"
     "建议: 详细描述性格/语气/口癖/与你的关系，每段上限2000字。\n"
-    "例如: /~persona core 你是高冷的御姐，说话简洁带刺，但会偷偷关心我"
+    "例如: .persona core 你是高冷的御姐，说话简洁带刺，但会偷偷关心我"
 )
 
 
@@ -536,7 +536,7 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
     if not args:
         current = get_persona(user_id, cur_ver)
         if current:
-            return _format_persona_display(current) + "\n\n使用 /~persona reset 恢复默认\n使用 /~persona help 查看完整用法"
+            return _format_persona_display(current) + "\n\n使用 .persona reset 恢复默认\n使用 .persona help 查看完整用法"
         return _PERSONA_HELP
 
     sub = args[0].lower()
@@ -561,7 +561,7 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
     if sub == "show":
         current = get_persona(user_id, cur_ver)
         if current:
-            return _format_persona_display(current) + "\n\n使用 /~persona reset 恢复默认"
+            return _format_persona_display(current) + "\n\n使用 .persona reset 恢复默认"
         return "当前使用默认人格"
 
     # core/side/identity 子命令
@@ -571,19 +571,19 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
             return f"{sub} 描述过长（上限2000字），请精简后重试喵~"
         set_persona_field(user_id, sub, value, cur_ver)
         logger.info("用户 %d 设置 persona.%s: %s...", user_id, sub, value[:40])
-        return f"{sub} 已设置喵～\n\n如需恢复默认: /~persona reset\n如需清空记忆: /~persona memory reset"
+        return f"{sub} 已设置喵～\n\n如需恢复默认: .persona reset\n如需清空记忆: .persona memory reset"
 
-    # 默认：单文本设 core（兼容旧用法 /~persona <text>）
+    # 默认：单文本设 core（兼容旧用法 .persona <text>）
     persona = " ".join(args)
     if len(persona) > 2000:
         return "人格描述过长（上限2000字），请精简后重试喵~"
     set_persona_field(user_id, "core", persona, cur_ver)
     logger.info("用户 %d 设置 persona.core: %s...", user_id, persona[:40])
-    return f"核心人格已设置喵～\n\n当前人格:\n{persona[:2000]}\n\n如需恢复默认: /~persona reset"
+    return f"核心人格已设置喵～\n\n当前人格:\n{persona[:2000]}\n\n如需恢复默认: .persona reset"
 
 
 async def cmd_master(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """私聊主人指定 /~主人"""
+    """私聊主人指定 .主人"""
     if is_group:
         return "主人指定仅支持私聊喵~"
 
@@ -708,7 +708,7 @@ def get_narrative_prompt_rule() -> str:
 
 
 async def cmd_hanxu(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """/~含蓄 — 切换含蓄叙述风格（仅 admin），仅影响当前聊天"""
+    """.含蓄 — 切换含蓄叙述风格（仅 admin），仅影响当前聊天"""
     from core.config import get_config
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id):
@@ -729,7 +729,7 @@ async def cmd_hanxu(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_sleep(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """/~sleep — 切换睡觉模式（仅 admin），仅影响当前聊天"""
+    """.sleep — 切换睡觉模式（仅 admin），仅影响当前聊天"""
     from core.config import get_config
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id):

@@ -91,7 +91,7 @@ async def cmd_pgr(args, user_id, group_id, sender_name, is_group, bot_kook):
 
     elif sub == "song":
         if len(args) < 2:
-            return "用法: .pgr song <曲名关键词>"
+            return "用法：`.pgr song <曲名关键词>`"
         keyword = " ".join(args[1:])
         return await _search_song(keyword, logger)
 

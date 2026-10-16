@@ -368,8 +368,8 @@ async def cmd_cache(args, user_id, group_id, sender_name, is_group, bot_kook):
 
 
 
-# ── 上下文构成（/~ctx）─────────────────────────────────────
-# 与 QQ 的 /~ctx 对齐：展示最近一次请求构建给 LLM 的各类上下文 Token 占比。
+# ── 上下文构成（.ctx）─────────────────────────────────────
+# 与 QQ 的 .ctx 对齐：展示最近一次请求构建给 LLM 的各类上下文 Token 占比。
 # KOOK 侧数据源 = ContextEngine 的 TokenStats，经 core.trace 记录最近一次请求。
 
 _CTX_LABELS: tuple[tuple[str, str], ...] = (

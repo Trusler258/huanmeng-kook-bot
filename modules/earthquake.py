@@ -740,7 +740,7 @@ async def cmd_eq(args, user_id, group_id, sender_name, is_group, bot_kook):
                     save_subs()
                     return f"已设置最低震级 M{lv:.1f} 喵~ 低于此级不推送"
                 except ValueError:
-                    return "用法: .eq lv <数字>  如 .eq lv 5"
+                    return "用法：`.eq lv <数字>`  如 `.eq lv 5`"
             else:
                 lv = _subs[group_id].get("min_mag", DEFAULT_MIN_MAG)
                 return f"当前群最低推送震级: M{lv:.1f}"

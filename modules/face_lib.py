@@ -1,6 +1,6 @@
 """
 表情库 — 关键词匹配本地表情 GIF
-用法: get_face("开心") → (filepath, CQ码)
+用法：`get_face(`"开心") → (filepath, CQ码)
 LLM 输出 [FACE:开心] → pipeline 自动发图
 """
 

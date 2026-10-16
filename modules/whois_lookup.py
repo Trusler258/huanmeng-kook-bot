@@ -127,4 +127,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         print(lookup_domain(sys.argv[1]))
     else:
-        print("用法: python whois_lookup.py <域名>")
+        print("用法：`python whois_lookup.py <域名>`")

@@ -2,10 +2,10 @@
 赞赏 / 赞助模块
 
 指令：
-    /~赞赏                     发赞赏码图 + 说明（所有人可用）
-    /~赞赏 list                列出赞助过的人
-    /~赞赏 add <人> <金额> [备注]   记录一笔赞助（仅管理员）
-    /~赞赏 del <编号>           删除一条记录（仅管理员）
+    .赞赏                     发赞赏码图 + 说明（所有人可用）
+    .赞赏 list                列出赞助过的人
+    .赞赏 add <人> <金额> [备注]   记录一笔赞助（仅管理员）
+    .赞赏 del <编号>           删除一条记录（仅管理员）
 
 数据：data/rewards.json
     {"sponsors": [{"name": "张三", "amount": "30", "count": 2,
@@ -91,7 +91,7 @@ def add_sponsor(name: str, amount: str, by: str = "", note: str = "") -> tuple[b
     name = (name or "").strip()
     amount = (amount or "").strip()
     if not name:
-        return False, "得告诉我是谁赞赏的喵～用法：/~赞赏 add <称呼> <金额>"
+        return False, "得告诉我是谁赞赏的喵～用法：`.赞赏 add <称呼> <金额>`"
     if len(name) > 30:
         name = name[:30]
     if len(amount) > 20:
@@ -161,7 +161,7 @@ def sponsors_hint() -> str:
         lines.append(f"· {name} {amt}{tail}".rstrip())
     if not lines:
         return ""
-    more = f"\n（另有 {len(items) - MAX_HINT_ITEMS} 位，名单见 /~赞赏 list）" \
+    more = f"\n（另有 {len(items) - MAX_HINT_ITEMS} 位，名单见 .赞赏 list）" \
         if len(items) > MAX_HINT_ITEMS else ""
     return (
         "【赞赏名单】这些朋友赞助过我的开发，是让我能继续跑下去的人——"
@@ -195,7 +195,7 @@ def _show_card() -> str:
 
 
 def _show_image_only() -> str:
-    """仅发图（/~赞赏 仅发图）：只回一张赞赏码，不带任何说明文字。
+    """仅发图（.赞赏 仅发图）：只回一张赞赏码，不带任何说明文字。
 
     为什么要这个：有人只想顺手把码要过去，被一段介绍文字跟着念一遍很烦；
     只发一张图干净利落（v2.3.6 用户要求）。
@@ -227,11 +227,11 @@ async def cmd_reward(args, user_id, group_id, sender_name, is_group, bot_qq) -> 
     """赞赏码与赞助名单
 
     用法:
-      /~赞赏                       发送赞赏码（图 + 一段说明）
-      /~赞赏 仅发图                 只发一张赞赏码图，不带任何文字
-      /~赞赏 list                  查看赞赏名单
-      /~赞赏 add <称呼> <金额> [备注]  记录一笔赞助（管理员）
-      /~赞赏 del <编号>            移除一条记录（管理员）
+      .赞赏                       发送赞赏码（图 + 一段说明）
+      .赞赏 仅发图                 只发一张赞赏码图，不带任何文字
+      .赞赏 list                  查看赞赏名单
+      .赞赏 add <称呼> <金额> [备注]  记录一笔赞助（管理员）
+      .赞赏 del <编号>            移除一条记录（管理员）
     """
     from core.config import get_config
 
@@ -253,8 +253,8 @@ async def cmd_reward(args, user_id, group_id, sender_name, is_group, bot_qq) -> 
         if not admin:
             return "只有管理员能记赞赏名单喵～"
         if len(args) < 3:
-            return ("用法：/~赞赏 add <称呼> <金额> [备注]\n"
-                    "例如：/~赞赏 add 张三 30 服务器续费")
+            return ("用法：`.赞赏 add <称呼> <金额> [备注]`\n"
+                    "例如：`.赞赏 add 张三 30 服务器续费`")
         name, amount = args[1], args[2]
         note = " ".join(args[3:]) if len(args) > 3 else ""
         ok, msg = add_sponsor(name, amount, by=str(user_id), note=note)
@@ -266,15 +266,15 @@ async def cmd_reward(args, user_id, group_id, sender_name, is_group, bot_qq) -> 
         if not admin:
             return "只有管理员能改赞赏名单喵～"
         if len(args) < 2 or not args[1].isdigit():
-            return "用法：/~赞赏 del <编号>（编号见 /~赞赏 list）"
+            return "用法：`.赞赏 del <编号>`（编号见 `.赞赏 list`）"
         ok, msg = remove_sponsor(int(args[1]))
         if ok:
             logger.info("赞助名单移除: #%s by=%s", args[1], user_id)
         return msg
 
     return ("用法：\n"
-            "/~赞赏 — 看赞赏码（图 + 说明）\n"
-            "/~赞赏 仅发图 — 只要一张码，不带文字\n"
-            "/~赞赏 list — 看赞赏名单\n"
-            "/~赞赏 add <称呼> <金额> [备注] — 记录赞助（管理员）\n"
-            "/~赞赏 del <编号> — 移除记录（管理员）")
+            "- `.赞赏`  看赞赏码（图 + 说明）\n"
+            "- `.赞赏 仅发图`  只要一张码，不带文字\n"
+            "- `.赞赏 list`  看赞赏名单\n"
+            "- `.赞赏 add <称呼> <金额> [备注]`  记录赞助（管理员）\n"
+            "- `.赞赏 del <编号>`  移除记录（管理员）")

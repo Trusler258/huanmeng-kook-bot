@@ -6,10 +6,10 @@
 并且 LLM 必须清楚每条记忆来自哪个会话。
 
 指令：
-    /~mlink add <目标>      建立关联（目标见下）
-    /~mlink del [目标]      断开指定关联；不带目标 = 断开全部（任何一方都可断开）
-    /~mlink list            列出当前聊天已关联的会话
-    /~mlink yes / no        同意 / 拒绝"别人请求关联我的私聊"
+    .mlink add <目标>      建立关联（目标见下）
+    .mlink del [目标]      断开指定关联；不带目标 = 断开全部（任何一方都可断开）
+    .mlink list            列出当前聊天已关联的会话
+    .mlink yes / no        同意 / 拒绝"别人请求关联我的私聊"
     （统一入口 cmd_mlink；本文件的 cmd_memory_link/unlink/agree/deny 是它的子实现）
 
 目标写法：
@@ -21,7 +21,7 @@
     1. 关联**自己的私聊**（p + 自己的 QQ）→ 直接建立，无需他人同意
        —— 这是最常见场景：在群里说过的事，私聊也记得，反之亦然
     2. 关联**别人的私聊** → 必须对方同意：bot 私聊对方请求确认，
-       对方回 `/~记忆同意` 才建立；拒绝则 → 不建立，且**不泄露任何内容**
+       对方回 `.记忆同意` 才建立；拒绝则 → 不建立，且**不泄露任何内容**
     3. 关联**群聊** → 需要管理员权限（群记忆涉及他人隐私，不能谁都能拉）
 
 数据：data/memory_links.json
@@ -114,7 +114,7 @@ def parse_target(arg: str, current_is_group: bool) -> tuple[str | None, str]:
     """
     s = (arg or "").strip().lower().replace("＃", "").lstrip("#")
     if not s:
-        return None, "没写目标喵～例：/~mlink add p10001（私聊）或 g10001（群聊）"
+        return None, "没写目标喵～例：.mlink add p10001（私聊）或 g10001（群聊）"
     if s[0] == "p":
         num = s[1:].strip()
         if not num.isdigit():
@@ -269,11 +269,11 @@ async def cmd_mlink(args, user_id, group_id, sender_name, is_group, bot_qq) -> s
     """跨聊天记忆关联 —— **单一入口**（v2.3.12 整合，英文指令）
 
     用法:
-      /~mlink add <目标>    建立关联
-      /~mlink del [目标]    断开指定关联；不带目标 = 断开全部
-      /~mlink list          查看已关联的会话
-      /~mlink yes / no      同意 / 拒绝别人的关联请求（私聊）
-      /~mlink <目标>        省略子命令时等同于 add
+      .mlink add <目标>    建立关联
+      .mlink del [目标]    断开指定关联；不带目标 = 断开全部
+      .mlink list          查看已关联的会话
+      .mlink yes / no      同意 / 拒绝别人的关联请求（私聊）
+      .mlink <目标>        省略子命令时等同于 add
     目标写法: p<QQ号> 私聊 / g<群号> 群聊 / 纯数字（群里=群号、私聊=对方QQ）
     """
     first = (args[0].lower() if args else "")
@@ -293,16 +293,16 @@ async def cmd_mlink(args, user_id, group_id, sender_name, is_group, bot_qq) -> s
         out = await cmd_memory_link(["list"], user_id, group_id, sender_name, is_group, bot_qq)
         if not args:
             out += ("\n\n用法：\n"
-                    "/~mlink add <目标> — 建立关联\n"
-                    "/~mlink del [目标] — 断开（不带目标=全部断开）\n"
-                    "/~mlink yes | no — 同意/拒绝别人的请求\n"
-                    "目标：p<QQ号> 私聊 · g<群号> 群聊 · 纯数字")
+                    "- `.mlink add <目标>`  建立关联\n"
+                    "- `.mlink del [目标]`  断开（不带目标=全部断开）\n"
+                    "- `.mlink yes | no`  同意/拒绝别人的请求\n"
+                    "- 目标：`p<QQ号>` 私聊 · `g<群号>` 群聊 · 纯数字")
         return out
 
     # add（显式或省略子命令直接给目标）
     target_args = args[1:] if first in ("add", "加", "+") else args
     if not target_args:
-        return "要关联谁呀？例：/~mlink add p10001（私聊）或 g10001（群聊）"
+        return "要关联谁呀？例：.mlink add p10001（私聊）或 g10001（群聊）"
     return await cmd_memory_link(target_args, user_id, group_id, sender_name, is_group, bot_qq)
 
 
@@ -310,10 +310,10 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
     """跨聊天记忆关联
 
     用法:
-      （由 /~mlink 入口调用）
-      /~mlink add <目标>      建立关联（p<QQ> 私聊 / g<群号> 群聊 / 纯数字）
-      /~mlink list            查看已关联的会话
-      /~mlink del <目标>      断开关联
+      （由 .mlink 入口调用）
+      .mlink add <目标>      建立关联（p<QQ> 私聊 / g<群号> 群聊 / 纯数字）
+      .mlink list            查看已关联的会话
+      .mlink del <目标>      断开关联
     """
     from core.config import get_config
     cfg = get_config()
@@ -324,28 +324,28 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
     # 无参 → 用法
     if not sub:
         return ("用法喵：\n"
-                "/~mlink add p<QQ号> — 关联某个私聊\n"
-                "/~mlink add g<群号> — 关联某个群聊（需管理员）\n"
-                "/~mlink add <纯数字> — 群里当群号、私聊里当对方 QQ\n"
-                "/~mlink list — 看已关联的会话\n"
-                "/~mlink del <目标> — 断开关联\n"
-                "／ 关联自己的私聊直接建立；关联别人的私聊要对方回 /~mlink yes")
+                ".mlink add p<QQ号> — 关联某个私聊\n"
+                ".mlink add g<群号> — 关联某个群聊（需管理员）\n"
+                ".mlink add <纯数字> — 群里当群号、私聊里当对方 QQ\n"
+                ".mlink list — 看已关联的会话\n"
+                ".mlink del <目标> — 断开关联\n"
+                "／ 关联自己的私聊直接建立；关联别人的私聊要对方回 .mlink yes")
 
     if sub in ("list", "列表", "查看"):
         ks = links_of(my_key)
         if not ks:
-            return "当前聊天还没有关联任何会话喵～发 /~mlink add p<QQ号> 试试"
+            return "当前聊天还没有关联任何会话喵～发 .mlink add p<QQ号> 试试"
         lines = [f"【记忆关联】当前会话（{key_label(my_key)}）已关联 {len(ks)} 个："]
         for i, k in enumerate(ks, 1):
             cid = key_to_chat_id(k)
             n = len(get_context_mgr_safe().get_context(cid)) if cid else 0
             lines.append(f"{i}. {key_label(k)}（{n} 条记录）")
-        lines.append("解除：/~mlink del <目标>（不带目标 = 全部断开）")
+        lines.append("解除：.mlink del <目标>（不带目标 = 全部断开）")
         return "\n".join(lines)
 
     if sub in ("del", "delete", "取消", "解除", "remove"):
         if len(args) < 2:
-            return "要指明断开哪个喵：/~mlink del p<QQ号>"
+            return "要指明断开哪个喵：.mlink del p<QQ号>"
         target, err = parse_target(args[1], is_group)
         if not target:
             return err
@@ -376,7 +376,7 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
         if is_linked(my_key, target):
             return f"已经和 {key_label(target)} 关联着喵"
         if get_pending(target):
-            return f"已经给 {key_label(target)} 发过请求了喵，等对方回 /~mlink yes"
+            return f"已经给 {key_label(target)} 发过请求了喵，等对方回 .mlink yes"
         set_pending(target, my_key)
         # 私聊对方请求确认
         try:
@@ -386,8 +386,8 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
                 f"来源：{key_label(my_key)}\n"
                 f"同意后，我在那边的交流内容（最近几条）可以被这边参考，"
                 f"但两边仍是独立的对话，不会合并。\n"
-                f"同意就回：/~记忆同意\n"
-                f"不想的话回：/~记忆拒绝（我不会告诉对方你拒绝了）",
+                f"同意就回：.记忆同意\n"
+                f"不想的话回：.记忆拒绝（我不会告诉对方你拒绝了）",
                 target_qq,
             )
             if not ok:
@@ -399,7 +399,7 @@ async def cmd_memory_link(args, user_id, group_id, sender_name, is_group, bot_qq
             return "给对方发确认消息失败了喵，稍后再试吧"
         logger.info("记忆关联请求已发出: %s → %s by=%s", my_key, target, user_id)
         return (f"已经私聊 {key_label(target)} 征求同意啦～\n"
-                f"对方回 /~记忆同意 之后就会生效（拒绝也不会告诉你，保护对方隐私）")
+                f"对方回 .记忆同意 之后就会生效（拒绝也不会告诉你，保护对方隐私）")
 
     # 群聊目标 → 需管理员
     if not cfg.is_admin(user_id, group_id):
@@ -414,8 +414,8 @@ async def cmd_memory_unlink(args, user_id, group_id, sender_name, is_group, bot_
     """断开关联（v2.3.12）
 
     用法:
-      /~断开关联             断开当前聊天的**全部**记忆关联
-      /~断开关联 <目标>       断开与指定会话的关联（p<QQ> / g<群号> / 纯数字）
+      .断开关联             断开当前聊天的**全部**记忆关联
+      .断开关联 <目标>       断开与指定会话的关联（p<QQ> / g<群号> / 纯数字）
 
     权限：关联的**任何一方**都可以随时断开（收回自己的共享），无需对方同意；
     断开后两边互不可见，且**不通知对方**（与拒绝请求同样处理，保护隐私）。

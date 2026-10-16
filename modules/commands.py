@@ -275,7 +275,7 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_kook):
     d["runtime"]["tasks"] = stats.get('active_tasks', 0)
 
     # ⚠️ get_cache_stats 定义在 modules/judge.py，本模块未在模块级导入
-    #    （cmd_info 此前直接调用 → /~info 必 NameError）。函数内按需导入最稳。
+    #    （cmd_info 此前直接调用 → .info 必 NameError）。函数内按需导入最稳。
     from modules.judge import get_cache_stats
     d["runtime"]["scache"] = get_cache_stats().get('entries', 0)
 
@@ -2134,7 +2134,7 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     from core.config import get_config
 
     if not args or args[0].lower() in ("help",):
-        return "\n".join(["排行榜用法: .wdsj lb <榜单名> [周期] [img]",
+        return "\n".join(["排行榜用法：`.wdsj lb <榜单名> [周期] [img]`",
                           "  双词: bw win, kbw tnt, sw kill ...",
                           "  周期: alltime/month/week/day  末尾+img=卡片图片"])
 
@@ -2570,55 +2570,43 @@ def _build_owner_help_md() -> str:
     return (
         "**.owner** — 配置管理（仅主人可用）\n\n"
         "---\n\n"
-        "### 配置文件\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner list <域>` | 列出配置：`bot` / `adapter` / `roles` |\n"
-        "| `.owner get <路径>` | 读取：`get bot.reply_threshold` |\n"
-        "| `.owner set <路径> <值>` | 设置：`set bot.reply_threshold 5` |\n"
+        "**配置文件**\n"
+        "- `.owner list <域>`  列出配置：`bot` / `adapter` / `roles`\n"
+        "- `.owner get <路径>`  读取：`get bot.reply_threshold`\n"
+        "- `.owner set <路径> <值>`  设置：`set bot.reply_threshold 5`\n"
         "\n"
-        "### 数据文件\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner data get <名> [键]` | 读取：`data get fav` 或 `data get fav g_123_456` |\n"
-        "| `.owner data set <名> <键> <值>` | 设置：`data set fav g_123_456 100` |\n"
-        "| `.owner data del <名> <键>` | 删除某条记录 |\n"
-        "| `.owner data reset <名\\|all>` | 重置：`data reset fav` / `data reset all` |\n"
-        "| 可用数据：`fav` `luck` `countdown` `reminders` `recall` `wzq` |\n"
+        "**数据文件**\n"
+        "- `.owner data get <名> [键]`  读取：`data get fav` 或 `data get fav g_123_456`\n"
+        "- `.owner data set <名> <键> <值>`  设置：`data set fav g_123_456 100`\n"
+        "- `.owner data del <名> <键>`  删除某条记录\n"
+        "- `.owner data reset <名|all>`  重置：`data reset fav` / `data reset all`\n"
+        "- 可用数据：`fav` `luck` `countdown` `reminders` `recall` `wzq`\n"
         "\n"
-        "### 快捷白名单\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner wl add group <群号>` | 添加群白名单 |\n"
-        "| `.owner wl add private <QQ>` | 添加私聊白名单 |\n"
-        "| `.owner wl remove group <群号>` | 移除群白名单 |\n"
-        "| `.owner wl remove private <QQ>` | 移除私聊白名单 |\n"
-        "| `.owner wl show` | 查看白名单 |\n"
-        "| `.owner wl welcome set <群> <语>` | 设置入群欢迎语 |\n"
-        "| `.owner wl welcome del <群>` | 删除入群欢迎语 |\n"
+        "**快捷白名单**\n"
+        "- `.owner wl add group <群号>`  添加群白名单\n"
+        "- `.owner wl add private <QQ>`  添加私聊白名单\n"
+        "- `.owner wl remove group <群号>`  移除群白名单\n"
+        "- `.owner wl remove private <QQ>`  移除私聊白名单\n"
+        "- `.owner wl show`  查看白名单\n"
+        "- `.owner wl welcome set <群> <语>`  设置入群欢迎语\n"
+        "- `.owner wl welcome del <群>`  删除入群欢迎语\n"
         "\n"
-        "### 运气管理\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner luck list` | 查看今日全员运气值 |\n"
-        "| `.owner luck set <QQ> <0~100>` | 修改某人的运气值 |\n"
-        "| `.owner luck del <QQ>` | 删除某人的运气记录 |\n"
+        "**运气管理**\n"
+        "- `.owner luck list`  查看今日全员运气值\n"
+        "- `.owner luck set <QQ> <0~100>`  修改某人的运气值\n"
+        "- `.owner luck del <QQ>`  删除某人的运气记录\n"
         "\n"
-        "### 画图 / 视频配额\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner draw get [QQ]` | 查看画图用量，不填 QQ 看全部 |\n"
-        "| `.owner draw set <QQ> <N>` | 设每日画图上限（默认 10）|\n"
-        "| `.owner draw reset` | 重置今日画图用量 |\n"
-        "| `.owner video get\\|set\\|reset` | 视频配额管理（默认 4）|\n"
+        "**画图 / 视频配额**\n"
+        "- `.owner draw get [QQ]`  查看画图用量，不填 QQ 看全部\n"
+        "- `.owner draw set <QQ> <N>`  设每日画图上限（默认 10）\n"
+        "- `.owner draw reset`  重置今日画图用量\n"
+        "- `.owner video get|set|reset`  视频配额管理（默认 4）\n"
         "\n"
-        "### 指令白名单\n"
-        "| 指令 | 说明 |\n"
-        "|------|------|\n"
-        "| `.owner cmd add <指令>` | 添加：`cmd add weather` |\n"
-        "| `.owner cmd remove <指令>` | 移除 |\n"
-        "| `.owner cmd list` | 查看白名单指令 |\n"
-        "| `.owner cmd clear` | 清空白名单（所有指令仅主人可用）|\n"
+        "**指令白名单**\n"
+        "- `.owner cmd add <指令>`  添加：`cmd add weather`\n"
+        "- `.owner cmd remove <指令>`  移除\n"
+        "- `.owner cmd list`  查看白名单指令\n"
+        "- `.owner cmd clear`  清空白名单（所有指令仅主人可用）\n"
     )
 
 
@@ -3148,8 +3136,7 @@ async def cmd_playing(args, user_id, group_id, sender_name, is_group, bot_kook):
     """.playing <游戏名> [-o] — 设置机器人"正在玩"状态
 
     通过 KOOK API /api/v3/game/activity 设置 data_type=1 的游戏状态。
-    用法：
-      .playing 原神                   设置"正在玩 原神"（游戏库查不到会自动创建）
+    用法：`.playing <游戏名>`  设置「正在玩」状态（游戏库查不到会自动创建）
       .playing off | -o               结束"正在玩"状态
       .playing | -q | -s              查看当前状态
     """

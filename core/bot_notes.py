@@ -169,11 +169,11 @@ async def cmd_note(args, user_id, group_id, sender_name, is_group, bot_kook):
     head = a[0].lower()
     if head in ("del", "delete", "删除", "-"):
         if len(a) < 2 or not a[1].isdigit():
-            return "用法: .note del <序号>（序号用 .note 查看）"
+            return "用法：`.note del <序号>`（序号用 `.note` 查看）"
         return delete_note(chat_id, int(a[1]))
     if head in ("fix", "edit", "改", "修改"):
         if len(a) < 3 or not a[1].isdigit():
-            return "用法: .note fix <序号> <新内容>（序号用 .note 查看）"
+            return "用法：`.note fix <序号> <新内容>`（序号用 `.note` 查看）"
         return update_note(chat_id, int(a[1]), " ".join(a[2:]))
     if head in ("clear", "清空"):
         from core.config import get_config

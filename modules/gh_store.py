@@ -2,7 +2,7 @@
 
 背景（2026-10-12 真正插件化）：`modules/gh.py` 拆成两部分——
   · **数据层**（本文件）被两处共用，必须留在核心层：
-      1) `plugins/gh/gh_core.py`（插件，/~gh 指令）
+      1) `plugins/gh/gh_core.py`（插件，.gh 指令）
       2) `modules/leave.py`（核心钩子，/_leave 里 `_fmt_gh` 复用 ~gh list 的格式化输出）
   · **指令逻辑** 已整体搬进 `plugins/gh/`，原 `modules/gh.py` 改后缀退役为 `modules/gh.py.legacy`。
 这样 plugin 只依赖一个稳定的核心数据层，反向依赖（核心 import 插件）得以避免。
