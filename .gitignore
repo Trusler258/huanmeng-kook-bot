@@ -46,3 +46,8 @@ backup/
 
 # 插件（由服务器自行管理，不随 .update 推送）
 plugins/
+
+# 服务器配置备份 / 内部运维文档（绝不入开源仓库）
+server_config_backup/
+docs/KOOK_OPS.md
+_commit_msg.txt
