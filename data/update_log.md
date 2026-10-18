@@ -1,6 +1,30 @@
 # 更新日志
 
+## v2.3.100 — 同步 DeepSeek 新搜索/Fetch/视觉（V4.1-Flash-1017）— 2026.10.18
+
+一句话总结：搜索主路径换成官方 `/v1/tools/search`（真联网），抓取优先 `/v1/tools/fetch`，
+视觉支持 `deepseek-flash` 原生收图；并补上 KOOK 一直缺失的搜索兜底。
+
+对齐 QQ v2.3.94（同日）。
+
+1. **新增 `services/ds_tools.py`**：`ds_search` / `ds_fetch` / `format_search_text`
+   · ⚠️ `DEEPSEEK_URL` 是 `.../v1/`，而工具接口路径本身含 `/v1`（`/v1/tools/search`）
+     → 必须剥掉尾部 `/v1`，否则 `/v1/v1/...` 报 404（已踩）
+   · 408/429/5xx 重试一次；404/403 不重试
+2. **`perform_search` 主路径**：由旧 Responses API `web_search`（常常不联网）改为
+   官方 Search；**并补上 KOOK 原先缺失的 Agent 搜索兜底**（百度+bing+百科）——
+   以前原生搜索返回 None 就直接"暂无搜索结果"。
+3. **抓取**：`_read_url` 优先 `ds_fetch` 取 Markdown 正文（仍走原有 LLM 摘要），
+   失败回退 PageScraper。
+4. **视觉**：`image_api` 支持 DeepSeek（picture 槽位 provider=DEEPSEEK 时）。
+   ⚠️ **必须 `thinking: disabled`**：默认思考会把 max_tokens 全耗在 reasoning_content、
+   content 恒为空（300 token 也一样）；关闭后 120 token 即可准确描述。
+5. KV 缓存：KOOK 本就优先读 `usage.prompt_cache_hit_tokens`，无需改动。
+
+验证：Search 返回当天 15:02 的实时新闻；Fetch 取到 10362 字符 Markdown；29 插件正常。
+
 ## v2.3.99 — kook 插件全量信息查询（昵称/角色/引用/服务器资料/频道列表）— 2026.10.16
+
 
 一句话总结：`.kook get` 扩到 12 个子命令，昵称/角色/头像/引用消息零开销可查，
 服务器资料/频道列表/用户资料走 KOOK API（结果缓存 60s）。

@@ -104,22 +104,38 @@ async def perform_search(
         except Exception:
             pass
 
-    # ── Step 2: DeepSeek Responses API 原生搜索（优先）──
-    logger.info("执行 DeepSeek 原生搜索: '%s...' (user=%s)", query[:40], sender_name)
+    # ── Step 2: DeepSeek 官方 Search 接口（真联网，2026-10-17 上线）──
+    # 文档：POST /v1/tools/search —— 自研搜索引擎，返回 rerank_score / 摘要 / 权威度 / 日期。
+    # 旧的 Responses API web_search 常常并不真联网（回旧记忆），本接口已取代它作主路径。
+    logger.info("执行 DeepSeek Search: '%s...' (user=%s)", query[:40], sender_name)
     result_text = None
     _search_start = asyncio.get_event_loop().time()
     try:
-        from modules.web_search import ds_native_search, DS_SEARCH_TIMEOUT, DS_SEARCH_MAX_RETRIES
-        # Phase 20 Hotfix C：外层上限与内部重试预算对齐（内部每次尝试 DS_SEARCH_TIMEOUT、
-        # 最多 DS_SEARCH_MAX_RETRIES+1 次），避免 90s 空等；
-        # 超时后立即进入降级路径，不再重复等待。
-        _budget = DS_SEARCH_TIMEOUT * (DS_SEARCH_MAX_RETRIES + 1) + 5.0
-        _outer = min(_budget, 35.0)
-        result_text = await asyncio.wait_for(ds_native_search(query), timeout=_outer)
+        from services.ds_tools import ds_search, format_search_text
+        _cnt = max(3, min(int(limit or 4) + 2, 10))
+        _res = await asyncio.wait_for(ds_search(query, count=_cnt), timeout=35.0)
+        if _res:
+            result_text = format_search_text(
+                _res, max_chars=min((limit or 4) * 400, 3000))
+            logger.info("DeepSeek Search 命中 %d 条", len(_res))
+        else:
+            logger.info("DeepSeek Search 无结果，回退 Agent 搜索")
     except asyncio.TimeoutError:
-        logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
+        logger.warning("DeepSeek Search 超时，回退 Agent 搜索")
     except Exception as e:
-        logger.warning("DeepSeek 原生搜索异常: %s，回退 Agent 搜索", e)
+        logger.warning("DeepSeek Search 异常: %s，回退 Agent 搜索", e)
+
+    # ── Step 2b: Agent 搜索（百度 + bing + 百科）兜底 ──
+    # 注：KOOK 原有实现整段缺失兜底（原生搜索 None 就直接"暂无搜索结果"），此处补上。
+    if result_text is None:
+        try:
+            from modules.web_search import agent_search
+            logger.info("DeepSeek Search 无结果，Agent 搜索兜底: '%s...'", query[:40])
+            _fb = await asyncio.to_thread(agent_search, query, limit, False)
+            if _fb:
+                result_text = _fb
+        except Exception as e:
+            logger.warning("Agent 搜索兜底异常: %s", e)
     from core.trace import record as _trace_record
     _trace_record("search_total", (asyncio.get_event_loop().time() - _search_start) * 1000.0)
 

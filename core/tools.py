@@ -681,14 +681,25 @@ async def _read_url(url: str) -> str | None:
     if not url.startswith("http"):
         return "请提供完整链接（http/https）"
 
-    # 用统一的 PageScraper 提取正文（readability + 智能截断）
+    # ★ v2.4.0: DeepSeek 官方 Fetch 优先——干净 Markdown 正文，无 CSS/导航噪音；
+    #   失败再回退本地 PageScraper（readability + 智能截断）。
+    raw_text = ""
     try:
-        from modules.local_search import get_scraper
-        scraper = get_scraper()
-        loop = asyncio.get_running_loop()
-        raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
+        from services.ds_tools import ds_fetch
+        _page = await ds_fetch(url, timeout=40.0)
+        if _page:
+            raw_text = (_page.get("content") or "")[:8000]
+            logger.info("DS Fetch 命中: %s → %d 字符", url[:50], len(raw_text))
     except Exception as e:
-        return f"抓取失败: {e}"
+        logger.warning("DS Fetch 异常: %s，回退本地抓取", e)
+    if not raw_text:
+        try:
+            from modules.local_search import get_scraper
+            scraper = get_scraper()
+            loop = asyncio.get_running_loop()
+            raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
+        except Exception as e:
+            return f"抓取失败: {e}"
 
     if not raw_text:
         return f"无法读取该页面: {url}"

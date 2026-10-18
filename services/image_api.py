@@ -210,13 +210,18 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
         import base64 as _b64
         b64 = _b64.b64encode(_preprocessed).decode()
         data_uri = f"data:image/png;base64,{b64}"
+        # ★ v2.4.0: DeepSeek 视觉（deepseek-flash 原生收图）必须**关掉思考**——
+        #   实测默认 thinking 会把 max_tokens 全耗在 reasoning_content、content 恒为空。
+        _is_ds = str(getattr(image_model, "provider", "")).upper() == "DEEPSEEK"
+        _extra = {"extra_body": {"thinking": {"type": "disabled"}}} if _is_ds else {}
+        _max_tok = 200 if _is_ds else 120
         loop = asyncio.get_running_loop()
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
                 lambda: client.chat.completions.create(
                     model=image_model.name,
-                    max_tokens=120,
+                    max_tokens=_max_tok,
                     temperature=0.3,
                     messages=[
                         {
@@ -228,6 +233,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
                         },
                     ],
                     stream=False,
+                    **_extra,
                 ),
             ),
             timeout=25.0,
