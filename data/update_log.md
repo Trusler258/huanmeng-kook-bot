@@ -32,6 +32,18 @@ manifest.permissions 子集、未声明不得占用核心工具名）；执行�
 - `bot.py`：插件加载前 `ensure_libs_path()`，日志「核心库已就绪: N 个 [...]」
 - `plugins/ping`：`_load_core` 改走 hmcore，保留本地 ImportError 兜底
 
+### 四、.hmp 插件包（方案 A：plugins/ 只放包）
+- `core/plugin/archive.py`：zip 包读取（manifest / 入口模块 / 资源），`load_module()` 用
+  zipimport 取入口字节码 → 造模块（`__file__` = `<包>/main.py`）→ 临时把包加入 sys.path 后 exec
+- `loader.discover_plugins()`：除目录外，扫描 `plugins/*.hmp`（支持 `[DISABLE]` 前缀），
+  `manifest.archive=True`、`base_dir` 指向包文件
+- `loader.load_module()`：`archive` 插件走包内加载，**不在 plugins/ 下解压**
+- `scripts/build_hmp.py`：目录 → `<name>-<ver>.hmp`（zip），自校验（解包后真实 import + 找 Plugin 类）
+- 已迁移：`dice`、`echo` 改为 `dice-1.0.0.hmp` / `echo-1.0.1.hmp`，原目录移到
+  `plugins/_hmp_test_backup/`；`.dice`、`.pecho` 均正常
+- 限制（有意）：入口必须在包根；带同目录模块/资源的 15 个插件（gh/phi/wdsj/ping…）
+  暂不能打包——需 `read_asset()` 迁移后才能进包
+
 ### 验证
 - KOOK：单测 6/6 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
 - QQ：单测 7/7 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；24 插件正常

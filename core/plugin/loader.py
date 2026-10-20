@@ -35,6 +35,28 @@ def discover_plugins(plugins_dir: str) -> list[PluginManifest]:
         return manifests
 
     for child in sorted(base.iterdir()):
+        # ★ v2.3.104：`.hmp` 插件包（方案 A：包里就是插件，不在 plugins/ 下解压成目录）
+        if child.is_file() and child.suffix.lower() == ".hmp":
+            if child.name.startswith(DISABLE_PREFIX):
+                logger.debug("跳过 %s：文件名带 [DISABLE] 禁用前缀", child.name)
+                continue
+            try:
+                from core.plugin.archive import is_archive, read_manifest as _read_arc_manifest
+                if not is_archive(child):
+                    logger.warning("跳过 %s：不是有效的 .hmp（需 zip + 根目录 manifest.json）", child.name)
+                    continue
+                data = _read_arc_manifest(child) or {}
+                manifest, err = validate_manifest(data)
+                if err:
+                    logger.warning("插件包 %s 校验失败: %s", child.name, err)
+                    continue
+                manifest.base_dir = str(child)
+                manifest.archive = True
+                manifests.append(manifest)
+                logger.info("发现插件包 %s → %s@%s", child.name, manifest.name, manifest.version)
+            except Exception as e:
+                logger.warning("插件包 %s 解析失败: %s", child.name, e)
+            continue
         if not child.is_dir():
             continue
         # [DISABLE] 前缀：视为已停用，跳过加载
@@ -64,6 +86,18 @@ def load_module(manifest: PluginManifest) -> Optional[object]:
     if manifest.runtime == RUNTIME_LUA:
         # Lua 插件由 Phase 14 LuaRuntime 处理，不在 python 层动态导入
         return None
+    # ★ v2.3.104：`.hmp` 包 —— 从 zip 内加载，不落地解压
+    if getattr(manifest, "archive", False):
+        module_name = f"_hm_plugin_{manifest.name}"
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        try:
+            from core.plugin.archive import load_module as _load_from_archive
+            return _load_from_archive(Path(manifest.base_dir), manifest.entrypoint, module_name)
+        except Exception as e:
+            logger.warning("插件包 %s 加载失败: %s", manifest.name, e)
+            sys.modules.pop(module_name, None)
+            return None
     entry = Path(manifest.base_dir) / manifest.entrypoint
     if not entry.is_file():
         logger.warning("插件 %s 入口不存在: %s", manifest.name, entry)

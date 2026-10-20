@@ -79,6 +79,8 @@ class PluginManifest:
 
     # 装载路径（由 loader 填充，非 manifest 声明）
     base_dir: str = ""
+    # ★ v2.3.104：True 表示来自 `.hmp` 包（base_dir 指向包文件，不是目录）
+    archive: bool = False
     raw: dict = field(default_factory=dict)
 
     # ── 便捷访问 ────────────────────────────────────────────────
