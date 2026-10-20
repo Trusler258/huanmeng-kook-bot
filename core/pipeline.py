@@ -161,6 +161,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     sender_name = _clean_name(sender_name)
 
+    # ★ v2.3.102 消息生命周期：适配层已把消息交进来（含平台/内容摘要，不含正文全文）
+    from core.eventbus import emit_event as _emit_ev
+    _emit_ev("message.received", {
+        "chat_id": chat_id, "user_id": user_id, "is_group": bool(is_group),
+        "msg_type": msg_type, "length": len(msg_content or ""),
+        "is_mentioned": bool(is_mentioned),
+        "has_image": bool(image_urls or []), "has_quote": bool(quoted_msg),
+    }, source="core.pipeline")
+
     # ── 图片/引用图片占位注入（dispatcher 已在入队前同步完成识图，此处兜底挂上下文标签）
     img_urls = image_urls or []
     qimg_urls = quoted_image_urls or []
@@ -190,6 +199,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             msg_content = cleaned
         if not msg_content.strip():
             logger.info("[chat=%d] 消息全为不可见字符，跳过处理", chat_id)
+            _emit_ev("message.ignored", {"chat_id": chat_id, "user_id": user_id,
+                                        "reason": "invisible_only"}, source="core.pipeline")
             return
 
     # ------管理员提示词注入------
@@ -233,7 +244,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                            user_id=user_id if not is_group else None)
                     return
             except Exception:
-                pass
+                # ★ v2.3.102：此前是 pass —— 插件钩子写错时完全无感知，静默失效
+                logger.error("插件 pre-hook 执行失败（%s）", getattr(hook, "__name__", hook),
+                             exc_info=True)
+
+    # ★ v2.3.102：真正进入处理管线（预钩子未拦截）
+    _emit_ev("message.processing", {"chat_id": chat_id, "user_id": user_id,
+                                   "is_group": bool(is_group), "msg_type": msg_type},
+            source="core.pipeline")
 
     # ------引用消息注入------
     if quoted_msg:
@@ -1229,7 +1247,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         break
                     s = modified
                 except Exception:
-                    pass
+                    # ★ v2.3.102：同上，静默会让人以为"钩子没生效"
+                    logger.error("插件 post-hook 执行失败（%s）",
+                                 getattr(hook, "__name__", hook), exc_info=True)
             if s is not None:
                 _filtered.append(s)
         sentences = _filtered

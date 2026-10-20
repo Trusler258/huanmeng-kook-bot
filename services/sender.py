@@ -122,7 +122,17 @@ async def send_by_chat_type(
     message = await _split_inline_images(message, chat_id, is_group)
     if not message:
         return True
-    return await _delivery.send_by_chat_type(message, chat_id, is_group, user_id)
+    ok = await _delivery.send_by_chat_type(message, chat_id, is_group, user_id)
+    # ★ v2.3.102：只有发送层明确返回成功才发 sent；失败发 failed（不伪造成功）
+    try:
+        from core.eventbus import emit_event
+        emit_event("message.sent" if ok else "message.failed", {
+            "chat_id": chat_id, "is_group": bool(is_group),
+            "chars": len(message or ""), "ok": bool(ok),
+        }, source="core.sender")
+    except Exception:
+        pass
+    return ok
 
 
 async def send_sentences(
@@ -134,6 +144,16 @@ async def send_sentences(
     max_interval: float = 1.5,
 ):
     """逐条发送句子列表，每条之间随机间隔（延迟由 ResponsePolicy 管理）"""
+    # ★ v2.3.102：replied = 已交给发送层（不宣称平台确认成功）
+    try:
+        from core.eventbus import emit_event
+        emit_event("message.replied", {
+            "chat_id": chat_id, "is_group": bool(is_group),
+            "count": len(sentences or []),
+            "chars": sum(len(s or "") for s in (sentences or [])),
+        }, source="core.sender")
+    except Exception:
+        pass
     await _delivery.send_sentences(
         sentences, chat_id, is_group, user_id, min_interval, max_interval)
 

@@ -1,5 +1,44 @@
 # 更新日志
 
+## v2.3.102 — 事件体系：消息生命周期 + 统一 Envelope + 订阅者超时 — 2026.10.20
+
+一句话总结：把"声明了但从不发"的 `message.*` 事件接上真实发射，给所有事件补统一外壳，
+并修掉两个真实缺陷（钩子异常被吞、订阅者无超时）。
+
+### 一、统一 Envelope（向后兼容）
+`Event` 新增 `event_id` / `schema_version` / `trace_id` / `source` / `plugin_id`，
+保留原 `name` / `data` / `ts`（老订阅方零改）。新增 `to_dict()` 与统一出口
+`emit_event(type, data, source=, plugin_id=, trace_id=)`。
+
+### 二、消息生命周期（此前 `message.received/sent` 只有常量、全仓零 emit）
+| 事件 | 位置 | 载荷 |
+|---|---|---|
+| `message.received` | pipeline 入口 | chat_id / user_id / is_group / msg_type / length / is_mentioned / has_image / has_quote（**不含正文**） |
+| `message.ignored` | 空内容 / 全不可见字符 | reason=empty / invisible_only |
+| `message.processing` | 预钩子之后 | chat_id / user_id / is_group / msg_type |
+| `message.replied` | sender.send_sentences | count / chars（= 已交给发送层） |
+| `message.sent` / `message.failed` | sender.send_by_chat_type | ok / chars（**发送层明确返回才发**） |
+
+### 三、工具事件
+`tool.called` / `tool.completed` 补 `execution_id`（关联同一次调用）+ `plugin`（归属）；
+新增 `tool.permission.denied`（在真正执行前发出，不混进 completed）。
+
+### 四、插件与能力生命周期
+`plugin.loading` / `plugin.load_failed` / `plugin.enabled` / `plugin.disabled`；
+`capability.registered` / `capability.unregistered`（带 capability_id / category / runtime / permissions）。
+
+### 五、两个真实缺陷
+1. 管道钩子 `except Exception: pass` → 改为 `logger.error(..., exc_info=True)`
+   （此前插件钩子写错完全无感知，表现为"没生效"）
+2. `EventBus.publish` 协程订阅者加 `wait_for(SUBSCRIBER_TIMEOUT=10s)`，超时取消并告警；
+   慢订阅者（>1s）记 warning。**未改成无约束 create_task**（会引入任务堆积）。
+
+### 验证
+- 单测 10/10：Envelope 七字段 / 兼容 name·data·ts / 通配订阅 / 慢订阅者 0.2s 被取消且
+  后续订阅者仍执行 / 11 个新事件名登记 / publish_sync 保留传入 Envelope
+- 生命周期真跑：`plugin.loading → loaded → capability.registered → enabled → disabled`
+- 线上 29 插件正常，无异常
+
 ## v2.3.101 — 修「插件注册工具即授权」权限漏洞 — 2026.10.20
 
 一句话总结：插件只要 `register_tool` 就自动获得执行授权，能绕过 HIGH 风险默认拒绝；

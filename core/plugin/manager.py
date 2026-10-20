@@ -17,7 +17,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.logger import get_logger
-from core.eventbus import EventBus, get_event_bus, EVENT_PLUGIN_LOADED, EVENT_PLUGIN_UNLOADED, EVENT_PLUGIN_ERROR
+from core.eventbus import (EventBus, get_event_bus, EVENT_PLUGIN_LOADED,
+                            EVENT_PLUGIN_UNLOADED, EVENT_PLUGIN_ERROR,
+                            EVENT_PLUGIN_LOADING, EVENT_PLUGIN_LOAD_FAILED,
+                            EVENT_PLUGIN_ENABLED, EVENT_PLUGIN_DISABLED)
 from core.plugin.manifest import PluginManifest, RUNTIME_LUA, RUNTIME_PYTHON
 from core.plugin.loader import discover_plugins, load_module, locate_plugin_classes, drop_module
 from core.plugin.api import PluginContext
@@ -107,10 +110,16 @@ class PluginManager:
             return await load_lua_plugin(self, rec)
 
         drop_module(rec.manifest)
+        # ★ v2.3.102：加载开始（含失败路径，便于宿主统计加载耗时/失败率）
+        await self.bus.publish(EVENT_PLUGIN_LOADING, {
+            "name": name, "version": rec.manifest.version,
+            "runtime": rec.manifest.runtime})
         module = load_module(rec.manifest)
         if module is None:
             rec.state = STATE_ERROR
             rec.error = "模块加载失败"
+            await self.bus.publish(EVENT_PLUGIN_LOAD_FAILED, {
+                "name": name, "stage": "module", "error": rec.error})
             await self._emit_error(name, rec.error)
             return False, rec.error
 
@@ -172,6 +181,8 @@ class PluginManager:
             rec.state = STATE_ENABLED
             await self.bus.publish(EVENT_PLUGIN_LOADED, {
                 "name": name, "version": rec.manifest.version})
+            await self.bus.publish(EVENT_PLUGIN_ENABLED, {
+                "name": name, "version": rec.manifest.version})
             logger.info("Plugin 已启用: %s@%s", name, rec.manifest.version)
             return True, ""
         except asyncio.CancelledError:
@@ -195,6 +206,7 @@ class PluginManager:
                 rec.ctx.cleanup()
             self._cleanup_instance(rec)
             rec.state = STATE_DISABLED
+            await self.bus.publish(EVENT_PLUGIN_DISABLED, {"name": name})
             return True, ""
         except asyncio.CancelledError:
             raise

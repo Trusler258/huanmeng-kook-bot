@@ -35,6 +35,17 @@ EVENT_PLUGIN_UNLOADED = "plugin.unloaded"
 EVENT_PLUGIN_ERROR = "plugin.error"
 EVENT_UPDATE_STARTED = "update.started"
 EVENT_UPDATE_COMPLETED = "update.completed"
+EVENT_MESSAGE_IGNORED = "message.ignored"
+EVENT_MESSAGE_PROCESSING = "message.processing"
+EVENT_MESSAGE_REPLIED = "message.replied"
+EVENT_MESSAGE_FAILED = "message.failed"
+EVENT_TOOL_PERMISSION_DENIED = "tool.permission.denied"
+EVENT_PLUGIN_LOADING = "plugin.loading"
+EVENT_PLUGIN_LOAD_FAILED = "plugin.load_failed"
+EVENT_PLUGIN_ENABLED = "plugin.enabled"
+EVENT_PLUGIN_DISABLED = "plugin.disabled"
+EVENT_CAPABILITY_REGISTERED = "capability.registered"
+EVENT_CAPABILITY_UNREGISTERED = "capability.unregistered"
 
 ALL_EVENTS: tuple[str, ...] = (
     EVENT_MESSAGE_RECEIVED, EVENT_MESSAGE_SENT,
@@ -43,23 +54,89 @@ ALL_EVENTS: tuple[str, ...] = (
     EVENT_MEMORY_CREATED, EVENT_MEMORY_UPDATED,
     EVENT_PLUGIN_LOADED, EVENT_PLUGIN_UNLOADED, EVENT_PLUGIN_ERROR,
     EVENT_UPDATE_STARTED, EVENT_UPDATE_COMPLETED,
+    # ★ v2.3.102 补齐：消息生命周期 / 工具权限 / 插件与能力生命周期
+    EVENT_MESSAGE_IGNORED, EVENT_MESSAGE_PROCESSING, EVENT_MESSAGE_REPLIED,
+    EVENT_MESSAGE_FAILED, EVENT_TOOL_PERMISSION_DENIED,
+    EVENT_PLUGIN_LOADING, EVENT_PLUGIN_LOAD_FAILED, EVENT_PLUGIN_ENABLED,
+    EVENT_PLUGIN_DISABLED, EVENT_CAPABILITY_REGISTERED, EVENT_CAPABILITY_UNREGISTERED,
 )
 
 # 通配订阅
 WILDCARD: str = "*"
 
+def _new_event_id() -> str:
+    import uuid
+    return "evt_" + uuid.uuid4().hex[:16]
+
+
+def emit_event(event_type: str, data: Optional[dict] = None, *,
+                source: str = "core", plugin_id: Optional[str] = None,
+                trace_id: Optional[str] = None) -> Optional[Event]:
+    """统一发事件出口：自动补 trace_id / event_id 外壳，异常不外抛。
+
+    用 `emit_event` 而不是直接 `get_event_bus().emit()`，这样所有公开事件都带同一套外壳字段。
+    """
+    try:
+        if trace_id is None:
+            try:
+                from core.trace import get_trace_id
+                trace_id = get_trace_id()
+            except Exception:
+                trace_id = ""
+        bus = get_event_bus()
+        ev = Event(str(event_type).lower(), data or {}, trace_id=trace_id or "",
+                   source=source, plugin_id=plugin_id)
+        bus.emit(ev.name, ev.data, event=ev)
+        return ev
+    except Exception as e:
+        logger.debug("emit_event(%s) 失败（忽略）: %s", event_type, e)
+        return None
+
+
 Handler = Callable[..., Any]
 
 
+EVENT_SCHEMA_VERSION = 1
+# 单个订阅者的执行预算（秒）。★ v2.3.102：此前无超时，慢订阅者会拖住发布方。
+# 仅对协程订阅者生效（同步订阅者无法安全取消，只记慢日志）。
+SUBSCRIBER_TIMEOUT: float = float(__import__("os").getenv("EVENT_SUBSCRIBER_TIMEOUT", "10"))
+SUBSCRIBER_SLOW_WARN: float = 1.0
+
+
 class Event:
-    """一次事件分发的数据载体。"""
+    """一次事件分发的数据载体。
 
-    __slots__ = ("name", "data", "ts")
+    ★ v2.3.102 Envelope：新增 event_id / schema_version / trace_id / source / plugin_id，
+    与原有的 name / data / ts 共存 —— 老订阅方不受影响，新订阅方可用统一外壳做日志关联与去重。
+    """
 
-    def __init__(self, name: str, data: Optional[dict] = None):
+    __slots__ = ("name", "data", "ts", "event_id", "schema_version",
+                 "trace_id", "source", "plugin_id")
+
+    def __init__(self, name: str, data: Optional[dict] = None, *,
+                 event_id: str = "", trace_id: str = "",
+                 source: str = "core", plugin_id: Optional[str] = None):
         self.name = name
         self.data = data or {}
         self.ts = time.time()
+        self.event_id = event_id or _new_event_id()
+        self.schema_version = EVENT_SCHEMA_VERSION
+        self.trace_id = trace_id
+        self.source = source
+        self.plugin_id = plugin_id
+
+    def to_dict(self) -> dict:
+        """统一外壳（日志/审计/跨进程用）。业务载荷仍在 data。"""
+        return {
+            "event_id": self.event_id,
+            "event_type": self.name,
+            "schema_version": self.schema_version,
+            "timestamp": self.ts,
+            "trace_id": self.trace_id,
+            "source": self.source,
+            "plugin_id": self.plugin_id,
+            "data": self.data,
+        }
 
 
 class EventBus:
@@ -95,32 +172,52 @@ class EventBus:
         return deco
 
     # ── 发布 ─────────────────────────────────────────────
-    async def publish(self, event_name: str, data: Optional[dict] = None) -> None:
-        """发布事件。分发不等待异步订阅者完成；订阅者异常被隔离。"""
+    async def publish(self, event_name: str, data: Optional[dict] = None, *,
+                      event: Optional["Event"] = None) -> None:
+        """发布事件。订阅者异常被隔离；协程订阅者按 SUBSCRIBER_TIMEOUT 取消。
+
+        ★ v2.3.102：此前协程订阅者无超时，一个慢插件会拖住整个发布方。
+        现在每个协程订阅者独立 wait_for；超时视为该订阅者失败（不影响其他订阅者）。
+        同步订阅者无法安全取消，只记慢日志。
+        """
         key = event_name.lower()
         self._record(key)
         handlers = list(self._handlers.get(key, [])) + list(self._handlers.get(WILDCARD, []))
         if not handlers:
             return
-        event = Event(key, data)
+        if event is None:
+            event = Event(key, data)
         for h in handlers:
+            name = getattr(h, "__name__", str(h))
+            t0 = time.perf_counter()
             try:
-                res = h(event) if not asyncio.iscoroutinefunction(h) else await h(event)
-                if asyncio.iscoroutine(res):
-                    # 同步包装函数返回了协程（罕见），调度执行
-                    asyncio.create_task(_run_coro(res))
+                if not asyncio.iscoroutinefunction(h):
+                    res = h(event)
+                    if asyncio.iscoroutine(res):
+                        asyncio.create_task(_run_coro(res))
+                else:
+                    await asyncio.wait_for(h(event), timeout=SUBSCRIBER_TIMEOUT)
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                logger.warning("EventBus 订阅者 %s 处理 %s 超时（>%.0fs），已取消",
+                               name, key, SUBSCRIBER_TIMEOUT)
             except Exception as e:
-                logger.warning("EventBus 订阅者 %s 处理 %s 异常: %s",
-                               getattr(h, "__name__", h), key, e)
+                logger.warning("EventBus 订阅者 %s 处理 %s 异常: %s", name, key, e)
+            else:
+                cost = time.perf_counter() - t0
+                if cost >= SUBSCRIBER_SLOW_WARN:
+                    logger.warning("EventBus 订阅者 %s 处理 %s 耗时 %.2fs（偏慢）",
+                                   name, key, cost)
 
-    def publish_sync(self, event_name: str, data: Optional[dict] = None) -> None:
+    def publish_sync(self, event_name: str, data: Optional[dict] = None, *,
+                     event: Optional["Event"] = None) -> None:
         """同步发布（无事件循环时使用）；仅调用同步订阅者。"""
         key = event_name.lower()
         self._record(key)
         handlers = list(self._handlers.get(key, [])) + list(self._handlers.get(WILDCARD, []))
-        event = Event(key, data)
+        if event is None:
+            event = Event(key, data)
         for h in handlers:
             if asyncio.iscoroutinefunction(h):
                 continue
@@ -130,20 +227,22 @@ class EventBus:
                 logger.warning("EventBus 同步订阅者 %s 处理 %s 异常: %s",
                                getattr(h, "__name__", h), key, e)
 
-    def emit(self, event_name: str, data: Optional[dict] = None) -> None:
+    def emit(self, event_name: str, data: Optional[dict] = None, *,
+             event: Optional["Event"] = None) -> None:
         """fire-and-forget 发布：调度到当前事件循环后台执行，调用方不阻塞。
 
         若当前无运行中的事件循环，则退化为同步发布（仅触发同步订阅者）。
+        `event=` 用于传入已构造好的 Envelope（emit_event 走这条路）。
         """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self.publish_sync(event_name, data)
+            self.publish_sync(event_name, data, event=event)
             return
         try:
-            loop.create_task(self.publish(event_name, data))
+            loop.create_task(self.publish(event_name, data, event=event))
         except RuntimeError:
-            self.publish_sync(event_name, data)
+            self.publish_sync(event_name, data, event=event)
 
     # ── 生命周期 / 可观测 ───────────────────────────────
     def clear(self) -> None:

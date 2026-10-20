@@ -37,6 +37,18 @@ class BudgetExhausted(Exception):
     """请求级工具调用预算耗尽。"""
 
 
+def _plugin_of(tool_name: str) -> str:
+    """工具归属插件名（核心工具返回空串）。★ v2.3.102 事件归属用。"""
+    try:
+        from core.capability.registry import get_capability_registry
+        cap = get_capability_registry().find_plugin_tool(tool_name)
+        if cap is not None and getattr(cap, "source", "").startswith("plugin:"):
+            return cap.source.split(":", 1)[-1]
+    except Exception:
+        pass
+    return ""
+
+
 class ToolRuntime:
     """统一工具执行运行时。"""
 
@@ -69,6 +81,15 @@ class ToolRuntime:
         allowed, reason = check_permission(req.tool_name, None)
         if not allowed:
             logger.warning("工具被拒绝: %s (%s)", req.tool_name, reason)
+            # ★ v2.3.102：拒绝发生在真正执行之前，单独一个审计事件（不混进 completed）
+            try:
+                from core.eventbus import emit_event
+                emit_event("tool.permission.denied", {
+                    "tool": req.tool_name, "reason": reason,
+                    "tool_call_id": req.tool_call_id, "trace_id": req.trace_id or "",
+                }, source="core.tool_runtime")
+            except Exception:
+                pass
             return self._mk(req, DENIED, error=reason, duration_ms=0.0)
 
         # 预算 + 重试
@@ -107,6 +128,9 @@ class ToolRuntime:
         get_event_bus().emit(EVENT_TOOL_CALLED, {
             "tool": req.tool_name, "trace_id": trace_id,
             "tool_call_id": req.tool_call_id, "attempt": req.attempt,
+            # ★ v2.3.102：execution_id 关联同一次调用的 started/completed；plugin 标归属
+            "execution_id": f"{trace_id or 'na'}:{req.tool_call_id or '0'}:{req.attempt}",
+            "plugin": _plugin_of(req.tool_name),
         })
         try:
             content = await execute_tool(
@@ -129,6 +153,8 @@ class ToolRuntime:
                     "tool": req.tool_name, "trace_id": trace_id,
                     "tool_call_id": req.tool_call_id, "status": status,
                     "duration_ms": round(end_ms - start_ms, 2),
+                    "execution_id": f"{trace_id or 'na'}:{req.tool_call_id or '0'}:{req.attempt}",
+                    "plugin": _plugin_of(req.tool_name),
                 })
                 return self._mk(req, status, error=detail or "工具执行超时",
                                 start_ms=start_ms, end_ms=end_ms,
@@ -140,6 +166,8 @@ class ToolRuntime:
                 "tool": req.tool_name, "trace_id": trace_id,
                 "tool_call_id": req.tool_call_id, "status": status,
                 "duration_ms": round(end_ms - start_ms, 2),
+                "execution_id": f"{trace_id or 'na'}:{req.tool_call_id or '0'}:{req.attempt}",
+                "plugin": _plugin_of(req.tool_name),
             })
             return self._mk(req, status, content=content or "",
                             start_ms=start_ms, end_ms=end_ms,
@@ -156,6 +184,8 @@ class ToolRuntime:
                 "tool": req.tool_name, "trace_id": trace_id,
                 "tool_call_id": req.tool_call_id, "status": TIMEOUT,
                 "duration_ms": round(end_ms - start_ms, 2),
+                "execution_id": f"{trace_id or 'na'}:{req.tool_call_id or '0'}:{req.attempt}",
+                "plugin": _plugin_of(req.tool_name),
             })
             return self._mk(req, TIMEOUT, error="工具超时",
                             start_ms=start_ms, end_ms=end_ms,
@@ -168,6 +198,8 @@ class ToolRuntime:
                 "tool": req.tool_name, "trace_id": trace_id,
                 "tool_call_id": req.tool_call_id, "status": FAILED,
                 "duration_ms": round(end_ms - start_ms, 2), "error": str(e),
+                "execution_id": f"{trace_id or 'na'}:{req.tool_call_id or '0'}:{req.attempt}",
+                "plugin": _plugin_of(req.tool_name),
             })
             return self._mk(req, FAILED, error=str(e),
                             start_ms=start_ms, end_ms=end_ms,
