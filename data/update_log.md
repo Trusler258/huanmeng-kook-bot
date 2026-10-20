@@ -1,5 +1,38 @@
 # 更新日志
 
+## v2.3.101 — 修「插件注册工具即授权」权限漏洞 — 2026.10.20
+
+一句话总结：插件只要 `register_tool` 就自动获得执行授权，能绕过 HIGH 风险默认拒绝；
+现在拆成「注册资格 / 能力声明 / 执行授权」三件事，并区分"声明了"与"用了缺省值"。
+
+### 漏洞
+`core/tool_runtime/permission.py` 插件工具分支无条件 `return True`：
+
+```python
+if _is_plugin_tool(tool_name):
+    return True, f"plugin tool {tool_name} 显式注册授权放行"
+```
+
+配合 `api.py::register_tool` 把缺省 `permissions` 硬编码成 `["message.read","message.send"]`，
+权限层**无法区分插件到底有没有声明** —— 注册动作本身成了授权动作。
+
+### 修复（分三级，不砍现有功能）
+1. `Capability` 新增 `perm_declared` / `owner_permissions`（区分缺省与显式声明）
+2. 注册期：声明了 → 必须是 `manifest.permissions` 子集，否则拒绝注册；
+   未声明 + **占用核心工具名** → 拒绝注册（防静默接管 write_code 之类）；
+   未声明 + 新工具名 → 放行但告警（迁移期）
+3. 执行期：`check_plugin_tool()` 复查——工具仍在注册表、声明权限仍在 manifest 内，
+   否则拒绝；`DENIED_TOOLS` 保持最高优先级
+4. `PluginManager.manifest_of(name)`：权限层执行期取活 manifest
+5. 顺手修 `PluginContext.cleanup()` 里重复的 `background.cancel_all()`
+
+### 验证
+- 规则单测 6/6：未声明新名放行 / 未声明占核心名拒绝 / 已声明放行 /
+  manifest 被收窄后拒绝 / 插件卸载后拒绝 / `system_status` 仍硬拒绝
+- 线上 `check_permission`：`roll_dice`(迁移放行) `run_code`(沙箱内部管控)
+  `write_code`(LOW 放行) `system_status`(DENY)
+- 29 插件正常装载，无异常
+
 ## v2.3.100 — 同步 DeepSeek 新搜索/Fetch/视觉（V4.1-Flash-1017）— 2026.10.18
 
 一句话总结：搜索主路径换成官方 `/v1/tools/search`（真联网），抓取优先 `/v1/tools/fetch`，

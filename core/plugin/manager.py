@@ -68,6 +68,15 @@ class PluginManager:
             return False, f"插件 {name} 未被发现"
         return True, ""
 
+    def manifest_of(self, name: str):
+        """取某个插件的 manifest（未登记返回 None）。
+
+        ★ v2.3.101：权限层执行期复查用——工具注册时校验过一次，执行时还要确认
+        manifest.permissions 没被收窄（插件被降权/卸载后注册项不能继续生效）。
+        """
+        rec = self._records.get(name)
+        return rec.manifest if rec is not None else None
+
     def list(self) -> list[dict]:
         return [{
             "name": r.manifest.name,

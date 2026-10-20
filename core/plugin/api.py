@@ -47,6 +47,31 @@ logger = get_logger("plugin.api")
 _HIGH_RISK_LEAVES = ("raw",)   # 通配不得覆盖的高危能力，必须显式声明
 
 
+def _is_core_tool_name(tool_name: str) -> bool:
+    """工具名是否已被核心占用（核心白名单 / 硬拒绝清单 / 风险模型里的已知能力）。
+
+    ★ v2.3.101：插件**未声明**权限时不允许占用这些名字——否则插件静默替换核心
+    handler，却继续沿用核心为该名字做的权限判定（沙箱、审批等），等于越权。
+    显式声明 permissions 的插件仍可接管（如 sandbox 插件接管 run_code）。
+    """
+    try:
+        from core.tool_runtime.config import ALLOWED_TOOLS, DENIED_TOOLS, TOOL_PERMISSIONS
+        if tool_name in ALLOWED_TOOLS or tool_name in DENIED_TOOLS:
+            return True
+        if tool_name in TOOL_PERMISSIONS:
+            return True
+    except Exception:
+        pass
+    try:
+        from core.tools import TOOL_SCHEMAS  # type: ignore
+        for t in TOOL_SCHEMAS or []:
+            if (t.get("function") or {}).get("name") == tool_name:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _perm_ok(manifest, perm: str) -> bool:
     """插件只能在 manifest.permissions 声明的能力内行事。
 
@@ -352,15 +377,47 @@ class PluginCapability:
                 "description": description,
                 "parameters": {"type": "object", "properties": {}, "required": []},
             }}
+        # ★ v2.3.101：权限声明收紧（对齐 tool_runtime 的权限模型）
+        #   原则：注册资格 / 能力声明 / 执行授权是三件事，不能因为"注册成功"就自动获得执行权。
+        #   ① 声明了 permissions → 必须是 manifest.permissions 的子集，否则拒绝注册
+        #   ② 没声明 + 工具名与核心工具重名 → 拒绝注册（否则插件静默替换核心 handler，
+        #      却继续继承核心为该工具做的权限判定）
+        #   ③ 没声明 + 新工具名 → 放行但告警（迁移期，便于批量补齐）
+        owner_perms = list(getattr(self._manifest, "permissions", None) or [])
+        declared = permissions is not None and len(permissions) > 0
+        if declared:
+            need = [str(p) for p in permissions]
+            missing = [p for p in need if p not in owner_perms]
+            if missing:
+                logger.error(
+                    "插件 %s 拒绝注册工具 %s：所需权限 %s 不在 manifest.permissions 内（已授权: %s）",
+                    self._plugin, name, missing, owner_perms,
+                )
+                return
+        else:
+            need = ["message.read", "message.send"]
+            if _is_core_tool_name(name):
+                logger.error(
+                    "插件 %s 拒绝注册工具 %s：未声明 permissions 却占用了核心工具名，"
+                    "如需接管必须显式声明所需权限",
+                    self._plugin, name,
+                )
+                return
+            logger.warning(
+                "插件 %s 注册工具 %s 未声明 permissions（迁移期按 %s 放行，请补声明）",
+                self._plugin, name, need,
+            )
         cap = Capability(
             id=f"plugin.{self._plugin}.{name}",
             name=name,
             description=description or schema.get("function", {}).get("description", ""),
             category=CATEGORY_TOOL,
             runtime=RUNTIME_FC,
-            permissions=permissions or ["message.read", "message.send"],
+            permissions=need,
             source=f"plugin:{self._plugin}",
             always_on=always_on,
+            perm_declared=declared,
+            owner_permissions=owner_perms,
         )
         self._registry.register(cap)
         self._registry.bind_tool_schema(cap.id, schema)
@@ -1004,5 +1061,4 @@ class PluginContext:
         self.timer.cancel_all()
         self.capability.unregister_all()
         self.pipeline.clear()
-        self.background.cancel_all()
         self.background.cancel_all()

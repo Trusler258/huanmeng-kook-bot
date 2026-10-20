@@ -45,6 +45,12 @@ class Capability:
     aliases: list[str] = field(default_factory=list)
     # 是否核心常驻能力（如 help/ping，普通聊天也保留）
     always_on: bool = False
+    # ★ v2.3.101：perm_declared 区分「插件显式声明了所需权限」与「用了缺省值」。
+    #   之前缺省值硬编码为 ["message.read","message.send"]，导致权限层无法判断
+    #   插件到底有没有声明——注册即放行的漏洞就出在这里。
+    perm_declared: bool = True
+    # 注册时该插件 manifest.permissions 的快照，供执行期复查（manifest 被收窄后可拒绝）
+    owner_permissions: list[str] = field(default_factory=list)
 
     def to_light(self) -> dict:
         """模型可见的精简元数据（不含任何完整实现）。"""
@@ -69,4 +75,6 @@ class Capability:
             "source": self.source,
             "aliases": list(self.aliases),
             "always_on": self.always_on,
+            "perm_declared": self.perm_declared,
+            "owner_permissions": list(self.owner_permissions),
         }

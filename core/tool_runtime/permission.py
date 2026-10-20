@@ -28,6 +28,10 @@ from core.tool_runtime.config import (
 )
 from core.permissions import get_registry
 
+from core.logger import get_logger
+
+logger = get_logger("tool.permission")
+
 
 def resolve_permission(tool_name: str, explicit: Optional[str] = None) -> Optional[str]:
     """返回该工具所需权限位。explicit 优先，其次工具默认映射。"""
@@ -61,6 +65,71 @@ def _is_plugin_tool(tool_name: str) -> bool:
         return False
 
 
+_WARNED_UNDECLARED: set[str] = set()
+
+
+def _plugin_tool_cap(tool_name: str):
+    """取插件动态注册工具的能力元数据（未注册返回 None）。"""
+    try:
+        from core.capability.registry import get_capability_registry
+        return get_capability_registry().find_plugin_tool(tool_name)
+    except Exception:
+        return None
+
+
+def _live_manifest_perms(plugin_name: str):
+    """取插件当前 manifest.permissions（取不到返回 None，用于区分"空集"与"不可知"）。"""
+    try:
+        from core.plugin import get_plugin_manager
+        mf = get_plugin_manager().manifest_of(plugin_name)
+        if mf is None:
+            return None
+        return list(getattr(mf, "permissions", None) or [])
+    except Exception:
+        return None
+
+
+def check_plugin_tool(tool_name: str) -> tuple[bool, str]:
+    """插件工具的执行授权判定。
+
+    ★ v2.3.101：此前这里无条件放行（注册即授权），插件只要 register_tool 就能绕过
+    HIGH 风险默认拒绝。现在按"声明 → 归属 → 执行"三段判定：
+
+      1. 工具必须仍在注册表里（插件卸载/禁用后不得继续可调）
+      2. 声明过 permissions 的：执行期再验一次，必须仍在 manifest.permissions 内
+         （manifest 被收窄后旧注册项自动失效）
+      3. 未声明 permissions 的：迁移期放行，但只在"新工具名"场景下成立——
+         核心工具名在注册时已被拒绝，这里再做一次兜底拒绝
+    """
+    cap = _plugin_tool_cap(tool_name)
+    if cap is None:
+        return False, f"插件工具 {tool_name} 不在注册表（插件可能已卸载/禁用）"
+
+    plugin = cap.source.split(":", 1)[-1] if getattr(cap, "source", "") else "?"
+    declared = bool(getattr(cap, "perm_declared", True))
+    need = list(getattr(cap, "permissions", None) or [])
+
+    if not declared:
+        from core.plugin.api import _is_core_tool_name
+        if _is_core_tool_name(tool_name):
+            return False, (f"插件 {plugin} 的工具 {tool_name} 占用了核心工具名但未声明权限，"
+                           "拒绝执行")
+        if tool_name not in _WARNED_UNDECLARED:
+            _WARNED_UNDECLARED.add(tool_name)
+            logger.warning("插件工具 %s（%s）未声明 permissions，迁移期放行", tool_name, plugin)
+        return True, f"plugin tool {tool_name} 未声明权限（迁移期放行，plugin={plugin}）"
+
+    # 以 manifest.permissions 为唯一判据：插件不能自证权限，但也不能被角色授权表误杀
+    # （message.read / message.send 这类基础权限不在角色授权表里，不能拿去查 reg.check）。
+    live = _live_manifest_perms(plugin)
+    if live is not None:
+        missing = [p for p in need if p not in live]
+        if missing:
+            return False, (f"插件 {plugin} 的工具 {tool_name} 所需权限 {missing} "
+                           "已不在 manifest.permissions 内（插件被降权？）")
+    return True, f"plugin tool {tool_name} 已声明权限 {need} 且归属 {plugin}，放行"
+
+
 def check_permission(tool_name: str, explicit: Optional[str] = None) -> tuple[bool, str]:
     """权限检查。返回 (allowed, reason)。
 
@@ -89,15 +158,15 @@ def check_permission(tool_name: str, explicit: Optional[str] = None) -> tuple[bo
             return True, "run_code 沙箱执行由工具内部按管理员/审批控制"
         return False, "run_code 不在白名单"
 
-    # 插件动态注册的工具：注册即显式授权（作者经 PluginCapability.register_tool
-    # 主动暴露，细粒度控制由插件自己的 handler 负责，与 run_code 同思路）。
+    # 插件动态注册的工具：按"声明 → 归属 → 执行"三段判定（★ v2.3.101 修授权洞）
     if _is_plugin_tool(tool_name):
+        allowed, reason = check_plugin_tool(tool_name)
         try:
             from core.trace import record
-            record("permission", f"plugin tool {tool_name} 注册授权放行")
+            record("permission", f"plugin tool {tool_name}: {'ALLOW' if allowed else 'DENY'} {reason}")
         except Exception:
             pass
-        return True, f"plugin tool {tool_name} 显式注册授权放行"
+        return allowed, reason
 
     # 2. 风险等级 → 策略
     risk = risk_of_tool(tool_name)
