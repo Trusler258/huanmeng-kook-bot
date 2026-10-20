@@ -1,5 +1,44 @@
 # 更新日志
 
+## v2.3.103 — .hml 核心库机制 + hmcore 库 — 2026.10.20
+
+一句话总结：把 `.hml`（HuanMeng Lib 核心库，规范里位置"按需另定"）落地为可安装/可导入的库，
+并把插件里**逐字重复**的脚手架收编成第一个库 `hmcore`。
+
+### 一、格式与位置（本次定案）
+```
+libs/<name>/          ← 安装位置（与 plugins/ 平级）
+├── hml.json          ← {"format":"hml","name","version","python","summary","modules"}
+└── <name>/           ← Python 包，插件 `from <name> import ...`
+```
+- 分发产物 `<name>-<version>.hml`（tar.gz，根即上面这层）
+- `core/hml.py`：`ensure_libs_path()` / `install()` / `list` / `uninstall`，CLI `python -m core.hml <cmd>`
+  - 解包校验：拒绝绝对路径、`..` 穿越、符号链接
+  - 覆盖安装前自动备份到 `libs/.backup/<name>-<时间戳>`
+- ⚠️ **sys.path 要逐个库目录加，不能只加 `libs/`**：`libs/hmcore` 与包名同名，
+  只加父目录会被当命名空间包解析到空目录（`cannot import name ... (unknown location)`）
+- `bot.py` 在插件加载前调 `ensure_libs_path()`，日志打印 `核心库已就绪: N 个 [...]`
+
+### 二、hmcore@1.0.0（内容全部来自现有代码，非重写）
+| 成员 | 来源 |
+|---|---|
+| `load_core()` | gh / ping / voice 等 **4 份逐字相同**的 `_load_core` |
+| `is_admin()`  | points / shop **2 份逐字相同**的 `_is_admin` |
+| `PluginBase`  | 28 个插件重复的 `__init__`/`on_load`/`on_enable`/`on_disable`/`on_unload` |
+| `TTLCache`    | kook 插件 `_api_cached` 泛化（60s TTL，异步 factory） |
+
+`scripts/build_hml.py`：打包 + **自校验**（解包到临时目录后真实 import 一次，失败不发包）。
+
+### 三、证明可用（最小迁移）
+`plugins/ping` 的 `_load_core()` 改走 `hmcore.load_core`，**保留本地原实现作 ImportError 兜底**
+（库缺失时行为完全不变）。未改 points/shop，避免一次动多个插件。
+
+### 验证
+- `python -m core.hml install dist/hmcore-1.0.0.hml` → 安装成功；卸载-再安装回环通过
+- 服务器真跑：`已安装库 [('hmcore','1.0.0')]`、`import hmcore OK`、
+  `ping load/enable: True True`、`_load_core` 返回 module
+- 启动日志：`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
+
 ## v2.3.102 — 事件体系：消息生命周期 + 统一 Envelope + 订阅者超时 — 2026.10.20
 
 一句话总结：把"声明了但从不发"的 `message.*` 事件接上真实发射，给所有事件补统一外壳，

@@ -1,0 +1,13 @@
+{
+  "format": "hml",
+  "name": "hmcore",
+  "version": "1.0.0",
+  "python": ">=3.10",
+  "summary": "插件脚手架与通用工具：PluginBase / load_core / is_admin / TTLCache",
+  "modules": [
+    "hmcore"
+  ],
+  "requires": [],
+  "author": "huanmeng",
+  "source": "从 KOOK 现有插件抽取（load_core ×4 逐字相同、is_admin ×2 逐字相同、生命周期脚手架 ×28）"
+}

@@ -53,3 +53,6 @@ plugins/
 server_config_backup/
 docs/KOOK_OPS.md
 _commit_msg.txt
+
+# .hml 安装备份（运行时产生）
+libs/.backup/

@@ -164,6 +164,15 @@ class HuanmengBot:
         self._register_handlers()
         info("消息处理器已注册（TEXT/KMD）")
 
+        # 11.5 加载 .hml 核心库（把 libs/<name>/ 加入 sys.path，插件才能 import hmcore）
+        try:
+            from core.hml import ensure_libs_path
+            _libs = ensure_libs_path()
+            if _libs:
+                info("核心库已就绪: %d 个 %s", len(_libs), _libs)
+        except Exception as e:
+            warning(".hml 核心库加载降级（插件若依赖库会回退本地实现）: %s", e)
+
         # 12. 启动 Plugin Runtime（非阻塞，单插件失败不影响 Core）
         try:
             from core.plugin import get_plugin_manager
