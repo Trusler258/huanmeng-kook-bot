@@ -1,115 +1,40 @@
 # 更新日志
 
-## v2.3.103 — .hml 核心库机制 + hmcore 库 — 2026.10.20
+## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
 
-一句话总结：把 `.hml`（HuanMeng Lib 核心库，规范里位置"按需另定"）落地为可安装/可导入的库，
-并把插件里**逐字重复**的脚手架收编成第一个库 `hmcore`。
+> 本日三次改动按「一天一版本」合并为同一版本号（v2.3.103），不再连续 bump。
 
-### 一、格式与位置（本次定案）
-```
-libs/<name>/          ← 安装位置（与 plugins/ 平级）
-├── hml.json          ← {"format":"hml","name","version","python","summary","modules"}
-└── <name>/           ← Python 包，插件 `from <name> import ...`
-```
-- 分发产物 `<name>-<version>.hml`（tar.gz，根即上面这层）
-- `core/hml.py`：`ensure_libs_path()` / `install()` / `list` / `uninstall`，CLI `python -m core.hml <cmd>`
-  - 解包校验：拒绝绝对路径、`..` 穿越、符号链接
-  - 覆盖安装前自动备份到 `libs/.backup/<name>-<时间戳>`
-- ⚠️ **sys.path 要逐个库目录加，不能只加 `libs/`**：`libs/hmcore` 与包名同名，
-  只加父目录会被当命名空间包解析到空目录（`cannot import name ... (unknown location)`）
-- `bot.py` 在插件加载前调 `ensure_libs_path()`，日志打印 `核心库已就绪: N 个 [...]`
+### 一、修「插件注册工具即授权」权限漏洞
+`permission.py` 插件工具分支原无条件 `return True`，配合 `register_tool` 把缺省 permissions
+硬编码为 `[message.read, message.send]`，权限层无法区分"声明了"与"用缺省值"——
+**注册动作本身成了授权动作**，插件可绕过 HIGH 风险默认拒绝。
+修复：`Capability` 增 `perm_declared`/`owner_permissions`；注册期校验（声明必须是
+manifest.permissions 子集、未声明不得占用核心工具名）；执行期复查（仍在注册表 + 声明权限
+仍在活 manifest 内）；`DENIED_TOOLS` 保持最高优先。
+验证：单测 6/6（KOOK）/ 7/7（QQ）；`roll_dice` 迁移放行、`run_code` 走沙箱内部管控、
+`system_status` 仍拒绝。
 
-### 二、hmcore@1.0.0（内容全部来自现有代码，非重写）
-| 成员 | 来源 |
-|---|---|
-| `load_core()` | gh / ping / voice 等 **4 份逐字相同**的 `_load_core` |
-| `is_admin()`  | points / shop **2 份逐字相同**的 `_is_admin` |
-| `PluginBase`  | 28 个插件重复的 `__init__`/`on_load`/`on_enable`/`on_disable`/`on_unload` |
-| `TTLCache`    | kook 插件 `_api_cached` 泛化（60s TTL，异步 factory） |
+### 二、事件体系：消息生命周期 + 统一 Envelope
+- `Event` 增 `event_id`/`schema_version`/`trace_id`/`source`/`plugin_id`，保留 `name`/`data`/`ts`
+- 新增 `emit_event()` 统一出口；`message.received/ignored/processing/replied/sent|failed` 接上真实发射
+  （此前 `message.*` 只有常量、零 emit；`sent` 只在发送层明确成功时发，不伪造）
+- `tool.*` 补 `execution_id`/`plugin`，新增 `tool.permission.denied`
+- 新增 `plugin.loading/load_failed/enabled/disabled`、`capability.registered/unregistered`
+- 修两个缺陷：管道钩子 `except: pass` → `logger.error(exc_info=True)`；
+  `publish` 协程订阅者加 10s 超时（超时取消 + 慢订阅者告警），未改成无约束 create_task
 
-`scripts/build_hml.py`：打包 + **自校验**（解包到临时目录后真实 import 一次，失败不发包）。
-
-### 三、证明可用（最小迁移）
-`plugins/ping` 的 `_load_core()` 改走 `hmcore.load_core`，**保留本地原实现作 ImportError 兜底**
-（库缺失时行为完全不变）。未改 points/shop，避免一次动多个插件。
-
-### 验证
-- `python -m core.hml install dist/hmcore-1.0.0.hml` → 安装成功；卸载-再安装回环通过
-- 服务器真跑：`已安装库 [('hmcore','1.0.0')]`、`import hmcore OK`、
-  `ping load/enable: True True`、`_load_core` 返回 module
-- 启动日志：`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
-
-## v2.3.102 — 事件体系：消息生命周期 + 统一 Envelope + 订阅者超时 — 2026.10.20
-
-一句话总结：把"声明了但从不发"的 `message.*` 事件接上真实发射，给所有事件补统一外壳，
-并修掉两个真实缺陷（钩子异常被吞、订阅者无超时）。
-
-### 一、统一 Envelope（向后兼容）
-`Event` 新增 `event_id` / `schema_version` / `trace_id` / `source` / `plugin_id`，
-保留原 `name` / `data` / `ts`（老订阅方零改）。新增 `to_dict()` 与统一出口
-`emit_event(type, data, source=, plugin_id=, trace_id=)`。
-
-### 二、消息生命周期（此前 `message.received/sent` 只有常量、全仓零 emit）
-| 事件 | 位置 | 载荷 |
-|---|---|---|
-| `message.received` | pipeline 入口 | chat_id / user_id / is_group / msg_type / length / is_mentioned / has_image / has_quote（**不含正文**） |
-| `message.ignored` | 空内容 / 全不可见字符 | reason=empty / invisible_only |
-| `message.processing` | 预钩子之后 | chat_id / user_id / is_group / msg_type |
-| `message.replied` | sender.send_sentences | count / chars（= 已交给发送层） |
-| `message.sent` / `message.failed` | sender.send_by_chat_type | ok / chars（**发送层明确返回才发**） |
-
-### 三、工具事件
-`tool.called` / `tool.completed` 补 `execution_id`（关联同一次调用）+ `plugin`（归属）；
-新增 `tool.permission.denied`（在真正执行前发出，不混进 completed）。
-
-### 四、插件与能力生命周期
-`plugin.loading` / `plugin.load_failed` / `plugin.enabled` / `plugin.disabled`；
-`capability.registered` / `capability.unregistered`（带 capability_id / category / runtime / permissions）。
-
-### 五、两个真实缺陷
-1. 管道钩子 `except Exception: pass` → 改为 `logger.error(..., exc_info=True)`
-   （此前插件钩子写错完全无感知，表现为"没生效"）
-2. `EventBus.publish` 协程订阅者加 `wait_for(SUBSCRIBER_TIMEOUT=10s)`，超时取消并告警；
-   慢订阅者（>1s）记 warning。**未改成无约束 create_task**（会引入任务堆积）。
+### 三、.hml 核心库机制 + hmcore@1.0.0
+- 位置定案：`libs/<name>/{hml.json,<name>/}`；分发 `<name>-<version>.hml`（tar.gz）
+- `core/hml.py`：ensure_libs_path / install / list / uninstall（拒绝路径穿越与符号链接，
+  覆盖前备份 `libs/.backup/`）；⚠️ sys.path 必须逐个库目录加入（同名目录会被当命名空间包）
+- `libs/hmcore`：`load_core`（收编 4 份逐字相同副本）/ `is_admin`（2 份）/ `PluginBase`（28 份脚手架）/ `TTLCache`
+- `scripts/build_hml.py`：打包 + 解包后真实 import 自校验
+- `bot.py`：插件加载前 `ensure_libs_path()`，日志「核心库已就绪: N 个 [...]」
+- `plugins/ping`：`_load_core` 改走 hmcore，保留本地 ImportError 兜底
 
 ### 验证
-- 单测 10/10：Envelope 七字段 / 兼容 name·data·ts / 通配订阅 / 慢订阅者 0.2s 被取消且
-  后续订阅者仍执行 / 11 个新事件名登记 / publish_sync 保留传入 Envelope
-- 生命周期真跑：`plugin.loading → loaded → capability.registered → enabled → disabled`
-- 线上 29 插件正常，无异常
-
-## v2.3.101 — 修「插件注册工具即授权」权限漏洞 — 2026.10.20
-
-一句话总结：插件只要 `register_tool` 就自动获得执行授权，能绕过 HIGH 风险默认拒绝；
-现在拆成「注册资格 / 能力声明 / 执行授权」三件事，并区分"声明了"与"用了缺省值"。
-
-### 漏洞
-`core/tool_runtime/permission.py` 插件工具分支无条件 `return True`：
-
-```python
-if _is_plugin_tool(tool_name):
-    return True, f"plugin tool {tool_name} 显式注册授权放行"
-```
-
-配合 `api.py::register_tool` 把缺省 `permissions` 硬编码成 `["message.read","message.send"]`，
-权限层**无法区分插件到底有没有声明** —— 注册动作本身成了授权动作。
-
-### 修复（分三级，不砍现有功能）
-1. `Capability` 新增 `perm_declared` / `owner_permissions`（区分缺省与显式声明）
-2. 注册期：声明了 → 必须是 `manifest.permissions` 子集，否则拒绝注册；
-   未声明 + **占用核心工具名** → 拒绝注册（防静默接管 write_code 之类）；
-   未声明 + 新工具名 → 放行但告警（迁移期）
-3. 执行期：`check_plugin_tool()` 复查——工具仍在注册表、声明权限仍在 manifest 内，
-   否则拒绝；`DENIED_TOOLS` 保持最高优先级
-4. `PluginManager.manifest_of(name)`：权限层执行期取活 manifest
-5. 顺手修 `PluginContext.cleanup()` 里重复的 `background.cancel_all()`
-
-### 验证
-- 规则单测 6/6：未声明新名放行 / 未声明占核心名拒绝 / 已声明放行 /
-  manifest 被收窄后拒绝 / 插件卸载后拒绝 / `system_status` 仍硬拒绝
-- 线上 `check_permission`：`roll_dice`(迁移放行) `run_code`(沙箱内部管控)
-  `write_code`(LOW 放行) `system_status`(DENY)
-- 29 插件正常装载，无异常
+- KOOK：单测 6/6 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
+- QQ：单测 7/7 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；24 插件正常
 
 ## v2.3.100 — 同步 DeepSeek 新搜索/Fetch/视觉（V4.1-Flash-1017）— 2026.10.18
 
