@@ -1,4 +1,4 @@
-"""把 libs/<name>/ 打包成 `<name>-<version>.hml`（tar.gz），并自校验。
+"""把 libs/<name>/ 打包成 `<name>-<version>.hml`（**zip**，与 .jar 同理），并自校验。
 
 用法：
     python scripts/build_hml.py hmcore            # 打包 libs/hmcore → dist/hmcore-1.0.0.hml
@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import importlib
 import json
 import sys
-import tarfile
+import zipfile
 import tempfile
 from pathlib import Path
 
@@ -24,20 +25,11 @@ SKIP_DIRS = {"__pycache__", ".pytest_cache"}
 SKIP_SUFFIX = {".pyc", ".pyo"}
 
 
-def _filter(ti: tarfile.TarInfo):
-    parts = Path(ti.name).parts
-    if any(p in SKIP_DIRS for p in parts):
-        return None
-    if Path(ti.name).suffix in SKIP_SUFFIX:
-        return None
-    return ti
-
-
 def verify(hml: Path, modules: list[str]) -> tuple[bool, str]:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        with tarfile.open(hml, "r:gz") as tar:
-            tar.extractall(tmp)
+        with zipfile.ZipFile(hml) as z:
+            z.extractall(tmp)
         if not (tmp / "hml.json").is_file():
             return False, "解包后缺少 hml.json"
         sys.path.insert(0, str(tmp))
@@ -75,11 +67,20 @@ def main() -> int:
 
     DIST.mkdir(parents=True, exist_ok=True)
     out = DIST / f"{meta['name']}-{meta['version']}.hml"
-    with tarfile.open(out, "w:gz") as tar:
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for child in sorted(src.iterdir()):
             if child.name in SKIP_DIRS:
                 continue
-            tar.add(child, arcname=child.name, filter=_filter)
+            if child.is_file():
+                z.write(child, arcname=child.name)
+                continue
+            for dp, dns, fns in os.walk(child):
+                dns[:] = [x for x in dns if x not in SKIP_DIRS]
+                for fn in sorted(fns):
+                    if Path(fn).suffix in SKIP_SUFFIX:
+                        continue
+                    fp = Path(dp) / fn
+                    z.write(fp, arcname=str(fp.relative_to(src)).replace("\\", "/"))
     size = out.stat().st_size
     print(f"打包 {meta['name']}@{meta['version']} → {out} ({size} 字节)")
 
